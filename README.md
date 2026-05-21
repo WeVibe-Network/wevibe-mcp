@@ -1,10 +1,17 @@
 # wevibe-mcp
 
-Part of [WeVibe Network](https://github.com/WeVibe-Network).
+MCP server for [WeVibe Network](https://github.com/WeVibe-Network/wevibe-mcp) — end-to-end encrypted organizational memory for AI coding agents.
 
-This repository is being initialized as part of Sprint 28. Full
-content lands in subsequent change orders (CO-282 through CO-285).
+## Install
+
+```bash
+npm install wevibe-mcp
+```
+
+## Usage
+
+See the [full documentation](https://github.com/WeVibe-Network/wevibe-mcp/blob/main/docs/TOPOLOGY.md).
 
 ## License
 
-Apache-2.0. See LICENSE in the populated version.
+Apache 2.0

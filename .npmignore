@@ -1,0 +1,23 @@
+# Source (dist/ ships instead)
+src/
+
+# Tests
+tests/
+
+# Python legacy
+wevibe_mcp/
+scripts/
+
+# Dev config
+tsconfig.json
+vitest.config.ts
+vitest.integration.config.ts
+pyproject.toml
+
+# Build artifacts
+*.js.map
+*.d.ts.map
+
+# Misc
+.opencode/
+wevibe-plugin-errors.log

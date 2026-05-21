@@ -1,0 +1,58 @@
+{
+  "name": "wevibe-mcp",
+  "version": "0.2.0",
+  "description": "MCP client for WeVibe Network — org-scoped encrypted process memory",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WeVibe-Network/wevibe-mcp.git",
+    "directory": "."
+  },
+  "homepage": "https://github.com/WeVibe-Network/wevibe-mcp",
+  "keywords": [
+    "mcp",
+    "wevibe-network",
+    "ai",
+    "memory",
+    "encrypted",
+    "coding-agent"
+  ],
+  "main": "dist/server.js",
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "wevibe-mcp": "dist/server.js",
+    "wevibe-admin": "dist/admin.js",
+    "wevibe-retrieve": "dist/retrieve-cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "dev": "tsx src/server.ts",
+    "admin": "tsx src/admin.ts",
+    "dashboard": "node dist/dashboard-server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@noble/hashes": "^1.8.0",
+    "@noble/secp256k1": "3.1.0",
+    "express": "5.2.1",
+    "toml": "^3.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
