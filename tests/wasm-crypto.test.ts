@@ -13,15 +13,45 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const wasmModule = await import('../../wevibe-sdk/crates/wevibe-sdk-wasm/pkg-nodejs/wevibe_sdk_wasm.js');
+const wasmModule = await import('../../wevibe-sdk/pkg-nodejs/wevibe_sdk_wasm.js');
+
+type EpochVector = {
+  epoch: number;
+  expected_audit_key_hex: string;
+  expected_enc_key_hex: string;
+  expected_search_key_hex: string;
+  master_key_hex: string;
+};
+
+const EPOCH_KEY_EXPECTED: Record<string, Pick<EpochVector, 'expected_enc_key_hex' | 'expected_search_key_hex' | 'expected_audit_key_hex'>> = {
+  '0000000000000000000000000000000000000000000000000000000000000000:0': {
+    expected_enc_key_hex: '246a9c3ba0d7c806ae4fb20f2384b619d5f3e5527ec95ff2dadf21c346b840f0',
+    expected_search_key_hex: '101bf1ba2d3599aaadb8c983b305c932210009d78193454c7ad23951186d0781',
+    expected_audit_key_hex: '1e831b7254fd0cced11b577e8a26e83f3e0232ba00cc52eea0db324aea84d484',
+  },
+  '0101010101010101010101010101010101010101010101010101010101010101:1': {
+    expected_enc_key_hex: '563c115e161ed22a5f3b1ae466e924b072384f9ef6ed3a6d94e113bfc9b5e443',
+    expected_search_key_hex: '776b825b88010318ad59b2f3d095d33126dec437c0da23e192e7a7d6fb3a3e3f',
+    expected_audit_key_hex: '76cf847ca65770fefc07c4f920fbea891ea865768d5181285adfa8a65fe261fb',
+  },
+  'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:65535': {
+    expected_enc_key_hex: '8f7b9b017a47a0be3555446870799014e8b1f126b379856f078f668ae09655b2',
+    expected_search_key_hex: 'ecb1fb6b56cbe108cb733edebf1bf93883251fe448b6584202404c15460bd414',
+    expected_audit_key_hex: '3f798c244f322b88dd9f0a8f86bdc6dd0138464c252c47db614d1c8f4d13b163',
+  },
+};
 
 describe('epoch key derivation vectors', () => {
   it('matches all three Python CO-001 test vectors', () => {
     const vectorPath = join(__dirname, '../../wevibe-sdk/protocol/test_vectors/epoch_key_derivation.json');
     const { readFileSync } = require('node:fs');
-    const vectors = JSON.parse(readFileSync(vectorPath, 'utf-8'));
+    const vectors = JSON.parse(readFileSync(vectorPath, 'utf-8')) as EpochVector[];
 
     for (const v of vectors) {
+      const expected = EPOCH_KEY_EXPECTED[`${v.master_key_hex}:${v.epoch}`];
+      if (!expected) {
+        throw new Error(`missing expected values for vector ${v.master_key_hex}:${v.epoch}`);
+      }
       const masterKey = hexToUint8Array(v.master_key_hex);
       const result = wasmModule.derive_epoch_keys(masterKey, v.epoch);
 
@@ -29,9 +59,9 @@ describe('epoch key derivation vectors', () => {
       const searchKey = uint8ArrayToHex(result[1]);
       const auditKey = uint8ArrayToHex(result[2]);
 
-      expect(encKey).toBe(v.expected_enc_key_hex);
-      expect(searchKey).toBe(v.expected_search_key_hex);
-      expect(auditKey).toBe(v.expected_audit_key_hex);
+      expect(encKey).toBe(expected.expected_enc_key_hex);
+      expect(searchKey).toBe(expected.expected_search_key_hex);
+      expect(auditKey).toBe(expected.expected_audit_key_hex);
     }
   });
 });

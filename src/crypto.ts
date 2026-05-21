@@ -2,7 +2,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WASM_PKG = join(__dirname, '../../wevibe-sdk/crates/wevibe-sdk-wasm/pkg-nodejs');
+const WASM_PKG = join(__dirname, '../../wevibe-sdk/pkg-nodejs');
 
 const mod = await import(WASM_PKG + '/wevibe_sdk_wasm.js');
 

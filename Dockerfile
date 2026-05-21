@@ -35,7 +35,7 @@ COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=umbral-builder /build/target/release/wevibe-umbral-sidecar /usr/local/bin/wevibe-umbral-sidecar
-COPY WeVibe/wevibe-sdk/crates/wevibe-sdk-wasm/pkg-nodejs /wevibe-sdk/crates/wevibe-sdk-wasm/pkg-nodejs
+COPY WeVibe/wevibe-sdk/pkg-nodejs /wevibe-sdk/pkg-nodejs
 
 EXPOSE 4450
 
