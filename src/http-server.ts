@@ -5,6 +5,7 @@ import { verifySessionToken, extractBearer, _getActiveStore } from './session-to
 import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { getProviderPolicy } from './risk-appetite.js';
+import { addDenial, flushDenials } from './denial-queue.js';
 
 const HTTP_HOST = process.env.WEVIBE_HTTP_HOST ?? '127.0.0.1';
 const HTTP_PORT = 4450;
@@ -124,6 +125,8 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   if (!authorize(req, res)) {
     return;
   }
+
+  flushDenials().catch(err => console.error('denial flush on recall failed:', err));
 
   const body = await readBody(req);
   let input: RetrieveInput;
@@ -372,6 +375,47 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
   jsonResponse(res, hubResp.status, hubBodyJson);
 }
 
+interface DenialRequestBody {
+  org_id: string;
+  memory_hash: string;
+  reason?: string;
+}
+
+async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const bodyStr = await readBody(req);
+  let body: DenialRequestBody;
+  try {
+    body = JSON.parse(bodyStr) as DenialRequestBody;
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    return;
+  }
+
+  if (!body.org_id || typeof body.org_id !== 'string' || body.org_id.trim() === '') {
+    jsonResponse(res, 400, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+    return;
+  }
+
+  if (!body.memory_hash || typeof body.memory_hash !== 'string' || body.memory_hash.trim() === '') {
+    jsonResponse(res, 400, { status: 'error', error: 'memory_hash is required and must be a non-empty string' });
+    return;
+  }
+
+  addDenial({
+    org_id: body.org_id,
+    memory_hash: body.memory_hash,
+    reason: body.reason,
+  });
+
+  flushDenials().catch(err => console.error('denial flush failed:', err));
+
+  jsonResponse(res, 200, { queued: true });
+}
+
 export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '';
   const method = req.method ?? '';
@@ -396,6 +440,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     return;
   }
 
+  if (method === 'POST' && url === '/v1/denials') {
+    await handleDenials(req, res);
+    return;
+  }
+
   jsonResponse(res, 404, { status: 'error', error: 'not found' });
 }
 
@@ -417,5 +466,11 @@ export function startHttpServer(): void {
 
   server.listen(HTTP_PORT, HTTP_HOST, () => {
     console.error(`wevibe-mcp: HTTP API listening on ${HTTP_HOST}:${HTTP_PORT}`);
+    // Periodic flush of denial queue — ensures denials reach the hub even when
+    // the consumer is idle (no recall triggered). 60s interval is sufficient for
+    // background retry; the timer naturally stops when the process exits.
+    setInterval(() => {
+      flushDenials().catch(err => console.error('periodic denial flush failed:', err));
+    }, 60_000);
   });
 }

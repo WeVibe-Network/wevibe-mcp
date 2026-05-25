@@ -13,6 +13,7 @@ Plugin (OpenCode) --+-- HTTP Transport -- wevibe-mcp HTTP API (127.0.0.1:4450, B
                     |                   |-- POST /v1/recall (Bearer token)
                     |                   |-- POST /v1/serves (Bearer token, value-add proxy)
                     |                   |-- POST /v1/reports (Bearer token, value-add proxy)
+                    |                   |-- POST /v1/denials (Bearer token, queues denial to disk, flushes to hub)
                     +-- File-based queues (wevibe-guard-queue.json, etc.)
 ```
 
@@ -45,10 +46,39 @@ Recall responses are now filtered by a local provider leakage policy after decry
 ### Moderation Relay (Sprint 24)
 
 1. Accept / Deny / Report decisions from the OpenCode plugin are forwarded to hub report and vote endpoints.
-2. **Deny** action: memory added to local blacklist (`~/.wevibe/blacklist.json`) via `add_to_blacklist(pack_id)`. Memory never shown again in recall for this user.
+2. **Deny** action: memory added to local blacklist (`~/.wevibe/blacklist.json`) via `add_to_blacklist(pack_id)`. Memory never shown again in recall for this user. Denials are also queued for hub flush via the denial queue (CO-014).
 3. **Report** action: submitted to hub for moderator review. Does NOT add to local blacklist — memory remains visible in recall until resolution.
 4. wevibe-mcp records reported memories locally so subsequent recall attempts stay blocked until hub marks them ready or resolved.
 5. Moderator approvals issued after quorum use the refreshed transaction helpers that rely on fee grant allowances.
+
+### Denial Queue (CO-014)
+
+Denial events from the plugin are queued persistently and flushed to the hub.
+
+**Queue file:** `~/.wevibe/pending-denials.json` (flat JSON array, crash-resilient via atomic `.tmp` + `renameSync`)
+
+**Endpoint:** `POST /v1/denials` (MCP session token auth, same as `/v1/reports`)
+- Request body: `{ org_id: string, memory_hash: string, reason?: string }`
+- Response: `{ queued: true }` (200)
+- Validation: `org_id` and `memory_hash` required and non-empty
+
+**Queue entry shape:**
+```typescript
+interface PendingDenial {
+  id: string;           // crypto.randomUUID()
+  org_id: string;
+  memory_hash: string;
+  reason?: string;
+  created_at: string;    // ISO 8601
+}
+```
+
+**Flush triggers:**
+1. **On recall** — `flushDenials()` called fire-and-forget at start of `handleRecall()`, before `retrieve()` runs
+2. **On POST /v1/denials** — `flushDenials()` called fire-and-forget after queuing
+3. **60-second timer** — periodic flush at server startup
+
+**Hub flush:** `flushDenials()` POSTs to `${HUB_URL}/v1/orgs/${orgId}/denials` with WeVibe-Signed auth. Body: `{ memory_hash, nullifier: denialId, reason }`. Success (2xx) and 4xx remove from queue; 5xx and network failures leave in queue for retry.
 
 ### Dashboard Quorum Voting Bridge (CO-265)
 
@@ -174,7 +204,8 @@ interface RetrievedKeyword {
 ## Internal Modules
 
 - `src/server.ts` — MCP server entry point and tool routing
-- `src/http-server.ts` — HTTP API server on `127.0.0.1:4450` with `/v1/health`, `/v1/recall`, `/v1/serves`, `/v1/reports` endpoints (CO-244, CO-260). All endpoints require Bearer token auth (CO-260).
+- `src/http-server.ts` — HTTP API server on `127.0.0.1:4450` with `/v1/health`, `/v1/recall`, `/v1/serves`, `/v1/reports`, `/v1/denials` endpoints (CO-244, CO-260, CO-014). All endpoints require Bearer token auth (CO-260).
+- `src/denial-queue.ts` — persistent denial queue with crash-resilient atomic writes. Exports: `addDenial`, `getPendingDenials`, `removeDenials`, `getPendingCount`, `flushDenials`. Queue file: `~/.wevibe/pending-denials.json`. (CO-014)
 - `src/session-token.ts` — session token generation, disk persistence (mode 0600), and constant-time verification (CO-260 Task A). Token at `~/.wevibe/mcp-session-token`.
 - `src/contribution.ts` — streaming encryptor and submission composer
 - `src/retrieve-cli.ts` — Importable module for PRE retrieval (query → decrypt → sanitize → artifact policy → trust panel). No CLI wrapper — exported `retrieve(input: RetrieveInput): Promise<Output>` is called by HTTP server
