@@ -1,5 +1,3 @@
-import type { MemoryType } from './extraction.js';
-
 export interface Keyword {
   term: string;
   weight: number;
@@ -95,6 +93,8 @@ export type ContentFlag =
   | 'config'
   | 'connection_string';
 
+export type MemoryType = 'correct_implementation' | 'negative_signal';
+
 export interface BufferData {
   session_id: string;
   org_id: string;
@@ -149,5 +149,3 @@ export interface DelegateIdentity {
   delegateMnemonic: string;
   orgId: string;
 }
-
-export type { MemoryType } from './extraction.js';

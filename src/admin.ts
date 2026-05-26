@@ -84,7 +84,13 @@ async function getIdentityPubkeyHex(): Promise<string | null> {
 }
 
 async function getMembership(orgId?: string) {
-  const memberships = await loadMemberships(HUB_URL).catch(() => []);
+  let memberships: Awaited<ReturnType<typeof loadMemberships>>;
+  try {
+    memberships = await loadMemberships(HUB_URL);
+  } catch (e) {
+    die(`Failed to load org memberships from hub: ${e}`);
+  }
+
   if (memberships.length === 0) die('No org memberships found. Run setup-identity and get invited first.');
   if (orgId) {
     const m = memberships.find(m => m.orgId === orgId);
@@ -137,7 +143,13 @@ async function cmdCreateOrg(flags: Record<string, string>) {
 }
 
 async function cmdOrgs() {
-  const memberships = await loadMemberships(HUB_URL).catch(() => []);
+  let memberships: Awaited<ReturnType<typeof loadMemberships>>;
+  try {
+    memberships = await loadMemberships(HUB_URL);
+  } catch (e) {
+    die(`Failed to load org memberships from hub: ${e}`);
+  }
+
   if (memberships.length === 0) {
     console.log('Not a member of any org.');
     return;

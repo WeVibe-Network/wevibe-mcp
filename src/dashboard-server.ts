@@ -284,7 +284,21 @@ srv.tool(
 
     const pubkeyHex = uint8ArrayToHex(identity.edPubkey);
 
-    const memberships = await loadMemberships(HUB_URL).catch(() => []);
+    let memberships: Awaited<ReturnType<typeof loadMemberships>>;
+    try {
+      memberships = await loadMemberships(HUB_URL);
+    } catch (e) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: `failed to load org memberships: ${e}`,
+            identity: pubkeyHex,
+          }),
+        }],
+      };
+    }
+
     if (memberships.length === 0) {
       return {
         content: [{
@@ -636,7 +650,8 @@ async function main(): Promise<void> {
     try {
       await unlockVault(storedPassphrase);
       console.warn('wevibe-dashboard: vault unlocked from keychain');
-    } catch {
+    } catch (e) {
+      console.warn(`wevibe-dashboard: keychain vault unlock failed: ${e}`);
     }
   }
 
@@ -651,7 +666,7 @@ async function main(): Promise<void> {
   const pubkeyHex = uint8ArrayToHex(identity.edPubkey);
   console.warn(`wevibe-dashboard: identity: ${pubkeyHex.slice(0, 16)}...`);
 
-  const memberships = await loadMemberships(HUB_URL).catch(() => []);
+  const memberships = await loadMemberships(HUB_URL);
   if (memberships.length === 0) {
     console.error('wevibe-dashboard: FATAL — no org membership found. Create or join an org first.');
     process.exit(1);

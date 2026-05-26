@@ -1,6 +1,7 @@
 import { getStore } from './key-store.js';
 import { getLlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
+import type { MemoryType } from './types.js';
 
 export interface ClassifiedKeyword {
   keyword: string;
@@ -17,8 +18,6 @@ export interface KeywordExtractionResult {
   classified: ClassifiedKeyword[];
   suggestions: SuggestedKeyword[];
 }
-
-export type MemoryType = 'correct_implementation' | 'negative_signal';
 
 const SERVICE = 'wevibe-network';
 

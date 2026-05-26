@@ -6,6 +6,8 @@ export type RiskAppetite = 'lowest' | 'neutral';
 export type ProviderPolicy = 'unrestricted' | 'local_only' | 'allowlist';
 
 const CONFIG_PATH = join(homedir(), '.wevibe', 'plugin-config.json');
+const RISK_APPETITES: readonly RiskAppetite[] = ['lowest', 'neutral'];
+const PROVIDER_POLICIES: readonly ProviderPolicy[] = ['unrestricted', 'local_only', 'allowlist'];
 
 function ensureDir(filePath: string): void {
   const dir = dirname(filePath);
@@ -14,68 +16,80 @@ function ensureDir(filePath: string): void {
   }
 }
 
-export function getRiskAppetite(): RiskAppetite {
-  try {
-    if (!existsSync(CONFIG_PATH)) {
-      return 'neutral';
-    }
-    const data = readFileSync(CONFIG_PATH, 'utf-8');
-    if (!data) return 'neutral';
-    const parsed = JSON.parse(data);
-    if (parsed.risk_appetite === 'lowest' || parsed.risk_appetite === 'neutral') {
-      return parsed.risk_appetite;
-    }
-    return 'neutral';
-  } catch {
-    return 'neutral';
+function readConfig(): Record<string, unknown> {
+  if (!existsSync(CONFIG_PATH)) {
+    return {};
   }
+
+  try {
+    const data = readFileSync(CONFIG_PATH, 'utf-8');
+    if (!data) return {};
+
+    const parsed = JSON.parse(data);
+    if (typeof parsed === 'object' && parsed !== null) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {};
+  }
+
+  return {};
+}
+
+function writeConfig(updated: Record<string, unknown>): void {
+  ensureDir(CONFIG_PATH);
+  writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2) + '\n');
+}
+
+function getStringValue<K extends string>(
+  key: string,
+  allowedValues: readonly K[],
+  fallback: K,
+): K {
+  const value = readConfig()[key];
+  if (typeof value === 'string' && allowedValues.includes(value as K)) {
+    return value as K;
+  }
+  return fallback;
+}
+
+function assertAllowedValue<K extends string>(
+  errorMessage: string,
+  value: K,
+  allowedValues: readonly K[],
+): void {
+  if (!allowedValues.includes(value)) {
+    throw new Error(errorMessage);
+  }
+}
+
+function setConfigValue<K extends string>(key: string, value: K): void {
+  const updated = { ...readConfig(), [key]: value };
+  writeConfig(updated);
+}
+
+export function getRiskAppetite(): RiskAppetite {
+  return getStringValue('risk_appetite', RISK_APPETITES, 'neutral');
 }
 
 export function setRiskAppetite(value: RiskAppetite): void {
-  if (value !== 'lowest' && value !== 'neutral') {
-    throw new Error(`invalid risk_appetite: ${value}; must be "lowest" or "neutral"`);
-  }
-  ensureDir(CONFIG_PATH);
-  let existing: Record<string, unknown> = {};
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      const data = readFileSync(CONFIG_PATH, 'utf-8');
-      if (data) existing = JSON.parse(data);
-    } catch { /* ignore */ }
-  }
-  const updated = { ...existing, risk_appetite: value };
-  writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2) + '\n');
+  assertAllowedValue(
+    `invalid risk_appetite: ${value}; must be "lowest" or "neutral"`,
+    value,
+    RISK_APPETITES,
+  );
+  setConfigValue('risk_appetite', value);
 }
 
 export function getProviderPolicy(): ProviderPolicy {
-  try {
-    if (!existsSync(CONFIG_PATH)) {
-      return 'unrestricted';
-    }
-    const data = readFileSync(CONFIG_PATH, 'utf-8');
-    if (!data) return 'unrestricted';
-    const parsed = JSON.parse(data);
-    if (parsed.provider_policy === 'unrestricted' || parsed.provider_policy === 'local_only' || parsed.provider_policy === 'allowlist') {
-      return parsed.provider_policy;
-    }
-    return 'unrestricted';
-  } catch {
-    return 'unrestricted';
-  }
+  return getStringValue('provider_policy', PROVIDER_POLICIES, 'unrestricted');
 }
 
 export function setProviderPolicy(value: ProviderPolicy): void {
-  if (value !== 'unrestricted' && value !== 'local_only' && value !== 'allowlist') {
-    throw new Error(`invalid provider_policy: ${value}; must be "unrestricted", "local_only", or "allowlist"`);
-  }
-  ensureDir(CONFIG_PATH);
-  let existing: Record<string, unknown> = {};
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      const data = readFileSync(CONFIG_PATH, 'utf-8');
-      if (data) existing = JSON.parse(data);
-    } catch { /* ignore */ }
-  }
-  const updated = { ...existing, provider_policy: value };
-  writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2) + '\n');
+  assertAllowedValue(
+    `invalid provider_policy: ${value}; must be "unrestricted", "local_only", or "allowlist"`,
+    value,
+    PROVIDER_POLICIES,
+  );
+  setConfigValue('provider_policy', value);
 }

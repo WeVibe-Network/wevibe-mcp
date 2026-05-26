@@ -60,7 +60,13 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     return { status: 'error', error: 'no identity found in keychain' };
   }
 
-  const memberships = await loadMemberships(HUB_URL).catch(() => []);
+  let memberships: Awaited<ReturnType<typeof loadMemberships>>;
+  try {
+    memberships = await loadMemberships(HUB_URL);
+  } catch (e) {
+    return { status: 'error', error: `failed to load org memberships: ${e}` };
+  }
+
   if (memberships.length === 0) {
     return { status: 'error', error: 'no org membership found' };
   }

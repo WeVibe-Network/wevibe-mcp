@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { MemoryType } from './extraction.js';
+import type { MemoryType } from './types.js';
 
 export interface FeeModel {
   tier?: string;

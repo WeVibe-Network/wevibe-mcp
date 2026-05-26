@@ -189,8 +189,7 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
 
   const identity = await loadIdentity();
   if (!identity) {
-    console.warn('wevibe-mcp: loadMemberships — no identity in keychain');
-    return [];
+    throw new Error('no identity in keychain');
   }
 
   const { pubkeyHex, headers } = await buildWeVibeSignedAuth();
@@ -202,21 +201,18 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
       { headers },
     );
   } catch (e) {
-    console.warn(`wevibe-mcp: loadMemberships — Hub unavailable (${hubUrl}): ${e}`);
-    return [];
+    throw new Error(`hub unavailable (${hubUrl}): ${e}`);
   }
 
   if (!response.ok) {
-    console.warn(`wevibe-mcp: loadMemberships — Hub returned ${response.status} for member orgs list`);
-    return [];
+    throw new Error(`hub returned ${response.status} for member orgs list`);
   }
 
   let data: HubMemberOrgsResponse;
   try {
     data = await response.json() as HubMemberOrgsResponse;
   } catch {
-    console.warn('wevibe-mcp: loadMemberships — malformed Hub response');
-    return [];
+    throw new Error('malformed hub response');
   }
 
   const memberships: OrgMembership[] = [];

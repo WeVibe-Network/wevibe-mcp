@@ -132,17 +132,15 @@ describe('loadMemberships', () => {
     expect(envelopeOpts?.headers?.['Authorization']).toMatch(/^WeVibe-Signed pubkey=.+,timestamp=.+,signature=.+$/);
   });
 
-  it('returns empty array on fetch failure (graceful degradation)', async () => {
+  it('throws on fetch failure instead of silently degrading', async () => {
     const { loadMemberships } = await import('../src/org-client.js');
 
     mockFetch.mockRejectedValueOnce(new Error('network error'));
 
-    const memberships = await loadMemberships('http://localhost:4440');
-
-    expect(memberships).toEqual([]);
+    await expect(loadMemberships('http://localhost:4440')).rejects.toThrow(/hub unavailable/);
   });
 
-  it('returns empty array when Hub returns non-OK status', async () => {
+  it('throws when Hub returns non-OK status', async () => {
     const { loadMemberships } = await import('../src/org-client.js');
 
     mockFetch.mockResolvedValueOnce({
@@ -150,12 +148,10 @@ describe('loadMemberships', () => {
       status: 500,
     });
 
-    const memberships = await loadMemberships('http://localhost:4440');
-
-    expect(memberships).toEqual([]);
+    await expect(loadMemberships('http://localhost:4440')).rejects.toThrow(/hub returned 500/);
   });
 
-  it('returns empty array when response JSON is malformed', async () => {
+  it('throws when response JSON is malformed', async () => {
     const { loadMemberships } = await import('../src/org-client.js');
 
     mockFetch.mockResolvedValueOnce({
@@ -163,9 +159,7 @@ describe('loadMemberships', () => {
       json: async () => { throw new Error('parse error'); },
     });
 
-    const memberships = await loadMemberships('http://localhost:4440');
-
-    expect(memberships).toEqual([]);
+    await expect(loadMemberships('http://localhost:4440')).rejects.toThrow(/malformed hub response/);
   });
 
   it('still returns membership when envelope fetch fails', async () => {

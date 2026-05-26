@@ -155,7 +155,13 @@ server.tool(
       return { content: [{ type: 'text', text: 'WeVibe: no identity found in keychain.' }] };
     }
 
-    const memberships = await loadMemberships(HUB_URL).catch(() => []);
+    let memberships: Awaited<ReturnType<typeof loadMemberships>>;
+    try {
+      memberships = await loadMemberships(HUB_URL);
+    } catch (e) {
+      return { content: [{ type: 'text', text: `WeVibe: failed to load org memberships from hub — ${e}` }] };
+    }
+
     if (memberships.length === 0) {
       return { content: [{ type: 'text', text: 'WeVibe: not connected to any org.' }] };
     }
@@ -565,7 +571,7 @@ async function main() {
       const prePubkeyHex = getPrePublicKeyHex();
       const memberPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
 
-      const memberships = await loadMemberships(HUB_URL).catch(() => []);
+      const memberships = await loadMemberships(HUB_URL);
       if (memberships.length === 0) {
         console.warn('wevibe-mcp: No org membership found. Use the wevibe_setup_org tool to create an org, or ask your org leader for an invitation.');
         console.warn('wevibe-mcp: Hub URL: ' + HUB_URL);

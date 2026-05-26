@@ -5,7 +5,6 @@ import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership, MemoryType } from './types.js';
 import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonical.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,9 +57,16 @@ export interface StegFinding {
 
 function getStegScanBin(): string {
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '../..');
-  const scriptPath = join(projectRoot, 'scripts/wevibe-steg-scan.py');
-  if (existsSync(scriptPath)) return scriptPath;
   return join(projectRoot, 'scripts/wevibe-steg-scan.py');
+}
+
+async function parseHttpError(response: Response): Promise<string> {
+  try {
+    const errBody = await response.json() as { error?: string };
+    return errBody.error ?? `HTTP ${response.status}`;
+  } catch {
+    return `HTTP ${response.status}`;
+  }
 }
 
 export function scanForSteganography(text: string): StegScanResult | null {
@@ -216,14 +222,7 @@ export async function approveSubmission(
   );
 
   if (!response.ok) {
-    let errMsg: string;
-    try {
-      const errBody = await response.json() as { error?: string };
-      errMsg = errBody.error ?? `HTTP ${response.status}`;
-    } catch {
-      errMsg = `HTTP ${response.status}`;
-    }
-    return { status: 'error', error: errMsg };
+    return { status: 'error', error: await parseHttpError(response) };
   }
 
   return { status: 'approved', similarMemories: [] };
@@ -269,14 +268,7 @@ export async function denySubmission(
   );
 
   if (!response.ok) {
-    let errMsg: string;
-    try {
-      const errBody = await response.json() as { error?: string };
-      errMsg = errBody.error ?? `HTTP ${response.status}`;
-    } catch {
-      errMsg = `HTTP ${response.status}`;
-    }
-    return { status: 'error', error: errMsg };
+    return { status: 'error', error: await parseHttpError(response) };
   }
 
   return { status: 'denied' };
@@ -319,14 +311,7 @@ export async function voteOnSubmission(
   );
 
   if (!response.ok) {
-    let errMsg: string;
-    try {
-      const errBody = await response.json() as { error?: string };
-      errMsg = errBody.error ?? `HTTP ${response.status}`;
-    } catch {
-      errMsg = `HTTP ${response.status}`;
-    }
-    return { status: 'error', error: errMsg, votes: 0, required_approvals: 0, ready: false };
+    return { status: 'error', error: await parseHttpError(response), votes: 0, required_approvals: 0, ready: false };
   }
 
   const result = await response.json() as { status: string; votes: number; required_approvals: number; ready: boolean };
