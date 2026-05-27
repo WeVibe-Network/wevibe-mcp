@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import * as crypto from 'node:crypto';
 import { generateDek, encryptSymmetric, sealToPubkey, sign } from './crypto.js';
 import { loadIdentity } from './key-store.js';
 import { storePendingDek } from './pending-vault.js';
@@ -69,11 +69,19 @@ export async function submitMemory(
   }
 
   const dek = generateDek();
-  const ciphertext = encryptSymmetric(new Uint8Array(Buffer.from(sanitizedNotes, 'utf-8')), dek);
+  const plaintextBytes = Buffer.from(sanitizedNotes, 'utf-8');
+  const salt = crypto.randomBytes(32);
+  const plaintextHash = crypto
+    .createHash('sha256')
+    .update(Buffer.concat([salt, plaintextBytes]))
+    .digest('hex');
+  const ciphertext = encryptSymmetric(new Uint8Array(plaintextBytes), dek);
   const wrappedDekMod = sealToPubkey(dek, membership.modPubkey);
+  const ciphertextHash = crypto.createHash('sha256').update(Buffer.from(ciphertext)).digest('hex');
+  const wrappedDekHash = crypto.createHash('sha256').update(Buffer.from(wrappedDekMod)).digest('hex');
 
   const hashInput = Buffer.concat([Buffer.from(ciphertext), Buffer.from(wrappedDekMod)]);
-  const submissionHashRaw = createHash('sha256').update(hashInput).digest();
+  const submissionHashRaw = crypto.createHash('sha256').update(hashInput).digest();
 
   const identity = await loadIdentity();
   if (!identity) {
@@ -89,6 +97,10 @@ export async function submitMemory(
     submissionHash,
     contributorPubkeyHex,
     memoryType,
+    ciphertextHash,
+    plaintextHash,
+    salt.toString('hex'),
+    wrappedDekHash,
   );
   const sig = sign(identity.edPrivkey, canonical);
 
@@ -98,6 +110,10 @@ export async function submitMemory(
     ciphertext: Buffer.from(ciphertext).toString('hex'),
     wrapped_dek_mod: Buffer.from(wrappedDekMod).toString('hex'),
     submission_hash: submissionHash,
+    plaintext_hash: plaintextHash,
+    salt: salt.toString('hex'),
+    ciphertext_hash: ciphertextHash,
+    wrapped_dek_hash: wrappedDekHash,
     contributor_pubkey: contributorPubkeyHex,
     contributor_sig: Buffer.from(sig).toString('hex'),
     memory_type: memoryType,

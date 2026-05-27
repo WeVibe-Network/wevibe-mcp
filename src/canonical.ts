@@ -99,14 +99,22 @@ export function submitMemoryMessage(
   submissionHash: string,
   contributorPubkey: string,
   memoryType: MemoryType,
+  ciphertextHash: string,
+  plaintextHash: string,
+  salt: string,
+  wrappedDekHash: string,
 ): Uint8Array {
   const msg = [
     'wevibe.submit_memory.v1',
+    `ciphertext_hash:${ciphertextHash}`,
     `contributor_pubkey:${contributorPubkey}`,
     `epoch_id:${epochId}`,
     `memory_type:${memoryType}`,
     `org_id:${orgId}`,
+    `plaintext_hash:${plaintextHash}`,
+    `salt:${salt}`,
     `submission_hash:${submissionHash}`,
+    `wrapped_dek_hash:${wrappedDekHash}`,
   ].join('\n');
   return new TextEncoder().encode(msg);
 }

@@ -258,3 +258,72 @@ This is separate from the Ed25519 identity flow (which uses `wevibe-network` ser
 - Multiple agents can connect to a single wevibe-mcp daemon; concurrency handled via async streams.
 - Guard gRPC connections pooled to avoid per-request process spawn overhead.
 - Serve attestation queue flushes in batches (configurable `attestationBatchSize`).
+
+## Signed Canonical Body — Contribution Path (CO-029)
+
+### `src/canonical.ts`
+
+`submitMemoryMessage(orgId, epochId, submissionHash, contributorPubkey, memoryType, ciphertextHash, plaintextHash, salt, wrappedDekHash)` builds the 9-field canonical body. The 10-line layout starts with the domain tag `wevibe.submit_memory.v1` followed by alphabetically-ordered key/value pairs:
+
+```
+wevibe.submit_memory.v1
+ciphertext_hash:<hex>
+contributor_pubkey:<hex>
+epoch_id:<int>
+memory_type:<correct_implementation|negative_signal>
+org_id:<string>
+plaintext_hash:<hex>
+salt:<hex>
+submission_hash:<hex>
+wrapped_dek_hash:<hex>
+```
+
+Byte-identical to the hub `SubmitMemoryMessage` (Go) and the dashboard `submitMemoryCanonical` (WebCrypto TS). Locked by `wevibe-server/wevibe-hub/internal/verify/canonical_test.go::TestCanonicalBodyCrossLanguageConformance`.
+
+### `src/contribution.ts` — hash + encrypt + sign block
+
+The contribution flow now generates four hash commitments before signing:
+
+```ts
+const dek = generateDek();
+const plaintextBytes = Buffer.from(sanitizedNotes, 'utf-8');
+const salt = crypto.randomBytes(32);                             // 32 bytes
+const plaintextHash = sha256(Buffer.concat([salt, plaintextBytes]));  // salt PREPENDS
+const ciphertext = encryptSymmetric(plaintextBytes, dek);
+const wrappedDekMod = sealToPubkey(dek, membership.modPubkey);
+const ciphertextHash = sha256(ciphertext);
+const wrappedDekHash = sha256(wrappedDekMod);
+const submissionHash = sha256(Buffer.concat([ciphertext, wrappedDekMod]));
+
+const canonical = submitMemoryMessage(
+  orgId, membership.currentEpoch, submissionHash, contributorPubkeyHex,
+  memoryType, ciphertextHash, plaintextHash, salt.toString('hex'), wrappedDekHash,
+);
+const sig = sign(identity.edPrivkey, canonical);
+```
+
+The salt **prepends** the plaintext bytes before hashing (locked by D-VR-3). Reversing the order silently invalidates Tier 2 verification at the chain.
+
+### Submit payload
+
+The outbound payload to `POST /v1/orgs/{orgID}/submit` carries the four new fields:
+
+```ts
+{
+  org_id, epoch_id,
+  ciphertext, wrapped_dek_mod, submission_hash,
+  plaintext_hash, salt, ciphertext_hash, wrapped_dek_hash,   // CO-029
+  contributor_pubkey, contributor_sig,
+  memory_type, stack_hint, attestation,
+}
+```
+
+The hub validates each hash field is 64 hex chars and re-derives `ciphertext_hash`, `wrapped_dek_hash`, and `submission_hash` from the bytes before persisting. A mismatch is rejected with 400. The hub does NOT receive plaintext.
+
+### Crypto primitives
+
+- Ed25519 sign via `wevibe-sdk` (Rust → Node binding) — same as previously.
+- SHA-256 via `node:crypto.createHash('sha256')`.
+- Random salt via `node:crypto.randomBytes(32)`.
+
+No new dependencies; the contribution path uses primitives that were already imported.
