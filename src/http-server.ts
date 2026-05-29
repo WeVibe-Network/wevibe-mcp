@@ -192,6 +192,7 @@ interface ServeRequestBody {
   nullifier: string;
   model_id?: string;
   turn_count?: number;
+  matched_keywords: string[];
 }
 
 async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -218,6 +219,11 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  if (!Array.isArray(body.matched_keywords) || body.matched_keywords.length === 0) {
+    jsonResponse(res, 400, { error: 'matched_keywords is required, non-empty (D-4.2 Implementation Clarifications)' });
+    return;
+  }
+
   const identity = await loadIdentity();
   if (!identity) {
     jsonResponse(res, 500, { status: 'error', error: 'identity not found' });
@@ -235,6 +241,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     nullifier: body.nullifier,
     model_id: body.model_id ?? 'unknown',
     turn_count: body.turn_count ?? 0,
+    matched_keywords: body.matched_keywords,
   };
 
   let authResult: { pubkeyHex: string; headers: Record<string, string> };

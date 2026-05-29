@@ -117,6 +117,7 @@ describe('POST /v1/serves', () => {
       nullifier: 'nullifier-abc',
       model_id: 'test-model',
       turn_count: 5,
+      matched_keywords: ['some-kw'],
     }));
 
     const res = createMockResponse();
@@ -135,6 +136,7 @@ describe('POST /v1/serves', () => {
       org_id: 'org-123',
       memory_hash: 'Qmhash123456',
       nullifier: 'nullifier-abc',
+      matched_keywords: ['some-kw'],
     }));
 
     const res = createMockResponse();
@@ -153,6 +155,7 @@ describe('POST /v1/serves', () => {
       org_id: 'org-123',
       memory_hash: 'Qmhash123456',
       nullifier: 'nullifier-abc',
+      matched_keywords: ['some-kw'],
     }));
 
     const res = createMockResponse();
@@ -170,6 +173,7 @@ describe('POST /v1/serves', () => {
     }, JSON.stringify({
       memory_hash: 'Qmhash123456',
       nullifier: 'nullifier-abc',
+      matched_keywords: ['some-kw'],
     }));
 
     const res = createMockResponse();
@@ -194,6 +198,7 @@ describe('POST /v1/serves', () => {
       org_id: 'org-123',
       memory_hash: 'Qmhash123456',
       nullifier: 'nullifier-abc',
+      matched_keywords: ['some-kw'],
     }));
 
     const res = createMockResponse();
@@ -201,5 +206,24 @@ describe('POST /v1/serves', () => {
 
     const parsed = parseResponse(res);
     expect(parsed.status).toBe(502);
+  });
+
+  it('rejects empty matched_keywords with 400', async () => {
+    const req = createMockRequest('POST', '/v1/serves', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: 'Qmhash123456',
+      nullifier: 'nullifier-abc',
+      matched_keywords: [],
+    }));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+
+    const parsed = parseResponse(res);
+    expect(parsed.status).toBe(400);
+    expect((parsed.body as { error: string }).error).toContain('matched_keywords');
   });
 });

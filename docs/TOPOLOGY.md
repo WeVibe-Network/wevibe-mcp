@@ -17,6 +17,16 @@ Plugin (OpenCode) --+-- HTTP Transport -- wevibe-mcp HTTP API (127.0.0.1:4450, B
                     +-- File-based queues (wevibe-guard-queue.json, etc.)
 ```
 
+## Sprint 32 — CO-033b Serve forwarding contract
+
+`POST /v1/serves` in `src/http-server.ts` is strict for matched-keyword ingress:
+
+- Requires `matched_keywords` as a non-empty string array.
+- Rejects missing/empty sets with HTTP 400 before hub round-trip.
+- Forwards `matched_keywords` unchanged to hub `POST /v1/orgs/{orgID}/serves`.
+
+This keeps MCP on the same one-path contract as hub and chain (`matched_keywords` required, non-empty).
+
 ## Request Traces
 
 ### Recall
