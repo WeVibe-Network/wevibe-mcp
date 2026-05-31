@@ -47,10 +47,8 @@ Rules:
 - Each insight should be 1-2 sentences. Be specific: include exact values, directive names, configuration keys.
 - Include the "context" field: what environment, versions, or conditions this insight applies to.
 - Include "avoid" when there is negative knowledge: what NOT to do, and why. Negative knowledge is often more valuable than positive knowledge.
-- Include "memory_type" and classify every memory as exactly one of:
-  - "correct_implementation"
-  - "negative_signal"
-- Do NOT use any third category (for example: preference, convention, style, taste, or workflow choice).
+- Include "memory_type" and set every memory to exactly:
+  - "memory"
 - For each memory, also assess whether it represents a subjective preference rather than
   verifiable implementation knowledge or an observable negative signal.
   Rate "preference_confidence" from 0.0 to 1.0:
@@ -76,13 +74,13 @@ Output ONLY a JSON array:
     "context": "environment and conditions where this applies",
     "avoid": "what NOT to do and why, or null",
     "stack": ["technology1", "technology2"],
-    "memory_type": "correct_implementation",
+    "memory_type": "memory",
     "preference_confidence": 0.0
   }
 ]`;
 
 function isMemoryType(value: unknown): value is MemoryCandidate['memory_type'] {
-  return value === 'correct_implementation' || value === 'negative_signal';
+  return value === 'memory';
 }
 
 function getExtractionPrompt(): string {

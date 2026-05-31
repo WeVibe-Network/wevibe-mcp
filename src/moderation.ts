@@ -191,9 +191,9 @@ export async function approveSubmission(
   const moderatorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
   const memoryType = item.memory_type;
 
-  if (memoryType !== 'correct_implementation' && memoryType !== 'negative_signal') {
-    return { status: 'error', error: 'memory_type is required for approval' };
-  }
+	if (memoryType !== 'memory') {
+		return { status: 'error', error: 'memory_type is required for approval' };
+	}
 
   const canonical = approveSubmissionMessageSimple(
     orgId,

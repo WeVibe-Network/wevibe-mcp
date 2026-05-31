@@ -367,13 +367,13 @@ srv.tool(
       };
     }
 
-    const listData = await listResp.json() as {
-      memories: Array<{
-        cid: string;
-        org_id: string;
-        epoch_id: number;
-        memory_type: 'correct_implementation' | 'negative_signal';
-        wrapped_dek_enc: string;
+	const listData = await listResp.json() as {
+		memories: Array<{
+			cid: string;
+			org_id: string;
+			epoch_id: number;
+			memory_type: 'memory';
+			wrapped_dek_enc: string;
         keywords?: Array<{ keyword: string; weight: number }>;
         content_flags?: string[];
         retrieval_count?: number;
@@ -453,12 +453,12 @@ srv.tool(
 srv.tool(
   'wevibe_author_memory',
   'Leader-only administrative tool; not a normal contributor path. Authors a new memory directly and immediately approves it through the full pipeline (encryption, keyword extraction, embedding, indexing).',
-  {
-    content: z.string().describe('The memory content — a specific technical insight'),
-    stack: z.array(z.string()).optional().describe('Technology tags (e.g. ["rust", "qdrant"])'),
-    org_id: z.string().optional(),
-    memory_type: z.enum(['correct_implementation', 'negative_signal']).optional(),
-  },
+	{
+		content: z.string().describe('The memory content — a specific technical insight'),
+		stack: z.array(z.string()).optional().describe('Technology tags (e.g. ["rust", "qdrant"])'),
+		org_id: z.string().optional(),
+		memory_type: z.enum(['memory']).optional(),
+	},
   async (args) => {
     await initCrypto();
     const membership = await requireMembership(args.org_id);
@@ -473,10 +473,10 @@ srv.tool(
       args.content,
       membership.orgId,
       HUB_URL,
-      membership,
-      args.memory_type ?? 'correct_implementation',
-      args.stack ?? [],
-    );
+		membership,
+		args.memory_type ?? 'memory',
+		args.stack ?? [],
+	);
 
     if (submitResult.status !== 'pending' || !submitResult.submissionHash) {
       return {

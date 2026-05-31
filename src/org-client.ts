@@ -377,6 +377,7 @@ export interface CreateOrgParams {
   orgName: string;
   domain: string;
   hubUrl: string;
+  leaderWallet?: string;
   feeModel?: FeeModel | null;
 }
 
@@ -399,6 +400,15 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
   const orgId = randomUUID();
   const leaderPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
   const leaderX25519Hex = Buffer.from(identity.xPubkey).toString('hex');
+  const leaderWallet = (params.leaderWallet ?? process.env.WEVIBE_LEADER_WALLET ?? '').trim();
+
+  if (leaderWallet.length === 0) {
+    return {
+      orgId,
+      status: 'error',
+      error: 'leader wallet is required (set createOrg leaderWallet or WEVIBE_LEADER_WALLET)',
+    };
+  }
 
   const masterKey = generateDek();
   const epoch0Keys = deriveEpochKeys(masterKey, 0);
@@ -434,6 +444,7 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
     org_id: orgId,
     leader_pubkey: leaderPubkeyHex,
     leader_x25519_pubkey: leaderX25519Hex,
+    leader_wallet: leaderWallet,
     org_name: params.orgName,
     domain: params.domain,
     fee_model: feeModel,

@@ -93,7 +93,7 @@ export type ContentFlag =
   | 'config'
   | 'connection_string';
 
-export type MemoryType = 'correct_implementation' | 'negative_signal';
+export type MemoryType = 'memory';
 
 export interface BufferData {
   session_id: string;

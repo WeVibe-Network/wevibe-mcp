@@ -46,10 +46,10 @@ function requireStringField(value: unknown, fieldName: string): string {
 }
 
 function requireMemoryType(value: unknown): MemoryType {
-  if (value === 'correct_implementation' || value === 'negative_signal') {
-    return value;
-  }
-  throw new Error('memory result missing or invalid memory_type');
+	if (value === 'memory') {
+		return value;
+	}
+	throw new Error('memory result missing or invalid memory_type');
 }
 
 export function deserializeMemoryResult(raw: RawMemoryResult): MemoryResult {

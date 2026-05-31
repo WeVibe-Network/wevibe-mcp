@@ -257,9 +257,9 @@ server.prompt(
 // the plugin filters by memory_type before showing the approval UI. See
 // DECISIONS.md D-11.5.
 server.tool(
-  'wevibe_set_risk_appetite',
-  "Set the consumer's risk appetite for memory recall. 'lowest' surfaces only negative_signal memories (warnings/pitfalls). 'neutral' surfaces both correct_implementation and negative_signal memories. This affects which memories are shown for approval before agent injection.",
-  {
+	'wevibe_set_risk_appetite',
+	"Set the consumer's risk appetite for memory recall. 'lowest' applies the strictest recall filter and 'neutral' applies the default recall filter. This affects which memories are shown for approval before agent injection.",
+	{
     value: z.enum(['lowest', 'neutral']).optional().describe('Risk appetite value: "lowest" or "neutral". Omit to query current value.'),
   },
   async (args) => {
