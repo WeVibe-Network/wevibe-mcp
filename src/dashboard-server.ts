@@ -8,11 +8,11 @@
  * so the dashboard can use wevibe-mcp as its crypto + AI backend.
  *
  * Usage:
- *   node dist/dashboard-server.js [--port 4450]
+ *   node dist/dashboard-server.js [--port 4451]
  *
  * Environment:
  *   WEVIBE_HUB_URL           Hub URL (default: http://localhost:4440)
- *   WEVIBE_DASHBOARD_PORT    Server port (default: 4450)
+ *   WEVIBE_DASHBOARD_PORT    Server port (default: 4451)
  *   WEVIBE_OLLAMA_URL        Ollama URL (default: http://localhost:11434)
  *   WEVIBE_EXTRACTION_MODEL  LLM model for keyword extraction (default: qwen3:4b)
  */
@@ -54,7 +54,7 @@ function resolvePort(): number {
     const parsed = parseInt(process.env.WEVIBE_DASHBOARD_PORT, 10);
     if (!isNaN(parsed) && parsed > 0) return parsed;
   }
-  return 4450;
+  return 4451;
 }
 
 const PORT = resolvePort();
