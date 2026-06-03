@@ -1,9 +1,8 @@
 import { decryptSymmetric, openEnvelope, sign, generateDek, deriveEpochKeys, sealToPubkey, generateIdentity } from './crypto.js';
 import { loadIdentity, storeKeyEnvelope, loadKeyEnvelope } from './key-store.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex, getPreSecretKeyHex } from './auth.js';
-import { createOrgMessage, inviteMemberMessage, rotateEpochMessage, type FeeModel } from './canonical.js';
+import { feeModelHash, inviteMemberMessage, rotateEpochMessage, type FeeModel } from './canonical.js';
 import { generateRecoveryPhrase } from './recovery.js';
-import { randomUUID } from 'node:crypto';
 import { isVaultUnlocked, addOrgToVault, getVaultCache, updateVaultEntry, type VaultEntry } from './vault.js';
 import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership } from './types.js';
@@ -397,14 +396,13 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
     return { orgId: '', status: 'error', error: 'no identity in keychain' };
   }
 
-  const orgId = randomUUID();
   const leaderPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
   const leaderX25519Hex = Buffer.from(identity.xPubkey).toString('hex');
   const leaderWallet = (params.leaderWallet ?? process.env.WEVIBE_LEADER_WALLET ?? '').trim();
 
   if (leaderWallet.length === 0) {
     return {
-      orgId,
+      orgId: '',
       status: 'error',
       error: 'leader wallet is required (set createOrg leaderWallet or WEVIBE_LEADER_WALLET)',
     };
@@ -428,20 +426,26 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
   const modEnvelopeB64 = Buffer.from(sealedMod).toString('base64');
 
   if (!sealedMod || sealedMod.length === 0) {
-    return { orgId, status: 'error', error: 'mod_envelope generation failed — cannot create org without leader mod envelope' };
+    return { orgId: '', status: 'error', error: 'mod_envelope generation failed — cannot create org without leader mod envelope' };
   }
 
   const feeModel = params.feeModel ?? null;
-  const canonical = createOrgMessage(
-    orgId, leaderPubkeyHex, leaderX25519Hex,
-    params.orgName, params.domain,
-    encEnvelopeB64, searchEnvelopeB64, modEnvelopeB64, pkModHex, feeModel,
-  );
+  const canonical = new TextEncoder().encode([
+    'wevibe.create_org.v1',
+    `domain:${params.domain}`,
+    `enc_envelope:${encEnvelopeB64}`,
+    `fee_model_hash:${feeModelHash(feeModel)}`,
+    `leader_pubkey:${leaderPubkeyHex}`,
+    `leader_x25519_pubkey:${leaderX25519Hex}`,
+    `mod_envelope:${modEnvelopeB64}`,
+    `org_name:${params.orgName}`,
+    `pk_mod:${pkModHex}`,
+    `search_envelope:${searchEnvelopeB64}`,
+  ].join('\n'));
   const sig = sign(identity.edPrivkey, canonical);
   const sigHex = Buffer.from(sig).toString('hex');
 
   const payload = {
-    org_id: orgId,
     leader_pubkey: leaderPubkeyHex,
     leader_x25519_pubkey: leaderX25519Hex,
     leader_wallet: leaderWallet,
@@ -463,7 +467,7 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    return { orgId, status: 'error', error: `hub unavailable: ${e}` };
+    return { orgId: '', status: 'error', error: `hub unavailable: ${e}` };
   }
 
   if (!response.ok) {
@@ -474,7 +478,7 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
     } catch {
       errMsg = `HTTP ${response.status}`;
     }
-    return { orgId, status: 'error', error: errMsg };
+    return { orgId: '', status: 'error', error: errMsg };
   }
 
   let responseBody: {
@@ -489,10 +493,14 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
       epoch_pk?: string;
     };
   } catch {
-    return { orgId, status: 'error', error: 'create-org response missing JSON body' };
+    return { orgId: '', status: 'error', error: 'create-org response missing JSON body' };
   }
 
-  const createdOrgId = responseBody.org_id ?? orgId;
+  if (typeof responseBody.org_id !== 'string' || responseBody.org_id.length === 0) {
+    return { orgId: '', status: 'error', error: 'create-org response missing org_id' };
+  }
+
+  const createdOrgId = responseBody.org_id;
 
   if (typeof responseBody.epoch_sk !== 'string' || responseBody.epoch_sk.length === 0) {
     return { orgId: createdOrgId, status: 'error', error: 'create-org response missing epoch_sk' };

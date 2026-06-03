@@ -66,7 +66,7 @@ server.tool(
   'Create a new WeVibe Network org when no membership exists. Generates identity if needed, provisions the org on the hub, and returns the recovery phrase. The recovery phrase must be shown to the user immediately.',
   {
     org_name: z.string().describe('Human-readable org name (e.g. "Acme Engineering")'),
-    domain: z.string().describe('Org domain (e.g. "acme.com")'),
+    domain: z.string().describe('Org domain of expertise/specialization (e.g. "React, Next.js, TypeScript")'),
   },
   async (args) => {
     await initCrypto();
