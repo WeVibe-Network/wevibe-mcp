@@ -2,12 +2,12 @@ process.env.WEVIBE_KEYSTORE_TEST = '1';
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { SessionTokenStore, _setTokenStoreForTests } from '../../src/session-token.js';
-import { clearTestStore, storeIdentity } from '../../src/key-store.js';
+import { clearTestStore, storeIdentitySeed, generateIdentitySeed } from '../../src/key-store.js';
 import { handleRequest } from '../../src/http-server.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 const testPath = join(tmpdir(), `wevibe-mcp-serves-test-${randomUUID()}`, 'mcp-session-token');
 const testStore = new SessionTokenStore(testPath);
@@ -80,18 +80,7 @@ describe('POST /v1/serves', () => {
     validToken = testStore.getToken()!;
     clearTestStore();
 
-    const identity = {
-      edPrivkey: randomBytes(32),
-      edPubkey: randomBytes(32),
-      xPrivkey: randomBytes(32),
-      xPubkey: randomBytes(32),
-    };
-    await storeIdentity({
-      edPrivkeyB64: Buffer.from(identity.edPrivkey).toString('base64'),
-      edPubkeyB64: Buffer.from(identity.edPubkey).toString('base64'),
-      xPrivkeyB64: Buffer.from(identity.xPrivkey).toString('base64'),
-      xPubkeyB64: Buffer.from(identity.xPubkey).toString('base64'),
-    });
+    await storeIdentitySeed(generateIdentitySeed());
 
     vi.resetAllMocks();
   });

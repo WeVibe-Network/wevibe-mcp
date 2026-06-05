@@ -2,8 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { initCrypto, decryptSymmetric, generateIdentity } from './crypto.js';
-import { loadIdentity, storeIdentity, loadKeyEnvelope } from './key-store.js';
+import { initCrypto, decryptSymmetric } from './crypto.js';
+import { loadIdentity, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope } from './key-store.js';
 import { loadMemberships, createOrg, registerPrePubkey } from './org-client.js';
 import { deserializeMemoryResult } from './deserialize.js';
 import { add_to_blacklist, is_blacklisted } from './blacklist.js';
@@ -73,13 +73,8 @@ server.tool(
 
     let identity = await loadIdentity();
     if (!identity) {
-      const newIdentity = generateIdentity();
-      await storeIdentity({
-        edPrivkeyB64: Buffer.from(newIdentity.edPrivkey).toString('base64'),
-        edPubkeyB64: Buffer.from(newIdentity.edPubkey).toString('base64'),
-        xPrivkeyB64: Buffer.from(newIdentity.xPrivkey).toString('base64'),
-        xPubkeyB64: Buffer.from(newIdentity.xPubkey).toString('base64'),
-      });
+      const seed = generateIdentitySeed();
+      await storeIdentitySeed(seed);
       identity = await loadIdentity();
       if (!identity) {
         return { content: [{ type: 'text', text: 'WeVibe: failed to create identity.' }] };

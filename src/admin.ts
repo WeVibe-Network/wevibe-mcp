@@ -9,6 +9,8 @@
  *
  * Usage:
  *   wevibe-admin setup-identity
+ *   wevibe-admin export-identity
+ *   wevibe-admin import-identity --phrase "24 word phrase" [--force]
  *   wevibe-admin create-org --name "My Org" --domain example.com
  *   wevibe-admin orgs
  *   wevibe-admin invite --org <org_id> --pubkey <hex> --x25519 <hex> --pre-pubkey <hex> --role member|moderator
@@ -29,8 +31,8 @@
  *   wevibe-admin recover-threshold --org <org_id> --share <hex>
  */
 
-import { initCrypto, generateIdentity, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric } from './crypto.js';
-import { loadIdentity, storeIdentity, loadKeyEnvelope, storeKeyEnvelope } from './key-store.js';
+import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed } from './crypto.js';
+import { loadIdentity, loadIdentitySeed, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope, storeKeyEnvelope } from './key-store.js';
 import { generateRecoveryPhrase, reconstructMasterKey, splitMasterKey, reconstructFromShares } from './recovery.js';
 import { loadMemberships, createOrg, inviteMember, rotateEpoch } from './org-client.js';
 import { fetchPendingQueue, decryptPendingItem, approveSubmission, denySubmission, scanForSteganography } from './moderation.js';
@@ -108,17 +110,63 @@ async function cmdSetupIdentity() {
     console.log(`  X25519:  ${uint8ArrayToHex(existing.xPubkey)}`);
     return;
   }
-  const identity = generateIdentity();
-  await storeIdentity({
-    edPrivkeyB64: Buffer.from(identity.edPrivkey).toString('base64'),
-    edPubkeyB64: Buffer.from(identity.edPubkey).toString('base64'),
-    xPrivkeyB64: Buffer.from(identity.xPrivkey).toString('base64'),
-    xPubkeyB64: Buffer.from(identity.xPubkey).toString('base64'),
-  });
+  const seed = generateIdentitySeed();
+  await storeIdentitySeed(seed);
+  const identity = await loadIdentity();
+  if (!identity) {
+    die('failed to create identity');
+  }
   console.log(`Identity created.`);
   console.log(`  Ed25519: ${uint8ArrayToHex(identity.edPubkey)}`);
   console.log(`  X25519:  ${uint8ArrayToHex(identity.xPubkey)}`);
   console.log(`\nShare these public keys with an org leader to receive an invitation.`);
+}
+
+async function cmdExportIdentity() {
+  const seed = await loadIdentitySeed();
+  if (!seed) {
+    die('No identity found. Run setup-identity first.');
+  }
+
+  const phrase = seedToMnemonic(seed);
+  console.log(`\n╔══════════════════════════════════════════════════════════════╗`);
+  console.log(`║  IDENTITY RECOVERY PHRASE — WRITE IT DOWN, KEEP IT SECRET  ║`);
+  console.log(`╠══════════════════════════════════════════════════════════════╣`);
+  console.log(`║  ${phrase}`);
+  console.log(`╠══════════════════════════════════════════════════════════════╣`);
+  console.log(`║  WARNING: Anyone with this phrase controls this identity    ║`);
+  console.log(`║  and can pair a new device to it.                           ║`);
+  console.log(`╚══════════════════════════════════════════════════════════════╝`);
+}
+
+async function cmdImportIdentity(flags: Record<string, string>) {
+  const phrase = requireFlag(flags, 'phrase');
+
+  const existing = await loadIdentity();
+  if (existing && flags['force'] !== 'true') {
+    die('An identity already exists. Re-run with --force to overwrite it (the current identity will be replaced).');
+  }
+
+  let seed: Uint8Array;
+  try {
+    seed = mnemonicToSeed(phrase);
+  } catch (e) {
+    die(`Invalid recovery phrase: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  if (seed.length !== 32) {
+    die('Recovery phrase did not yield a 32-byte seed.');
+  }
+
+  await storeIdentitySeed(seed);
+  const identity = await loadIdentity();
+  if (!identity) {
+    die('Failed to restore identity from phrase.');
+  }
+
+  console.log('Identity restored.');
+  console.log(`  Ed25519: ${uint8ArrayToHex(identity.edPubkey)}`);
+  console.log(`  X25519:  ${uint8ArrayToHex(identity.xPubkey)}`);
 }
 
 async function cmdCreateOrg(flags: Record<string, string>) {
@@ -432,6 +480,8 @@ function printHelp() {
 
 Commands:
   setup-identity                  Generate Ed25519 + X25519 keypair
+  export-identity                 Show this identity's 24-word recovery/pairing phrase
+  import-identity --phrase [--force]   Restore/pair an identity from a 24-word phrase
   create-org --name --domain      Create a new org
   orgs                            List org memberships
   invite --org --pubkey --x25519 --pre-pubkey [--role]   Invite a member
@@ -467,6 +517,8 @@ async function main() {
 
   switch (command) {
     case 'setup-identity': return cmdSetupIdentity();
+    case 'export-identity': return cmdExportIdentity();
+    case 'import-identity': return cmdImportIdentity(flags);
     case 'create-org': return cmdCreateOrg(flags);
     case 'orgs': return cmdOrgs();
     case 'invite': return cmdInvite(flags);

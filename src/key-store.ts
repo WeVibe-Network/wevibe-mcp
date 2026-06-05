@@ -2,8 +2,23 @@ import { randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { generateIdentityFromSeed } from './crypto.js';
+import { requireBiometric } from './biometric.js';
+import { getKeychainItem, setKeychainItem, deleteKeychainItem } from './keychain.js';
 
 const SERVICE = 'wevibe-network';
+const IDENTITY_SEED_ACCOUNT = 'identity-seed-v1';
+
+type IdentityKeys = {
+  edPrivkey: Uint8Array;
+  edPubkey: Uint8Array;
+  xPrivkey: Uint8Array;
+  xPubkey: Uint8Array;
+};
+
+let cachedIdentity: IdentityKeys | null = null;
+
+const isTestMode = () => process.env.WEVIBE_KEYSTORE_TEST === '1';
 
 interface KeytarLike {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -162,7 +177,7 @@ const testStore: KeytarLike = {
 };
 
 export function getStore(): KeytarLike {
-  if (process.env.WEVIBE_KEYSTORE_TEST === '1') {
+  if (isTestMode()) {
     return testStore;
   }
   return fileStore;
@@ -193,18 +208,51 @@ export async function loadKeyEnvelope(orgId: string, envelopeType: string): Prom
   return Buffer.from(stored, 'base64');
 }
 
-export async function storeIdentity(identity: {
-  edPrivkeyB64: string;
-  edPubkeyB64: string;
-  xPrivkeyB64: string;
-  xPubkeyB64: string;
-}): Promise<void> {
-  const store = getStore();
-  await store.setPassword(SERVICE, 'identity-v1', JSON.stringify(identity));
+async function storeIdentitySeedB64(seedB64: string): Promise<void> {
+  if (isTestMode()) {
+    await testStore.setPassword(SERVICE, IDENTITY_SEED_ACCOUNT, seedB64);
+    return;
+  }
+  setKeychainItem(IDENTITY_SEED_ACCOUNT, seedB64);
+}
+
+async function loadIdentitySeedB64(): Promise<string | null> {
+  if (isTestMode()) {
+    return testStore.getPassword(SERVICE, IDENTITY_SEED_ACCOUNT);
+  }
+  return getKeychainItem(IDENTITY_SEED_ACCOUNT);
+}
+
+export function generateIdentitySeed(): Uint8Array {
+  return randomBytes(32);
+}
+
+export async function storeIdentitySeed(seed: Uint8Array): Promise<void> {
+  if (seed.length !== 32) {
+    throw new Error('identity seed must be 32 bytes');
+  }
+
+  await storeIdentitySeedB64(Buffer.from(seed).toString('base64'));
+  cachedIdentity = null;
+}
+
+export async function loadIdentitySeed(): Promise<Uint8Array | null> {
+  const seedB64 = await loadIdentitySeedB64();
+  if (!seedB64) {
+    return null;
+  }
+  if (!isTestMode()) {
+    const biometricOk = await requireBiometric('Export your WeVibe identity recovery phrase');
+    if (!biometricOk) {
+      throw new Error('biometric authentication failed');
+    }
+  }
+  return Buffer.from(seedB64, 'base64');
 }
 
 export function clearTestStore(): void {
   testStoreMap.clear();
+  cachedIdentity = null;
 }
 
 export function getTestStoreSnapshot(): Map<string, string> {
@@ -230,14 +278,28 @@ export async function loadIdentity(): Promise<{
   xPrivkey: Uint8Array;
   xPubkey: Uint8Array;
 } | null> {
-  const store = getStore();
-  const stored = await store.getPassword(SERVICE, 'identity-v1');
-  if (!stored) return null;
-  const parsed = JSON.parse(stored);
-  return {
-    edPrivkey: Buffer.from(parsed.edPrivkeyB64, 'base64'),
-    edPubkey: Buffer.from(parsed.edPubkeyB64, 'base64'),
-    xPrivkey: Buffer.from(parsed.xPrivkeyB64, 'base64'),
-    xPubkey: Buffer.from(parsed.xPubkeyB64, 'base64'),
-  };
+  if (cachedIdentity && !isTestMode()) {
+    return cachedIdentity;
+  }
+
+  const seedB64 = await loadIdentitySeedB64();
+  if (!seedB64) {
+    return null;
+  }
+
+  if (!isTestMode()) {
+    const biometricOk = await requireBiometric('Unlock your WeVibe identity');
+    if (!biometricOk) {
+      throw new Error('biometric authentication failed');
+    }
+  }
+
+  const seed = Buffer.from(seedB64, 'base64');
+  const identity = generateIdentityFromSeed(seed);
+
+  if (!isTestMode()) {
+    cachedIdentity = identity;
+  }
+
+  return identity;
 }

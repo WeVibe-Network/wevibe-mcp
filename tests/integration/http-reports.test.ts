@@ -3,7 +3,7 @@ process.env.WEVIBE_KEYSTORE_TEST = '1';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { SessionTokenStore, _setTokenStoreForTests } from '../../src/session-token.js';
 import { initCrypto, generateIdentity } from '../../src/crypto.js';
-import { clearTestStore, storeIdentity } from '../../src/key-store.js';
+import { clearTestStore, storeIdentitySeed, generateIdentitySeed } from '../../src/key-store.js';
 import type { IncomingMessage } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -78,6 +78,7 @@ describe('POST /v1/reports', () => {
     vi.clearAllMocks();
     fetchMock.mockReset();
     clearTestStore();
+    await storeIdentitySeed(generateIdentitySeed());
     await initCrypto();
 
     const { loadIdentity } = await import('../../src/key-store.js');

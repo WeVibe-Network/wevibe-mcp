@@ -22,7 +22,8 @@ vi.mock('../src/key-store.js', () => {
       xPrivkey: new Uint8Array(32),
       xPubkey: new Uint8Array(32),
     }),
-    storeIdentity: vi.fn().mockResolvedValue(undefined),
+    storeIdentitySeed: vi.fn().mockResolvedValue(undefined),
+    generateIdentitySeed: vi.fn().mockReturnValue(new Uint8Array(32)),
     loadKeyEnvelope: vi.fn().mockResolvedValue(null),
     getStore: vi.fn(() => mockStore),
   };

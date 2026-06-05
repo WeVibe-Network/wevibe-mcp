@@ -56,6 +56,24 @@ export function generateIdentity(): { edPrivkey: Uint8Array; edPubkey: Uint8Arra
   };
 }
 
+export function generateIdentityFromSeed(seed: Uint8Array): { edPrivkey: Uint8Array; edPubkey: Uint8Array; xPrivkey: Uint8Array; xPubkey: Uint8Array } {
+  const result = mod.generate_identity_from_seed(seed);
+  return {
+    edPrivkey: new Uint8Array(result[0]),
+    edPubkey: new Uint8Array(result[1]),
+    xPrivkey: new Uint8Array(result[2]),
+    xPubkey: new Uint8Array(result[3]),
+  };
+}
+
+export function seedToMnemonic(seed: Uint8Array): string {
+  return mod.master_key_to_mnemonic(seed);
+}
+
+export function mnemonicToSeed(phrase: string): Uint8Array {
+  return new Uint8Array(mod.mnemonic_to_master_key(phrase));
+}
+
 export function splitSecret(secret: Uint8Array, threshold: number, totalShares: number): string {
   return mod.splitSecret(secret, threshold, totalShares);
 }
