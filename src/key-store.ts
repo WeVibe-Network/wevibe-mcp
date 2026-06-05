@@ -3,10 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'n
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import type { DelegateIdentity } from './types.js';
-
 const SERVICE = 'wevibe-network';
-const DELEGATE_SERVICE_PREFIX = 'wevibe-delegate';
 
 interface KeytarLike {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -243,43 +240,4 @@ export async function loadIdentity(): Promise<{
     xPrivkey: Buffer.from(parsed.xPrivkeyB64, 'base64'),
     xPubkey: Buffer.from(parsed.xPubkeyB64, 'base64'),
   };
-}
-
-function getDelegateService(walletAddress: string): string {
-  return `${DELEGATE_SERVICE_PREFIX}-${walletAddress}`;
-}
-
-export async function storeDelegateIdentity(
-  walletAddress: string,
-  delegateAddress: string,
-  delegateMnemonic: string,
-  orgId: string
-): Promise<void> {
-  const store = getStore();
-  const identity: DelegateIdentity = { walletAddress, delegateAddress, delegateMnemonic, orgId };
-  await store.setPassword(getDelegateService(walletAddress), 'delegate-identity-v1', JSON.stringify(identity));
-}
-
-export async function getDelegateIdentity(
-  walletAddress: string
-): Promise<DelegateIdentity | null> {
-  const store = getStore();
-  const stored = await store.getPassword(getDelegateService(walletAddress), 'delegate-identity-v1');
-  if (!stored) return null;
-  return JSON.parse(stored) as DelegateIdentity;
-}
-
-export async function hasDelegateIdentity(
-  walletAddress: string
-): Promise<boolean> {
-  const store = getStore();
-  const stored = await store.getPassword(getDelegateService(walletAddress), 'delegate-identity-v1');
-  return stored !== null;
-}
-
-export async function clearDelegateIdentity(
-  walletAddress: string
-): Promise<void> {
-  const store = getStore();
-  await store.deletePassword(getDelegateService(walletAddress), 'delegate-identity-v1');
 }

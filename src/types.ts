@@ -142,10 +142,3 @@ export interface MemorySubmission {
   stack_hint?: string[];
   attestation?: AttestationMetadata;
 }
-
-export interface DelegateIdentity {
-  walletAddress: string;
-  delegateAddress: string;
-  delegateMnemonic: string;
-  orgId: string;
-}
