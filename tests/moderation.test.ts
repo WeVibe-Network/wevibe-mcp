@@ -55,7 +55,7 @@ describe('moderation crypto pipeline', () => {
       ciphertext_hex: Buffer.from(ciphertext).toString('hex'),
       wrapped_dek_mod: Buffer.from(wrappedDekMod).toString('hex'),
       stack_hint: ['typescript'],
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       created_at: new Date().toISOString(),
       status: 'pending',
     };
@@ -80,7 +80,7 @@ describe('moderation crypto pipeline', () => {
       ciphertext_hex: 'deadbeef',
       wrapped_dek_mod: 'deadbeef',
       stack_hint: [],
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       created_at: new Date().toISOString(),
       status: 'pending',
     };
@@ -108,7 +108,7 @@ describe('moderation crypto pipeline', () => {
       ciphertext_hex: Buffer.from(ciphertext).toString('hex'),
       wrapped_dek_mod: Buffer.from(wrappedDekMod).toString('hex'),
       stack_hint: [],
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       created_at: new Date().toISOString(),
       status: 'pending',
     };
@@ -163,7 +163,7 @@ describe('moderation crypto pipeline', () => {
       ciphertext_hex: Buffer.from(ciphertext).toString('hex'),
       wrapped_dek_mod: Buffer.from(wrappedDekMod).toString('hex'),
       stack_hint: ['typescript'],
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       created_at: new Date().toISOString(),
       status: 'pending',
     };
@@ -199,7 +199,7 @@ describe('moderation crypto pipeline', () => {
       String(url).includes('/moderation/') && String(url).includes('/approve'));
     expect(approveCall).toBeDefined();
     const body = JSON.parse(String((approveCall?.[1] as { body?: string })?.body));
-    expect(body.memory_type).toBe('correct_implementation');
+    expect(body.memory_type).toBe('memory');
     expect(body.epoch_id).toBe(0);
     expect(body.signed_by).toBeDefined();
     expect(body.moderator_sig).toBeDefined();

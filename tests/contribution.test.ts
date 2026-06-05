@@ -208,16 +208,27 @@ describe('submitMemory payload', () => {
     expect(result.submissionHash).toBeTruthy();
 
     const cryptoMod = await import('../src/crypto.js');
-    const keyStoreMod = await import('../src/key-store.js');
-    const identity = await keyStoreMod.loadIdentity();
-    const contributorPubkeyHex = Buffer.from(identity!.edPubkey).toString('hex');
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse((opts.body as string) ?? '{}') as {
+      submission_hash: string;
+      contributor_pubkey: string;
+      memory_type: string;
+      ciphertext_hash: string;
+      plaintext_hash: string;
+      salt: string;
+      wrapped_dek_hash: string;
+    };
 
     const expectedCanonical = submitMemoryMessage(
       'test-org',
       membership.currentEpoch,
-      result.submissionHash!,
-      contributorPubkeyHex,
-      'negative_signal',
+      body.submission_hash,
+      body.contributor_pubkey,
+      body.memory_type as any,
+      body.ciphertext_hash,
+      body.plaintext_hash,
+      body.salt,
+      body.wrapped_dek_hash,
     );
 
     expect(cryptoMod.sign).toHaveBeenCalledWith(

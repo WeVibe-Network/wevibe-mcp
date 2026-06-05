@@ -43,6 +43,7 @@ vi.mock('../src/key-store.js', () => ({
 }));
 
 vi.mock('../src/canonical.js', () => ({
+  feeModelHash: vi.fn().mockReturnValue('fee_model_hash_for_tests'),
   createOrgMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-create'))),
   inviteMemberMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-invite'))),
   rotateEpochMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-rotate'))),
@@ -60,6 +61,7 @@ const EPOCH_SK_HEX = '11'.repeat(32);
 const EPOCH_PK_HEX = '02' + '22'.repeat(32);
 const PRE_PUBKEY_HEX = '03' + '33'.repeat(32);
 const INVITEE_X25519_HEX = '44'.repeat(32);
+const TEST_LEADER_WALLET = 'wevibe1testleaderwallet0000000000000000000000';
 
 describe('loadMemberships', () => {
   beforeEach(() => {
@@ -306,6 +308,7 @@ describe('createOrg', () => {
       orgName: 'Test Org',
       domain: 'test.com',
       hubUrl: 'http://localhost:4440',
+      leaderWallet: TEST_LEADER_WALLET,
     });
 
     expect(result.status).toBe('created');
@@ -331,6 +334,7 @@ describe('createOrg', () => {
       orgName: 'Test Org',
       domain: 'test.com',
       hubUrl: 'http://localhost:4440',
+      leaderWallet: TEST_LEADER_WALLET,
     });
 
     expect(result.status).toBe('created');
@@ -342,11 +346,12 @@ describe('createOrg', () => {
     expect(opts.method).toBe('POST');
 
     const body = JSON.parse(opts.body);
-    expect(body.org_id).toBe('test-uuid-1234');
+    expect(body.org_id).toBeUndefined();
     expect(body.org_name).toBe('Test Org');
     expect(body.domain).toBe('test.com');
     expect(body.leader_pubkey).toBeTruthy();
     expect(body.leader_x25519_pubkey).toBeTruthy();
+    expect(body.leader_wallet).toBe(TEST_LEADER_WALLET);
     expect(body.enc_envelope).toBeTruthy();
     expect(body.search_envelope).toBeTruthy();
     expect(body.signature).toBeTruthy();
@@ -367,6 +372,7 @@ describe('createOrg', () => {
       orgName: 'Test',
       domain: 'test.com',
       hubUrl: 'http://localhost:4440',
+      leaderWallet: TEST_LEADER_WALLET,
     });
 
     expect(result.status).toBe('error');
@@ -386,6 +392,7 @@ describe('createOrg', () => {
       orgName: 'Test',
       domain: 'test.com',
       hubUrl: 'http://localhost:4440',
+      leaderWallet: TEST_LEADER_WALLET,
     });
 
     expect(result.status).toBe('error');
@@ -395,7 +402,7 @@ describe('createOrg', () => {
 
   it('includes mod_envelope in canonical signing', async () => {
     const { createOrg } = await import('../src/org-client.js');
-    const { createOrgMessage } = await import('../src/canonical.js');
+    const { sign } = await import('../src/crypto.js');
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -406,13 +413,17 @@ describe('createOrg', () => {
       orgName: 'Test Org',
       domain: 'test.com',
       hubUrl: 'http://localhost:4440',
+      leaderWallet: TEST_LEADER_WALLET,
     });
 
-    expect(vi.mocked(createOrgMessage)).toHaveBeenCalledTimes(1);
-    const args = vi.mocked(createOrgMessage).mock.calls[0];
-    expect(args.length).toBe(10);
-    expect(typeof args[7]).toBe('string');
-    expect((args[7] as string).length).toBeGreaterThan(0);
+    expect(vi.mocked(sign)).toHaveBeenCalledTimes(1);
+    const canonical = vi.mocked(sign).mock.calls[0][1];
+    const canonicalText = Buffer.from(canonical).toString('utf-8');
+
+    expect(canonicalText).toContain('wevibe.create_org.v1');
+    const modEnvelopeLine = canonicalText.split('\n').find((line) => line.startsWith('mod_envelope:'));
+    expect(modEnvelopeLine).toBeDefined();
+    expect(modEnvelopeLine).not.toBe('mod_envelope:');
   });
 
   it('leader mod_envelope is recoverable via loadMemberships', async () => {
@@ -432,6 +443,7 @@ describe('createOrg', () => {
       orgName: 'Recovery Test Org',
       domain: 'recovery.test',
       hubUrl: 'http://localhost:4440',
+      leaderWallet: TEST_LEADER_WALLET,
     });
 
     expect(sentModEnvelope).toBeTruthy();

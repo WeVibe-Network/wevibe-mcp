@@ -47,7 +47,7 @@ const mockPendingItem = {
   ciphertext_hex: 'ciphertext_hex_value',
   wrapped_dek_mod: 'wrapped_dek_mod_hex',
   stack_hint: ['typescript', 'nodejs'],
-  memory_type: 'correct_implementation' as const,
+  memory_type: 'memory' as const,
   created_at: new Date().toISOString(),
   status: 'pending',
 };
@@ -91,7 +91,7 @@ describe('moderation approval flow', () => {
     const body = findApproveCallBody();
 
     expect(body.epoch_id).toBe(1);
-    expect(body.memory_type).toBe('correct_implementation');
+    expect(body.memory_type).toBe('memory');
     expect(body.signed_by).toBeDefined();
     expect(body.moderator_sig).toBeDefined();
   });
@@ -111,7 +111,7 @@ describe('moderation approval flow', () => {
     await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership, 'negative_signal');
 
     const body = findApproveCallBody();
-    expect(body.memory_type).toBe('correct_implementation');
+    expect(body.memory_type).toBe('memory');
   });
 
   it('does not include deprecated embedding fields', async () => {

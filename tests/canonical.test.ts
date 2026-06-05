@@ -170,17 +170,25 @@ describe('canonical signing messages', () => {
         3,
         'abc123def456',
         'contributor_pubkey_hex',
-        'negative_signal',
+        'memory',
+        'ciphertext_hash_hex',
+        'plaintext_hash_hex',
+        'salt_hex',
+        'wrapped_dek_hash_hex',
       ));
 
       const lines = msg.split('\n');
-      expect(lines).toHaveLength(6);
+      expect(lines).toHaveLength(10);
       expect(lines[0]).toBe('wevibe.submit_memory.v1');
-      expect(lines[1]).toBe('contributor_pubkey:contributor_pubkey_hex');
-      expect(lines[2]).toBe('epoch_id:3');
-      expect(lines[3]).toBe('memory_type:negative_signal');
-      expect(lines[4]).toBe('org_id:org-test-1');
-      expect(lines[5]).toBe('submission_hash:abc123def456');
+      expect(lines[1]).toBe('ciphertext_hash:ciphertext_hash_hex');
+      expect(lines[2]).toBe('contributor_pubkey:contributor_pubkey_hex');
+      expect(lines[3]).toBe('epoch_id:3');
+      expect(lines[4]).toBe('memory_type:memory');
+      expect(lines[5]).toBe('org_id:org-test-1');
+      expect(lines[6]).toBe('plaintext_hash:plaintext_hash_hex');
+      expect(lines[7]).toBe('salt:salt_hex');
+      expect(lines[8]).toBe('submission_hash:abc123def456');
+      expect(lines[9]).toBe('wrapped_dek_hash:wrapped_dek_hash_hex');
     });
   });
 

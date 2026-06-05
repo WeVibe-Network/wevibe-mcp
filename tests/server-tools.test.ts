@@ -129,7 +129,7 @@ describe('wevibe_recall integration flow', () => {
       cid: 'test-cid',
       org_id: 'org-1',
       epoch_id: 2,
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       capsule: 'aabbccdd',
       cfrag: 'ccddeeff',
       umbral_ciphertext: '11223344',

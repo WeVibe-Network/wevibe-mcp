@@ -7,7 +7,7 @@ describe('deserializeMemoryResult', () => {
       cid: 'abc123',
       org_id: 'org-1',
       epoch_id: 5,
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       capsule: 'deadbeef',
       cfrag: 'c0ffee',
       umbral_ciphertext: 'baddad',
@@ -22,7 +22,7 @@ describe('deserializeMemoryResult', () => {
     expect(result.cid).toBe('abc123');
     expect(result.orgId).toBe('org-1');
     expect(result.epochId).toBe(5);
-    expect(result.memoryType).toBe('correct_implementation');
+    expect(result.memoryType).toBe('memory');
     expect(result.capsule).toBe('deadbeef');
     expect(result.cfrag).toBe('c0ffee');
     expect(result.umbralCiphertext).toBe('baddad');
@@ -37,7 +37,7 @@ describe('deserializeMemoryResult', () => {
       cid: 'xyz789',
       org_id: 'org-2',
       epoch_id: 3,
-      memory_type: 'negative_signal',
+      memory_type: 'memory',
       capsule: 'cafebabe',
       cfrag: 'facefeed',
       umbral_ciphertext: 'abbaabba',
@@ -56,7 +56,7 @@ describe('deserializeMemoryResult', () => {
       cid: 'mem1',
       org_id: 'test-org',
       epoch_id: 1,
-      memory_type: 'correct_implementation',
+      memory_type: 'memory',
       capsule: 'enc1',
       cfrag: 'enc2',
       umbral_ciphertext: 'enc3',
@@ -79,7 +79,7 @@ describe('deserializeMemoryResult', () => {
       cid: 'roundtrip-test',
       org_id: 'hub-org',
       epoch_id: 7,
-      memory_type: 'negative_signal',
+      memory_type: 'memory',
       capsule: 'a1b2c3d4',
       cfrag: 'd4c3b2a1',
       umbral_ciphertext: '00112233',
@@ -93,7 +93,7 @@ describe('deserializeMemoryResult', () => {
 
     expect(result.orgId).toBe('hub-org');
     expect(result.epochId).toBe(7);
-    expect(result.memoryType).toBe('negative_signal');
+    expect(result.memoryType).toBe('memory');
     expect(result.contentFlags).toHaveLength(2);
     expect(result.freshnessScore).toBe(0.75);
     expect(result.retrievalCount).toBe(42);

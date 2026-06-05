@@ -44,7 +44,7 @@ describe('extractMemories', () => {
           context: 'Redis cluster with 6 nodes using TLS, nodejs 20 runtime.',
           avoid: 'Avoid node-redis for clustered Redis: it drops slot cache on reconnect and causes timeouts.',
           stack: ['nodejs', 'redis', 'typescript'],
-          memory_type: 'negative_signal',
+          memory_type: 'memory',
         },
       ])
     ));
@@ -59,10 +59,10 @@ describe('extractMemories', () => {
     expect(result.memories[0].context).toContain('Redis cluster');
     expect(result.memories[0].avoid).toContain('node-redis');
     expect(result.memories[0].stack).toContain('nodejs');
-    expect(result.memories[0].memory_type).toBe('negative_signal');
+    expect(result.memories[0].memory_type).toBe('memory');
   });
 
-  it('keeps memories classified as negative_signal', async () => {
+  it('keeps memories classified as memory', async () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
@@ -70,7 +70,7 @@ describe('extractMemories', () => {
           context: 'Node.js API clients validating internal service certs.',
           avoid: 'Avoid setting NODE_TLS_REJECT_UNAUTHORIZED=0 because it hides cert failures until production.',
           stack: ['nodejs', 'tls'],
-          memory_type: 'negative_signal',
+          memory_type: 'memory',
         },
       ])
     ));
@@ -81,10 +81,10 @@ describe('extractMemories', () => {
     );
 
     expect(result.memories).toHaveLength(1);
-    expect(result.memories[0].memory_type).toBe('negative_signal');
+    expect(result.memories[0].memory_type).toBe('memory');
   });
 
-  it('keeps memories classified as correct_implementation', async () => {
+  it('keeps implementation-style memories classified as memory', async () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
@@ -92,7 +92,7 @@ describe('extractMemories', () => {
           context: 'Prisma 5 on Node.js 20 running in Alpine-based Docker images.',
           avoid: null,
           stack: ['prisma', 'docker', 'nodejs'],
-          memory_type: 'correct_implementation',
+          memory_type: 'memory',
         },
       ])
     ));
@@ -103,7 +103,7 @@ describe('extractMemories', () => {
     );
 
     expect(result.memories).toHaveLength(1);
-    expect(result.memories[0].memory_type).toBe('correct_implementation');
+    expect(result.memories[0].memory_type).toBe('memory');
   });
 
   it('drops memories with invalid memory_type', async () => {
