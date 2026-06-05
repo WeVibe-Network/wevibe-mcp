@@ -35,13 +35,16 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "dev": "tsx src/server.ts",
     "admin": "tsx src/admin.ts",
-    "dashboard": "node dist/dashboard-server.js"
+    "dashboard": "node dist/dashboard-server.js",
+    "postinstall": "node-gyp rebuild --directory=node_modules/node-mac-auth || true"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@napi-rs/keyring": "1.3.0",
     "@noble/hashes": "^1.8.0",
     "@noble/secp256k1": "3.1.0",
     "express": "5.2.1",
+    "node-mac-auth": "^1.1.0",
     "toml": "^3.0.0",
     "zod": "^3.22.0"
   },
