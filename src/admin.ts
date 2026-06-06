@@ -31,6 +31,8 @@
  *   wevibe-admin recover-org --org <org_id> --phrase "24 word phrase"
  *   wevibe-admin setup-threshold --org <org_id> --share2 <hex> --share3 <hex>
  *   wevibe-admin recover-threshold --org <org_id> --share <hex>
+ *   wevibe-admin install-opencode [--config-dir <path>] [--node <path>] [--force] [--json]
+ *   wevibe-admin uninstall-opencode [--config-dir <path>] [--json]
  */
 
 import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed, generateIdentityFromSeed } from './crypto.js';
@@ -48,11 +50,45 @@ import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js
 import { isBiometricAvailable } from './biometric.js';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { access, copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 type PairingPayload = {
   hkdf_salt: string;
   iv: string;
   ciphertext: string;
+};
+
+type JsonObject = Record<string, unknown>;
+type JsonWriteStatus = 'created' | 'updated' | 'unchanged';
+type PluginFileStatus = 'created' | 'updated' | 'unchanged';
+type PluginRemovalStatus = 'removed' | 'absent';
+type OpencodePluginOptions = {
+  adminScript: string;
+  node: string;
+};
+
+type InstallOpencodeResult = {
+  ok: true;
+  configDir: string;
+  pluginPath: string;
+  tuiJson: JsonWriteStatus;
+  opencodeJson: JsonWriteStatus;
+  adminScript: string;
+  serverScript: string;
+};
+
+type UninstallOpencodeResult = {
+  ok: true;
+  configDir: string;
+  pluginPath: string;
+  pluginFile: PluginRemovalStatus;
+  tuiJson: 'updated' | 'unchanged';
+  opencodeJson: 'updated' | 'unchanged';
 };
 
 class PairingCommandError extends Error {}
@@ -137,6 +173,207 @@ function requireFlag(flags: Record<string, string>, key: string): string {
  *  is the reliable signal for boolean flags. */
 function hasFlag(flags: Record<string, string>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(flags, key) && flags[key] !== 'false';
+}
+
+function getOptionalValueFlag(flags: Record<string, string>, key: string): string | null {
+  if (!Object.prototype.hasOwnProperty.call(flags, key)) {
+    return null;
+  }
+  const value = flags[key];
+  if (!value || value === 'true') {
+    die(`--${key} requires a value`);
+  }
+  return value;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function ensureJsonObject(value: unknown, filePath: string): JsonObject {
+  if (!isJsonObject(value)) {
+    die(`${filePath} must contain a JSON object at the top level.`);
+  }
+  return value;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function readJsonObjectFile(filePath: string, parseErrorMessage?: string): Promise<JsonObject | null> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    die(`Failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    if (parseErrorMessage) {
+      die(parseErrorMessage);
+    }
+    die(`Failed to parse ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return ensureJsonObject(parsed, filePath);
+}
+
+function makeBackupPath(filePath: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${filePath}.bak-${stamp}`;
+}
+
+async function writeJsonObjectFile(filePath: string, previous: JsonObject | null, next: JsonObject, force: boolean): Promise<JsonWriteStatus> {
+  if (previous && !force && isDeepStrictEqual(previous, next)) {
+    return 'unchanged';
+  }
+
+  if (previous) {
+    const backupPath = makeBackupPath(filePath);
+    await copyFile(filePath, backupPath);
+  }
+
+  await writeFile(filePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return previous ? 'updated' : 'created';
+}
+
+function resolveOpencodeConfigDir(flags: Record<string, string>): string {
+  const configDirFlag = getOptionalValueFlag(flags, 'config-dir');
+  if (configDirFlag) {
+    return path.resolve(configDirFlag);
+  }
+  if (process.env.OPENCODE_CONFIG_DIR) {
+    return path.resolve(process.env.OPENCODE_CONFIG_DIR);
+  }
+  if (process.env.XDG_CONFIG_HOME) {
+    return path.join(process.env.XDG_CONFIG_HOME, 'opencode');
+  }
+  return path.join(os.homedir(), '.config', 'opencode');
+}
+
+function resolveAdminRuntimePaths(): { adminScript: string; serverScript: string; pluginSource: string } {
+  const adminScript = fileURLToPath(import.meta.url);
+  const distDir = path.dirname(adminScript);
+  const serverScript = path.join(distDir, 'server.js');
+  const repoRoot = path.resolve(distDir, '..');
+  const pluginSource = path.join(repoRoot, 'opencode-plugin', 'wevibe.tsx');
+  return { adminScript, serverScript, pluginSource };
+}
+
+async function copyCanonicalPlugin(sourcePath: string, destinationPath: string, force: boolean): Promise<PluginFileStatus> {
+  let sourceContents: string;
+  try {
+    sourceContents = await readFile(sourcePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      die(`Canonical opencode plugin source not found at ${sourcePath}.`);
+    }
+    die(`Failed to read plugin source ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let existingContents: string | null = null;
+  try {
+    existingContents = await readFile(destinationPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      die(`Failed to read existing plugin at ${destinationPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (!force && existingContents !== null && existingContents === sourceContents) {
+    return 'unchanged';
+  }
+
+  await writeFile(destinationPath, sourceContents, 'utf8');
+  return existingContents === null ? 'created' : 'updated';
+}
+
+async function removeFileIfExists(filePath: string): Promise<PluginRemovalStatus> {
+  try {
+    await unlink(filePath);
+    return 'removed';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 'absent';
+    }
+    die(`Failed to remove ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export function mergeTuiPluginEntry(existing: JsonObject, pluginRelPath: string, options: OpencodePluginOptions): JsonObject {
+  const existingPlugins = Array.isArray(existing.plugin) ? [...existing.plugin] : [];
+  let found = false;
+
+  const mergedPlugins = existingPlugins.map((entry) => {
+    if (!found && Array.isArray(entry) && typeof entry[0] === 'string' && entry[0] === pluginRelPath) {
+      found = true;
+      return [pluginRelPath, { ...options }];
+    }
+    return entry;
+  });
+
+  if (!found) {
+    mergedPlugins.push([pluginRelPath, { ...options }]);
+  }
+
+  return {
+    ...existing,
+    plugin: mergedPlugins,
+  };
+}
+
+export function removeTuiPluginEntry(existing: JsonObject, pluginRelPath: string): JsonObject {
+  if (!Array.isArray(existing.plugin)) {
+    return { ...existing };
+  }
+
+  const filteredPlugins = existing.plugin.filter((entry) => !(Array.isArray(entry) && entry[0] === pluginRelPath));
+  return {
+    ...existing,
+    plugin: filteredPlugins,
+  };
+}
+
+export function mergeMcpEntry(existing: JsonObject, node: string, serverScriptPath: string): JsonObject {
+  const existingMcp = isJsonObject(existing.mcp) ? existing.mcp : {};
+  return {
+    ...existing,
+    mcp: {
+      ...existingMcp,
+      wevibe: {
+        type: 'local',
+        command: [node, serverScriptPath],
+        enabled: true,
+      },
+    },
+  };
+}
+
+export function removeMcpEntry(existing: JsonObject): JsonObject {
+  if (!isJsonObject(existing.mcp)) {
+    return { ...existing };
+  }
+
+  const { wevibe: _removed, ...remainingMcp } = existing.mcp;
+  return {
+    ...existing,
+    mcp: remainingMcp,
+  };
 }
 
 async function getIdentityPubkeyHex(): Promise<string | null> {
@@ -757,6 +994,120 @@ async function cmdRecoverThreshold(flags: Record<string, string>) {
   console.log(`Master key recovered for org ${orgId}. Stored in vault.`);
 }
 
+async function cmdInstallOpencode(flags: Record<string, string>) {
+  const asJson = hasFlag(flags, 'json');
+  const force = hasFlag(flags, 'force');
+  const nodeBin = getOptionalValueFlag(flags, 'node') ?? 'node';
+  const configDir = resolveOpencodeConfigDir(flags);
+
+  const { adminScript, serverScript, pluginSource } = resolveAdminRuntimePaths();
+  if (!await pathExists(pluginSource)) {
+    die(`Canonical opencode plugin source is missing: ${pluginSource}`);
+  }
+
+  const tuiDir = path.join(configDir, 'tui');
+  const pluginPath = path.join(tuiDir, 'wevibe.tsx');
+  const tuiJsonPath = path.join(configDir, 'tui.json');
+  const opencodeJsonPath = path.join(configDir, 'opencode.json');
+
+  await mkdir(configDir, { recursive: true });
+  await mkdir(tuiDir, { recursive: true });
+
+  const pluginStatus = await copyCanonicalPlugin(pluginSource, pluginPath, force);
+
+  const tuiExisting = await readJsonObjectFile(tuiJsonPath);
+  const tuiSeed: JsonObject = tuiExisting ?? {
+    '$schema': 'https://opencode.ai/tui.json',
+  };
+  const tuiMerged = mergeTuiPluginEntry(tuiSeed, './tui/wevibe.tsx', { adminScript, node: nodeBin });
+  const tuiJson = await writeJsonObjectFile(tuiJsonPath, tuiExisting, tuiMerged, force);
+
+  const opencodeParseError =
+    `Failed to parse ${opencodeJsonPath} as strict JSON. ` +
+    'install-opencode will not modify commented JSON/JSONC files. ' +
+    'Please add the mcp.wevibe entry manually to avoid clobbering your config.';
+  const opencodeExisting = await readJsonObjectFile(opencodeJsonPath, opencodeParseError);
+  const opencodeSeed: JsonObject = opencodeExisting ?? {
+    '$schema': 'https://opencode.ai/config.json',
+  };
+  const opencodeMerged = mergeMcpEntry(opencodeSeed, nodeBin, serverScript);
+  const opencodeJson = await writeJsonObjectFile(opencodeJsonPath, opencodeExisting, opencodeMerged, force);
+
+  const result: InstallOpencodeResult = {
+    ok: true,
+    configDir,
+    pluginPath,
+    tuiJson,
+    opencodeJson,
+    adminScript,
+    serverScript,
+  };
+
+  if (asJson) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  console.log('Installed WeVibe opencode integration.');
+  console.log(`  configDir: ${configDir}`);
+  console.log(`  plugin: ${pluginPath} (${pluginStatus})`);
+  console.log(`  tui.json: ${tuiJsonPath} (${tuiJson})`);
+  console.log(`  opencode.json: ${opencodeJsonPath} (${opencodeJson})`);
+  console.log('Restart opencode to load updated plugin/MCP settings.');
+}
+
+async function cmdUninstallOpencode(flags: Record<string, string>) {
+  const asJson = hasFlag(flags, 'json');
+  const configDir = resolveOpencodeConfigDir(flags);
+
+  const tuiJsonPath = path.join(configDir, 'tui.json');
+  const pluginPath = path.join(configDir, 'tui', 'wevibe.tsx');
+  const opencodeJsonPath = path.join(configDir, 'opencode.json');
+
+  let tuiJson: 'updated' | 'unchanged' = 'unchanged';
+  const tuiExisting = await readJsonObjectFile(tuiJsonPath);
+  if (tuiExisting) {
+    const tuiRemoved = removeTuiPluginEntry(tuiExisting, './tui/wevibe.tsx');
+    const status = await writeJsonObjectFile(tuiJsonPath, tuiExisting, tuiRemoved, false);
+    tuiJson = status === 'created' ? 'updated' : status;
+  }
+
+  const pluginFile = await removeFileIfExists(pluginPath);
+
+  let opencodeJson: 'updated' | 'unchanged' = 'unchanged';
+  const opencodeParseError =
+    `Failed to parse ${opencodeJsonPath} as strict JSON. ` +
+    'uninstall-opencode will not modify commented JSON/JSONC files. ' +
+    'Please remove mcp.wevibe manually to avoid clobbering your config.';
+  const opencodeExisting = await readJsonObjectFile(opencodeJsonPath, opencodeParseError);
+  if (opencodeExisting) {
+    const opencodeRemoved = removeMcpEntry(opencodeExisting);
+    const status = await writeJsonObjectFile(opencodeJsonPath, opencodeExisting, opencodeRemoved, false);
+    opencodeJson = status === 'created' ? 'updated' : status;
+  }
+
+  const result: UninstallOpencodeResult = {
+    ok: true,
+    configDir,
+    pluginPath,
+    pluginFile,
+    tuiJson,
+    opencodeJson,
+  };
+
+  if (asJson) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  console.log('Uninstalled WeVibe opencode integration.');
+  console.log(`  configDir: ${configDir}`);
+  console.log(`  plugin: ${pluginPath} (${pluginFile})`);
+  console.log(`  tui.json: ${tuiJsonPath} (${tuiJson})`);
+  console.log(`  opencode.json: ${opencodeJsonPath} (${opencodeJson})`);
+  console.log('Restart opencode to apply the updated configuration.');
+}
+
 function printHelp() {
   console.log(`wevibe-admin — WeVibe Network administrative CLI
 
@@ -781,9 +1132,13 @@ Commands:
   recover-org --org --phrase      Recover from 24-word phrase
   setup-threshold --org --share2 --share3   Set up 2-of-3 recovery
   recover-threshold --org --share           Recover from threshold shares
+  install-opencode [--config-dir] [--node] [--force] [--json]  Install opencode plugin + MCP wiring
+  uninstall-opencode [--config-dir] [--json]                    Remove opencode plugin + MCP wiring
 
 Environment:
   WEVIBE_HUB_URL    Hub URL (default: ${HUB_URL})
+  OPENCODE_CONFIG_DIR  Override opencode config directory
+  XDG_CONFIG_HOME      Base directory used to resolve <xdg>/opencode
 `);
 }
 
@@ -819,9 +1174,24 @@ async function main() {
     case 'recover-org': return cmdRecoverOrg(flags);
     case 'setup-threshold': return cmdSetupThreshold(flags);
     case 'recover-threshold': return cmdRecoverThreshold(flags);
+    case 'install-opencode': return cmdInstallOpencode(flags);
+    case 'uninstall-opencode': return cmdUninstallOpencode(flags);
     case 'help': case '--help': case '-h': return printHelp();
     default: console.error(`Unknown command: ${command}`); printHelp(); process.exit(1);
   }
 }
 
-main().catch(e => { console.error(`Fatal: ${e.message}`); process.exit(1); });
+function isMainModule(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  const selfPath = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(argv1) === realpathSync(selfPath);
+  } catch {
+    return path.resolve(argv1) === path.resolve(selfPath);
+  }
+}
+
+if (isMainModule()) {
+  main().catch(e => { console.error(`Fatal: ${e.message}`); process.exit(1); });
+}
