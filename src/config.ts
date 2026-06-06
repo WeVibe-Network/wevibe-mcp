@@ -5,6 +5,7 @@ try {
 }
 
 export const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
+export const CHAIN_REST_URL = process.env.WEVIBE_CHAIN_REST_URL ?? 'http://localhost:1317';
 export const DASHBOARD_URL = process.env.WEVIBE_DASHBOARD_URL ?? 'https://app.wevibe.network';
 export const OLLAMA_URL = process.env.WEVIBE_OLLAMA_URL ?? 'http://localhost:11434';
 export const OLLAMA_EMBEDDING_HOST = process.env.OLLAMA_HOST ?? 'http://localhost:11434';

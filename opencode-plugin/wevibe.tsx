@@ -38,6 +38,7 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const KV_COUNTED = "wevibe.counted";
 const KV_LAST_NUDGE_AT = "wevibe.lastNudgeAt";
 const KV_LAST_NUDGE_N = "wevibe.lastNudgeN";
+let endpointResolutionStarted = false;
 
 async function locateAdmin(api: any, options: PluginOptions | undefined): Promise<AdminLoc> {
   const node = options?.node || process.execPath || "node";
@@ -141,6 +142,23 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   };
 
   const getStatus = async () => parseLastJson((await runAdmin(loc, ["identity-status", "--json"])).stdout);
+
+  if (!endpointResolutionStarted) {
+    endpointResolutionStarted = true;
+    runAdmin(loc, ["resolve-endpoints", "--json"])
+      .then((r) => {
+        const res = parseLastJson(r.stdout);
+        const changed = Array.isArray(res?.changed) ? res.changed : [];
+        const firstChangedOrgId =
+          changed.find((entry: any) => entry && typeof entry.orgId === "string" && entry.orgId.length > 0)?.orgId ?? null;
+        if (firstChangedOrgId) {
+          toast("info", `Org ${firstChangedOrgId} updated its hub endpoint`, 6000);
+        }
+      })
+      .catch(() => {
+        /* best-effort */
+      });
+  }
 
   const createIdentity = () => {
     toast("info", "Creating your WeVibe identity — approve the Touch ID prompt…");

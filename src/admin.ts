@@ -13,6 +13,7 @@
  *   wevibe-admin import-identity --phrase "24 word phrase" [--force]
  *   wevibe-admin pair --code <dashboard pairing code> [--force]
  *   wevibe-admin export-pairing [--no-open]
+ *   wevibe-admin resolve-endpoints [--json]
  *   wevibe-admin create-org --name "My Org" --domain example.com
  *   wevibe-admin orgs
  *   wevibe-admin invite --org <org_id> --pubkey <hex> --x25519 <hex> --pre-pubkey <hex> --role member|moderator
@@ -45,9 +46,10 @@ import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCa
 import { setLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
 import { base32Decode, base32Encode, pairingIdFromSecret, decryptPairedIdentitySeed, encryptIdentitySeedForPairing } from './pair-crypto.js';
-import { HUB_URL, DASHBOARD_URL, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
+import { HUB_URL, CHAIN_REST_URL, DASHBOARD_URL, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
 import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js';
 import { isBiometricAvailable } from './biometric.js';
+import { resolveAllOrgsOnce } from './hub-resolver.js';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { access, copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
@@ -474,6 +476,27 @@ async function cmdIdentityStatus(flags: Record<string, string>) {
     console.log(`  Extracted: ${status.extracted}`);
   } else {
     console.log('  Run setup-identity (or the wevibe_setup_org tool) to create one.');
+  }
+}
+
+async function cmdResolveEndpoints(flags: Record<string, string>) {
+  // Plugin startup path must remain biometric-free; resolve from chain + sidecar only.
+  const result = await resolveAllOrgsOnce({ includeMembershipBootstrap: false });
+
+  if (hasFlag(flags, 'json')) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  if (result.changed.length === 0) {
+    console.log('No org hub endpoint changes detected.');
+    return;
+  }
+
+  for (const change of result.changed) {
+    console.log(`Org ${change.orgId} updated hub endpoints.`);
+    console.log(`  from: ${change.from.join(', ') || '(none)'}`);
+    console.log(`  to:   ${change.to.join(', ') || '(none)'}`);
   }
 }
 
@@ -1114,6 +1137,7 @@ function printHelp() {
 Commands:
   setup-identity [--json]         Generate Ed25519 + X25519 keypair
   identity-status [--json]        Report identity state (no biometric prompt)
+  resolve-endpoints [--json]      Resolve org hub endpoints from chain into sidecar
   export-identity                 Show this identity's 24-word recovery/pairing phrase
   import-identity --phrase [--force]   Restore/pair an identity from a 24-word phrase
   pair --code [--force]           Pair identity from dashboard one-time code
@@ -1137,12 +1161,19 @@ Commands:
 
 Environment:
   WEVIBE_HUB_URL    Hub URL (default: ${HUB_URL})
+  WEVIBE_CHAIN_REST_URL  Chain REST URL (default: ${CHAIN_REST_URL})
   OPENCODE_CONFIG_DIR  Override opencode config directory
   XDG_CONFIG_HOME      Base directory used to resolve <xdg>/opencode
 `);
 }
 
 async function main() {
+  const { command, flags } = parseArgs();
+
+  if (command === 'resolve-endpoints') {
+    return cmdResolveEndpoints(flags);
+  }
+
   setLlmProvider(createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL));
 
   const storedPassphrase = await retrievePassphraseFromKeychain();
@@ -1151,11 +1182,11 @@ async function main() {
   }
 
   await initCrypto();
-  const { command, flags } = parseArgs();
 
   switch (command) {
     case 'setup-identity': return cmdSetupIdentity(flags);
     case 'identity-status': return cmdIdentityStatus(flags);
+    case 'resolve-endpoints': return cmdResolveEndpoints(flags);
     case 'export-identity': return cmdExportIdentity();
     case 'import-identity': return cmdImportIdentity(flags);
     case 'pair': return cmdPair(flags);
