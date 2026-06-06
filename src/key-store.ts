@@ -223,6 +223,11 @@ async function loadIdentitySeedB64(): Promise<string | null> {
   return getKeychainItem(IDENTITY_SEED_ACCOUNT);
 }
 
+export async function hasStoredIdentitySeed(): Promise<boolean> {
+  const seedB64 = await loadIdentitySeedB64();
+  return Boolean(seedB64);
+}
+
 export function generateIdentitySeed(): Uint8Array {
   return randomBytes(32);
 }

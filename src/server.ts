@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { initCrypto, decryptSymmetric } from './crypto.js';
-import { loadIdentity, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope } from './key-store.js';
+import { loadIdentity, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope, hasStoredIdentitySeed } from './key-store.js';
 import { loadMemberships, createOrg, registerPrePubkey } from './org-client.js';
 import { deserializeMemoryResult } from './deserialize.js';
 import { add_to_blacklist, is_blacklisted } from './blacklist.js';
@@ -25,8 +25,8 @@ import { generateRecoveryPhrase } from './recovery.js';
 import { getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { startHttpServer } from './http-server.js';
 import { initSessionToken } from './session-token.js';
+import { HUB_URL } from './config.js';
 
-const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
 const ALLOW_UNREVIEWED = process.env.WEVIBE_ALLOW_UNREVIEWED === '1';
 
 function recallTimeScan(plaintext: string): { text: string; flagged: boolean; detections: string[] } {
@@ -558,24 +558,14 @@ async function main() {
 
   try {
     await initCrypto();
-    const identity = await loadIdentity();
-    if (!identity) {
+    // Lazy identity (spec §F): do NOT load the identity OR call any hub API that
+    // signs with it at boot — both trigger Touch ID. loadMemberships() internally
+    // calls loadIdentity(), so it must NOT run here. Only a non-prompting
+    // existence check is allowed; everything else defers to first use.
+    if (!(await hasStoredIdentitySeed())) {
       console.warn('wevibe-mcp: No identity found. Run wevibe-admin setup-identity or use the wevibe_setup_org tool to get started.');
     } else {
-      await getOrCreatePreIdentity();
-      const prePubkeyHex = getPrePublicKeyHex();
-      const memberPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
-
-      const memberships = await loadMemberships(HUB_URL);
-      if (memberships.length === 0) {
-        console.warn('wevibe-mcp: No org membership found. Use the wevibe_setup_org tool to create an org, or ask your org leader for an invitation.');
-        console.warn('wevibe-mcp: Hub URL: ' + HUB_URL);
-        console.warn('wevibe-mcp: PRE pubkey registration skipped (no org configured)');
-      } else {
-        for (const membership of memberships) {
-          await registerPrePubkey(HUB_URL, membership.orgId, memberPubkeyHex, prePubkeyHex);
-        }
-      }
+      console.warn('wevibe-mcp: Identity present. Membership sync + PRE-pubkey registration deferred to first use (no boot-time biometric).');
     }
   } catch (e) {
     console.warn(`wevibe-mcp: first-run check failed — ${e}`);

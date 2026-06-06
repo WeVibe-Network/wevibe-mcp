@@ -11,6 +11,8 @@
  *   wevibe-admin setup-identity
  *   wevibe-admin export-identity
  *   wevibe-admin import-identity --phrase "24 word phrase" [--force]
+ *   wevibe-admin pair --code <dashboard pairing code> [--force]
+ *   wevibe-admin export-pairing [--no-open]
  *   wevibe-admin create-org --name "My Org" --domain example.com
  *   wevibe-admin orgs
  *   wevibe-admin invite --org <org_id> --pubkey <hex> --x25519 <hex> --pre-pubkey <hex> --role member|moderator
@@ -31,8 +33,8 @@
  *   wevibe-admin recover-threshold --org <org_id> --share <hex>
  */
 
-import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed } from './crypto.js';
-import { loadIdentity, loadIdentitySeed, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope, storeKeyEnvelope } from './key-store.js';
+import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed, generateIdentityFromSeed } from './crypto.js';
+import { loadIdentity, loadIdentitySeed, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope, storeKeyEnvelope, hasStoredIdentitySeed } from './key-store.js';
 import { generateRecoveryPhrase, reconstructMasterKey, splitMasterKey, reconstructFromShares } from './recovery.js';
 import { loadMemberships, createOrg, inviteMember, rotateEpoch } from './org-client.js';
 import { fetchPendingQueue, decryptPendingItem, approveSubmission, denySubmission, scanForSteganography } from './moderation.js';
@@ -40,11 +42,62 @@ import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } fro
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
 import { setLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
+import { base32Decode, base32Encode, pairingIdFromSecret, decryptPairedIdentitySeed, encryptIdentitySeedForPairing } from './pair-crypto.js';
+import { HUB_URL, DASHBOARD_URL, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
+import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js';
+import { isBiometricAvailable } from './biometric.js';
+import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
-const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
+type PairingPayload = {
+  hkdf_salt: string;
+  iv: string;
+  ciphertext: string;
+};
+
+class PairingCommandError extends Error {}
 
 function uint8ArrayToHex(arr: Uint8Array): string {
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Cross-OS browser open. Returns true if an opener was successfully spawned.
+ * macOS: `open`, Windows: `cmd /c start`, Linux/other: `xdg-open`.
+ */
+function openUrl(url: string): boolean {
+  try {
+    let result;
+    if (process.platform === 'darwin') {
+      result = spawnSync('open', [url], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      // Empty title arg required so URLs with spaces/& are handled by `start`.
+      result = spawnSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+    } else {
+      result = spawnSync('xdg-open', [url], { stdio: 'ignore' });
+    }
+    return !result.error && (result.status === 0 || result.status === null);
+  } catch {
+    return false;
+  }
+}
+
+/** Persist non-secret identity pubkeys to the sidecar (no biometric needed to read later). */
+function recordIdentitySidecar(identity: { edPubkey: Uint8Array; xPubkey: Uint8Array }, opts?: { createdAt?: boolean }): void {
+  try {
+    const patch: Parameters<typeof writeIdentitySidecar>[0] = {
+      ed25519PublicKey: uint8ArrayToHex(identity.edPubkey),
+      x25519PublicKey: uint8ArrayToHex(identity.xPubkey),
+      platform: process.platform,
+      biometric: isBiometricAvailable(),
+    };
+    if (opts?.createdAt) {
+      patch.createdAt = new Date().toISOString();
+    }
+    writeIdentitySidecar(patch);
+  } catch {
+    // Sidecar is best-effort; never block the primary command on it.
+  }
 }
 
 function parseArgs(): { command: string; flags: Record<string, string> } {
@@ -79,6 +132,13 @@ function requireFlag(flags: Record<string, string>, key: string): string {
   return flags[key];
 }
 
+/** True if a (possibly value-less) flag was passed. The arg parser stores
+ *  value-less trailing flags as '' and mid-list flags as 'true', so presence
+ *  is the reliable signal for boolean flags. */
+function hasFlag(flags: Record<string, string>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(flags, key) && flags[key] !== 'false';
+}
+
 async function getIdentityPubkeyHex(): Promise<string | null> {
   const identity = await loadIdentity();
   if (!identity) return null;
@@ -102,9 +162,20 @@ async function getMembership(orgId?: string) {
   return memberships[0];
 }
 
-async function cmdSetupIdentity() {
+async function cmdSetupIdentity(flags: Record<string, string> = {}) {
+  const json = hasFlag(flags, 'json');
   const existing = await loadIdentity();
   if (existing) {
+    // Backfill the sidecar in case it is missing (legacy identity created before sidecars).
+    recordIdentitySidecar(existing);
+    if (json) {
+      console.log(JSON.stringify({
+        status: 'exists',
+        ed25519PublicKey: uint8ArrayToHex(existing.edPubkey),
+        x25519PublicKey: uint8ArrayToHex(existing.xPubkey),
+      }));
+      return;
+    }
     console.log(`Identity already exists.`);
     console.log(`  Ed25519: ${uint8ArrayToHex(existing.edPubkey)}`);
     console.log(`  X25519:  ${uint8ArrayToHex(existing.xPubkey)}`);
@@ -114,12 +185,59 @@ async function cmdSetupIdentity() {
   await storeIdentitySeed(seed);
   const identity = await loadIdentity();
   if (!identity) {
+    if (json) {
+      console.log(JSON.stringify({ status: 'error', error: 'failed to create identity' }));
+      process.exit(1);
+    }
     die('failed to create identity');
+  }
+  recordIdentitySidecar(identity, { createdAt: true });
+  if (json) {
+    console.log(JSON.stringify({
+      status: 'created',
+      ed25519PublicKey: uint8ArrayToHex(identity.edPubkey),
+      x25519PublicKey: uint8ArrayToHex(identity.xPubkey),
+    }));
+    return;
   }
   console.log(`Identity created.`);
   console.log(`  Ed25519: ${uint8ArrayToHex(identity.edPubkey)}`);
   console.log(`  X25519:  ${uint8ArrayToHex(identity.xPubkey)}`);
   console.log(`\nShare these public keys with an org leader to receive an invitation.`);
+}
+
+async function cmdIdentityStatus(flags: Record<string, string>) {
+  // NO biometric: existence probe + non-secret sidecar only.
+  const hasIdentity = await hasStoredIdentitySeed();
+  const sidecar = readIdentitySidecar();
+
+  const status = {
+    hasIdentity,
+    sidecar: sidecar !== null,
+    ed25519PublicKey: sidecar?.ed25519PublicKey ?? null,
+    x25519PublicKey: sidecar?.x25519PublicKey ?? null,
+    createdAt: sidecar?.createdAt ?? null,
+    platform: sidecar?.platform ?? process.platform,
+    biometric: sidecar?.biometric ?? null,
+    adopted: sidecar?.adoptedAt != null,
+    extracted: sidecar?.extractedAt != null,
+    lastPairingId: sidecar?.lastPairingId ?? null,
+  };
+
+  if (hasFlag(flags, 'json')) {
+    console.log(JSON.stringify(status));
+    return;
+  }
+
+  console.log(`Identity: ${hasIdentity ? 'present' : 'none'}`);
+  if (hasIdentity) {
+    console.log(`  Ed25519: ${status.ed25519PublicKey ?? '(unknown — run setup-identity to backfill sidecar)'}`);
+    console.log(`  Created: ${status.createdAt ?? '(unknown)'}`);
+    console.log(`  Adopted (dashboard): ${status.adopted}`);
+    console.log(`  Extracted: ${status.extracted}`);
+  } else {
+    console.log('  Run setup-identity (or the wevibe_setup_org tool) to create one.');
+  }
 }
 
 async function cmdExportIdentity() {
@@ -167,6 +285,170 @@ async function cmdImportIdentity(flags: Record<string, string>) {
   console.log('Identity restored.');
   console.log(`  Ed25519: ${uint8ArrayToHex(identity.edPubkey)}`);
   console.log(`  X25519:  ${uint8ArrayToHex(identity.xPubkey)}`);
+}
+
+async function cmdPair(flags: Record<string, string>) {
+  const token = requireFlag(flags, 'code');
+
+  if (await hasStoredIdentitySeed() && flags['force'] !== 'true') {
+    die('An identity already exists. Re-run with --force to replace it.');
+  }
+
+  let secret: Buffer | null = null;
+  let seed: Buffer | null = null;
+  let error: unknown = null;
+
+  try {
+    try {
+      secret = base32Decode(token.trim().toUpperCase());
+    } catch {
+      throw new PairingCommandError('Invalid pairing code.');
+    }
+
+    if (secret.length !== 16) {
+      throw new PairingCommandError('Invalid pairing code.');
+    }
+
+    const pairingId = pairingIdFromSecret(secret);
+    const resp = await fetch(`${HUB_URL}/v1/pair/${pairingId}`);
+    if (resp.status === 404) {
+      throw new PairingCommandError('Pairing code not found or expired. Generate a new code in the dashboard.');
+    }
+    if (!resp.ok) {
+      throw new PairingCommandError(`Hub error ${resp.status}`);
+    }
+
+    const body = await resp.json() as Partial<PairingPayload>;
+    if (
+      typeof body.hkdf_salt !== 'string' ||
+      typeof body.iv !== 'string' ||
+      typeof body.ciphertext !== 'string'
+    ) {
+      throw new PairingCommandError('Hub returned malformed pairing payload.');
+    }
+
+    const hkdfSalt = Buffer.from(body.hkdf_salt, 'base64');
+    const iv = Buffer.from(body.iv, 'base64');
+    const ciphertext = Buffer.from(body.ciphertext, 'base64');
+
+    try {
+      seed = decryptPairedIdentitySeed(secret, hkdfSalt, iv, ciphertext);
+    } catch {
+      throw new PairingCommandError('Invalid pairing code.');
+    }
+
+    if (seed.length !== 32) {
+      throw new PairingCommandError('Paired identity seed must be 32 bytes.');
+    }
+
+    await storeIdentitySeed(seed);
+    const identity = generateIdentityFromSeed(seed);
+    recordIdentitySidecar(identity, { createdAt: true });
+    console.log('Identity paired.');
+    console.log(`  Ed25519: ${uint8ArrayToHex(identity.edPubkey)}`);
+    console.log(`  X25519:  ${uint8ArrayToHex(identity.xPubkey)}`);
+  } catch (e) {
+    error = e;
+  } finally {
+    if (secret) secret.fill(0);
+    if (seed) seed.fill(0);
+  }
+
+  if (!error) {
+    return;
+  }
+  if (error instanceof PairingCommandError) {
+    die(error.message);
+  }
+  if (error instanceof Error) {
+    die(error.message);
+  }
+  die(String(error));
+}
+
+async function cmdExportPairing(flags: Record<string, string>) {
+  if (!await loadIdentity()) {
+    die('No identity. Run setup-identity first.');
+  }
+
+  let secret: Buffer | null = null;
+  let seed: Uint8Array | null = null;
+  let error: unknown = null;
+
+  try {
+    seed = await loadIdentitySeed();
+    if (!seed) {
+      throw new PairingCommandError('No identity. Run setup-identity first.');
+    }
+
+    secret = randomBytes(16);
+    const { hkdfSalt, iv, ciphertextWithTag } = encryptIdentitySeedForPairing(seed, secret);
+
+    const pairingId = pairingIdFromSecret(secret);
+    const token = base32Encode(secret);
+    const adoptUrl = `${DASHBOARD_URL}/adopt#code=${token}`;
+
+    const { headers } = await buildWeVibeSignedAuth();
+    const resp = await fetch(`${HUB_URL}/v1/pair`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({
+        pairing_id: pairingId,
+        hkdf_salt: hkdfSalt.toString('base64'),
+        iv: iv.toString('base64'),
+        ciphertext: ciphertextWithTag.toString('base64'),
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new PairingCommandError(`Hub upload failed: ${resp.status}`);
+    }
+
+    // Record the pairing id so the plugin/dashboard flow can poll consumption.
+    try {
+      writeIdentitySidecar({ lastPairingId: pairingId });
+    } catch {
+      // best-effort
+    }
+
+    // Open the browser unless explicitly suppressed. Default is to open.
+    const shouldOpen = !hasFlag(flags, 'no-open');
+    let opened = false;
+    if (shouldOpen) {
+      opened = openUrl(adoptUrl);
+    }
+
+    if (hasFlag(flags, 'json')) {
+      console.log(JSON.stringify({ ok: true, opened, url: adoptUrl, pairingId }));
+    } else {
+      console.log('Pairing export created.');
+      console.log(`  URL: ${adoptUrl}`);
+      console.log(`  Token: ${token}`);
+      console.log('  Single use, expires in 15 minutes.');
+      if (shouldOpen && !opened) {
+        console.log('  (Could not open a browser automatically — open the URL above manually.)');
+      }
+    }
+  } catch (e) {
+    error = e;
+  } finally {
+    if (secret) secret.fill(0);
+    if (seed) seed.fill(0);
+  }
+
+  if (!error) {
+    return;
+  }
+  if (error instanceof PairingCommandError) {
+    die(error.message);
+  }
+  if (error instanceof Error) {
+    die(error.message);
+  }
+  die(String(error));
 }
 
 async function cmdCreateOrg(flags: Record<string, string>) {
@@ -479,9 +761,12 @@ function printHelp() {
   console.log(`wevibe-admin — WeVibe Network administrative CLI
 
 Commands:
-  setup-identity                  Generate Ed25519 + X25519 keypair
+  setup-identity [--json]         Generate Ed25519 + X25519 keypair
+  identity-status [--json]        Report identity state (no biometric prompt)
   export-identity                 Show this identity's 24-word recovery/pairing phrase
   import-identity --phrase [--force]   Restore/pair an identity from a 24-word phrase
+  pair --code [--force]           Pair identity from dashboard one-time code
+  export-pairing [--no-open] [--json]  Export pairing code for dashboard identity adoption
   create-org --name --domain      Create a new org
   orgs                            List org memberships
   invite --org --pubkey --x25519 --pre-pubkey [--role]   Invite a member
@@ -498,14 +783,12 @@ Commands:
   recover-threshold --org --share           Recover from threshold shares
 
 Environment:
-  WEVIBE_HUB_URL    Hub URL (default: http://localhost:4440)
+  WEVIBE_HUB_URL    Hub URL (default: ${HUB_URL})
 `);
 }
 
 async function main() {
-  const ollamaUrl = process.env.WEVIBE_OLLAMA_URL ?? 'http://localhost:11434';
-  const model = process.env.WEVIBE_EXTRACTION_MODEL ?? 'qwen3:4b';
-  setLlmProvider(createOllamaProvider(ollamaUrl, model));
+  setLlmProvider(createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL));
 
   const storedPassphrase = await retrievePassphraseFromKeychain();
   if (storedPassphrase) {
@@ -516,9 +799,12 @@ async function main() {
   const { command, flags } = parseArgs();
 
   switch (command) {
-    case 'setup-identity': return cmdSetupIdentity();
+    case 'setup-identity': return cmdSetupIdentity(flags);
+    case 'identity-status': return cmdIdentityStatus(flags);
     case 'export-identity': return cmdExportIdentity();
     case 'import-identity': return cmdImportIdentity(flags);
+    case 'pair': return cmdPair(flags);
+    case 'export-pairing': return cmdExportPairing(flags);
     case 'create-org': return cmdCreateOrg(flags);
     case 'orgs': return cmdOrgs();
     case 'invite': return cmdInvite(flags);
