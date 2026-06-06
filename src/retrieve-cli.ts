@@ -11,8 +11,7 @@ import { transformMemoryContent } from './artifact-transform.js';
 import { formatTrustPanel, type MemoryStats, type ContributorStats } from './trust-panel.js';
 import { is_blacklisted } from './blacklist.js';
 import { buildWeVibeSignedAuth } from './auth.js';
-
-const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
+import { HUB_URL, EMBEDDING_MODEL } from './config.js';
 
 export interface RetrieveInput {
   query: string;
@@ -106,7 +105,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       agentPubkey: uint8ArrayToHex(identity.edPubkey),
       keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
       vector: queryVector,
-      embeddingModelId: process.env.WEVIBE_EMBEDDING_MODEL ?? 'nomic-embed-text',
+      embeddingModelId: EMBEDDING_MODEL,
       limit: input.limit ?? 5,
       agentSig: 'stub',
     });

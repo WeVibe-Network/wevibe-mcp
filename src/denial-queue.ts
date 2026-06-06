@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { HUB_URL } from './config.js';
 
 const WEVIBE_DIR = join(homedir(), '.wevibe');
 const QUEUE_PATH = join(WEVIBE_DIR, 'pending-denials.json');
@@ -64,8 +65,6 @@ export function removeDenials(ids: string[]): void {
 export function getPendingCount(): number {
   return _readQueue().length;
 }
-
-const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
 
 export async function flushDenials(): Promise<{ flushed: number; failed: number }> {
   const denials = getPendingDenials();

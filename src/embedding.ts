@@ -1,12 +1,13 @@
+import { OLLAMA_EMBEDDING_HOST, EMBEDDING_MODEL } from './config.js';
+
 const EXPECTED_DIM = 768;
-const DEFAULT_OLLAMA_HOST = 'http://host.docker.internal:11434';
 
 function getOllamaHost(): string {
-  return (process.env.OLLAMA_HOST ?? DEFAULT_OLLAMA_HOST).replace(/\/$/, '');
+  return OLLAMA_EMBEDDING_HOST.replace(/\/$/, '');
 }
 
 function getEmbeddingModel(): string {
-  return process.env.WEVIBE_EMBEDDING_MODEL ?? 'nomic-embed-text';
+  return EMBEDDING_MODEL;
 }
 
 export async function computeLocalEmbedding(text: string): Promise<number[]> {

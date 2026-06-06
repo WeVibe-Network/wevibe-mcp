@@ -11,9 +11,9 @@
  *   node dist/dashboard-server.js [--port 4451]
  *
  * Environment:
- *   WEVIBE_HUB_URL           Hub URL (default: http://localhost:4440)
+ *   WEVIBE_HUB_URL           Hub URL (default from config)
  *   WEVIBE_DASHBOARD_PORT    Server port (default: 4451)
- *   WEVIBE_OLLAMA_URL        Ollama URL (default: http://localhost:11434)
+ *   WEVIBE_OLLAMA_URL        Ollama URL (default from config)
  *   WEVIBE_EXTRACTION_MODEL  LLM model for keyword extraction (default: qwen3:4b)
  */
 
@@ -39,8 +39,7 @@ import { vaultExists, isVaultUnlocked, unlockVault, retrievePassphraseFromKeycha
 import { submitMemory } from './contribution.js';
 import { getOrgKeywords } from './org-client.js';
 import { extractKeywords, extractMemories, type ClassifiedKeyword, type SuggestedKeyword } from './extraction.js';
-
-const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
+import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
 
 function resolvePort(): number {
   // CLI flag
@@ -49,10 +48,9 @@ function resolvePort(): number {
     const parsed = parseInt(process.argv[portFlagIdx + 1], 10);
     if (!isNaN(parsed) && parsed > 0) return parsed;
   }
-  // Env var
-  if (process.env.WEVIBE_DASHBOARD_PORT) {
-    const parsed = parseInt(process.env.WEVIBE_DASHBOARD_PORT, 10);
-    if (!isNaN(parsed) && parsed > 0) return parsed;
+  // Env var (from config)
+  if (Number.isFinite(DASHBOARD_PORT) && DASHBOARD_PORT > 0) {
+    return DASHBOARD_PORT;
   }
   return 4451;
 }
@@ -640,10 +638,8 @@ app.get('/health', (_req, res) => {
 });
 
 async function main(): Promise<void> {
-  const ollamaUrl = process.env.WEVIBE_OLLAMA_URL ?? 'http://localhost:11434';
-  const model = process.env.WEVIBE_EXTRACTION_MODEL ?? 'qwen3:4b';
-  setLlmProvider(createOllamaProvider(ollamaUrl, model));
-  console.warn(`wevibe-dashboard: LLM provider: Ollama (${ollamaUrl}, model: ${model})`);
+  setLlmProvider(createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL));
+  console.warn(`wevibe-dashboard: LLM provider: Ollama (${OLLAMA_URL}, model: ${EXTRACTION_MODEL})`);
 
   const storedPassphrase = await retrievePassphraseFromKeychain();
   if (storedPassphrase) {

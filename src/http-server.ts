@@ -6,10 +6,9 @@ import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
+import { HTTP_HOST, HUB_URL } from './config.js';
 
-const HTTP_HOST = process.env.WEVIBE_HTTP_HOST ?? '127.0.0.1';
 const HTTP_PORT = 4450;
-const HUB_URL = process.env.WEVIBE_HUB_URL ?? 'http://localhost:4440';
 
 export async function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
