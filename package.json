@@ -44,9 +44,11 @@
     "@noble/hashes": "^1.8.0",
     "@noble/secp256k1": "3.1.0",
     "express": "5.2.1",
-    "node-mac-auth": "^1.1.0",
     "toml": "^3.0.0",
     "zod": "^3.22.0"
+  },
+  "optionalDependencies": {
+    "node-mac-auth": "^1.1.0"
   },
   "devDependencies": {
     "@types/express": "5.0.6",

@@ -20,6 +20,14 @@ let cachedIdentity: IdentityKeys | null = null;
 
 const isTestMode = () => process.env.WEVIBE_KEYSTORE_TEST === '1';
 
+type SeedBackend = 'test' | 'keychain' | 'file';
+
+function seedBackend(): SeedBackend {
+  if (isTestMode()) return 'test';
+  if (process.env.WEVIBE_SEED_BACKEND === 'file') return 'file';
+  return 'keychain';
+}
+
 interface KeytarLike {
   getPassword(service: string, account: string): Promise<string | null>;
   setPassword(service: string, account: string, password: string): Promise<void>;
@@ -209,16 +217,25 @@ export async function loadKeyEnvelope(orgId: string, envelopeType: string): Prom
 }
 
 async function storeIdentitySeedB64(seedB64: string): Promise<void> {
-  if (isTestMode()) {
+  const backend = seedBackend();
+  if (backend === 'test') {
     await testStore.setPassword(SERVICE, IDENTITY_SEED_ACCOUNT, seedB64);
+    return;
+  }
+  if (backend === 'file') {
+    await fileStore.setPassword(SERVICE, IDENTITY_SEED_ACCOUNT, seedB64);
     return;
   }
   setKeychainItem(IDENTITY_SEED_ACCOUNT, seedB64);
 }
 
 async function loadIdentitySeedB64(): Promise<string | null> {
-  if (isTestMode()) {
+  const backend = seedBackend();
+  if (backend === 'test') {
     return testStore.getPassword(SERVICE, IDENTITY_SEED_ACCOUNT);
+  }
+  if (backend === 'file') {
+    return fileStore.getPassword(SERVICE, IDENTITY_SEED_ACCOUNT);
   }
   return getKeychainItem(IDENTITY_SEED_ACCOUNT);
 }
@@ -246,7 +263,7 @@ export async function loadIdentitySeed(): Promise<Uint8Array | null> {
   if (!seedB64) {
     return null;
   }
-  if (!isTestMode()) {
+  if (seedBackend() === 'keychain') {
     const biometricOk = await requireBiometric('Export your WeVibe identity recovery phrase');
     if (!biometricOk) {
       throw new Error('biometric authentication failed');
@@ -292,7 +309,7 @@ export async function loadIdentity(): Promise<{
     return null;
   }
 
-  if (!isTestMode()) {
+  if (seedBackend() === 'keychain') {
     const biometricOk = await requireBiometric('Unlock your WeVibe identity');
     if (!biometricOk) {
       throw new Error('biometric authentication failed');
