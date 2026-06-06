@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { HUB_URL } from './config.js';
+import { hubFetchVerified } from './hub-fetch.js';
 
 const WEVIBE_DIR = join(homedir(), '.wevibe');
 const QUEUE_PATH = join(WEVIBE_DIR, 'pending-denials.json');
@@ -85,9 +86,9 @@ export async function flushDenials(): Promise<{ flushed: number; failed: number 
       continue;
     }
 
-    let hubResp: Response;
+    let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
     try {
-      hubResp = await fetch(`${HUB_URL}/v1/orgs/${denial.org_id}/denials`, {
+      hubResp = await hubFetchVerified(denial.org_id, `${HUB_URL}/v1/orgs/${denial.org_id}/denials`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -107,9 +108,9 @@ export async function flushDenials(): Promise<{ flushed: number; failed: number 
 
     // 2xx: hub accepted the denial. 4xx: client error — don't retry, remove from queue.
     // 5xx or network failure: leave in queue for next flush cycle.
-    if (hubResp.status >= 200 && hubResp.status < 300) {
+    if (hubResp.res.status >= 200 && hubResp.res.status < 300) {
       successIds.push(denial.id);
-    } else if (hubResp.status >= 400 && hubResp.status < 500) {
+    } else if (hubResp.res.status >= 400 && hubResp.res.status < 500) {
       successIds.push(denial.id);
     } else {
       failedIds.push(denial.id);

@@ -14,6 +14,35 @@ const testStore = new SessionTokenStore(testPath);
 
 vi.stubGlobal('fetch', vi.fn());
 
+vi.mock('../../src/hub-fetch.js', () => {
+  class HubSignatureError extends Error {}
+  return {
+    HubSignatureError,
+    hubFetchVerified: vi.fn(async (_orgId: string, url: string, init?: RequestInit) => {
+      const res = await fetch(url, init);
+      const responseLike = res as {
+        text?: () => Promise<string>;
+        json?: () => Promise<unknown>;
+      };
+
+      let bodyText = '';
+      if (typeof responseLike.text === 'function') {
+        bodyText = await responseLike.text();
+      } else if (typeof responseLike.json === 'function') {
+        bodyText = JSON.stringify(await responseLike.json());
+      }
+
+      return {
+        res: res as Response,
+        bodyText,
+        json<T>(): T {
+          return bodyText ? JSON.parse(bodyText) as T : ({} as T);
+        },
+      };
+    }),
+  };
+});
+
 function createMockRequest(method: string, url: string, headers: Record<string, string> = {}, body?: string): IncomingMessage {
   const listeners: Record<string, Array<(arg?: string) => void>> = {};
   const normalizedHeaders: Record<string, string> = {};
@@ -82,7 +111,8 @@ describe('POST /v1/serves', () => {
 
     await storeIdentitySeed(generateIdentitySeed());
 
-    vi.resetAllMocks();
+    vi.clearAllMocks();
+    vi.mocked(fetch).mockReset();
   });
 
   afterEach(() => {

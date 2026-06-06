@@ -49,6 +49,35 @@ vi.mock('../src/canonical.js', () => ({
   rotateEpochMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-rotate'))),
 }));
 
+vi.mock('../src/hub-fetch.js', () => {
+  class HubSignatureError extends Error {}
+  return {
+    HubSignatureError,
+    hubFetchVerified: vi.fn(async (_orgId: string, url: string, init?: RequestInit) => {
+      const res = await fetch(url, init);
+      const responseLike = res as {
+        text?: () => Promise<string>;
+        json?: () => Promise<unknown>;
+      };
+
+      let bodyText = '';
+      if (typeof responseLike.text === 'function') {
+        bodyText = await responseLike.text();
+      } else if (typeof responseLike.json === 'function') {
+        bodyText = JSON.stringify(await responseLike.json());
+      }
+
+      return {
+        res: res as Response,
+        bodyText,
+        json<T>(): T {
+          return bodyText ? JSON.parse(bodyText) as T : ({} as T);
+        },
+      };
+    }),
+  };
+});
+
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
   return {

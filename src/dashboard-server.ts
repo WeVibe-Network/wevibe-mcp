@@ -40,6 +40,7 @@ import { submitMemory } from './contribution.js';
 import { getOrgKeywords } from './org-client.js';
 import { extractKeywords, extractMemories, type ClassifiedKeyword, type SuggestedKeyword } from './extraction.js';
 import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
+import { hubFetchVerified } from './hub-fetch.js';
 
 function resolvePort(): number {
   // CLI flag
@@ -354,18 +355,19 @@ srv.tool(
       params.set('offset', args.offset);
     }
 
-    const listResp = await fetch(
+    const listResp = await hubFetchVerified(
+      membership.orgId,
       `${HUB_URL}/v1/orgs/${membership.orgId}/memories?${params.toString()}`,
       { headers },
     );
 
-    if (!listResp.ok) {
+    if (!listResp.res.ok) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ error: `hub returned ${listResp.status}` }) }],
+        content: [{ type: 'text', text: JSON.stringify({ error: `hub returned ${listResp.res.status}` }) }],
       };
     }
 
-	const listData = await listResp.json() as {
+	const listData = listResp.json<{
 		memories: Array<{
 			cid: string;
 			org_id: string;
@@ -378,7 +380,7 @@ srv.tool(
       }>;
       count: number;
       next_offset?: string | null;
-    };
+    }>();
 
     const decryptedMemories: Array<Record<string, unknown>> = [];
 
@@ -399,17 +401,20 @@ srv.tool(
       }
 
       try {
-        const ctResp = await fetch(`${HUB_URL}/v1/orgs/${membership.orgId}/memories/${mem.cid}`);
-        if (!ctResp.ok) {
+        const ctResp = await hubFetchVerified(
+          membership.orgId,
+          `${HUB_URL}/v1/orgs/${membership.orgId}/memories/${mem.cid}`,
+        );
+        if (!ctResp.res.ok) {
           decryptedMemories.push({
             cid: mem.cid,
             epoch_id: mem.epoch_id,
-            error: `ciphertext fetch failed: ${ctResp.status}`,
+            error: `ciphertext fetch failed: ${ctResp.res.status}`,
           });
           continue;
         }
 
-        const ctData = await ctResp.json() as { ciphertext_hex: string };
+        const ctData = ctResp.json<{ ciphertext_hex: string }>();
 
         const wrappedDekEncBytes = new Uint8Array(Buffer.from(mem.wrapped_dek_enc, 'hex'));
         const dek = decryptSymmetric(wrappedDekEncBytes, encKey);

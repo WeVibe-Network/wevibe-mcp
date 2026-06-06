@@ -12,6 +12,9 @@ import { formatTrustPanel, type MemoryStats, type ContributorStats } from './tru
 import { is_blacklisted } from './blacklist.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { HUB_URL, EMBEDDING_MODEL } from './config.js';
+import { getActiveHubUrlForOrg, pickActiveEndpoint } from './hub-resolver.js';
+import { getOrgHubState, setOrgHubState } from './identity-sidecar.js';
+import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 
 export interface RetrieveInput {
   query: string;
@@ -51,6 +54,65 @@ function uint8ArrayToHex(arr: Uint8Array): string {
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function normalizeEndpoint(endpoint: string): string {
+  return endpoint.trim().replace(/\/+$/, '');
+}
+
+async function failoverAfterSignatureFailure(orgId: string, failedHubUrl: string): Promise<string | null> {
+  const state = getOrgHubState(orgId);
+  const endpoints = state?.hubEndpoints ?? [];
+  if (endpoints.length === 0) {
+    return null;
+  }
+
+  const failed = normalizeEndpoint(failedHubUrl);
+  const next = await pickActiveEndpoint(endpoints, {
+    skipEndpoint: (endpoint) => normalizeEndpoint(endpoint) === failed,
+  });
+
+  if (!next) {
+    return null;
+  }
+
+  setOrgHubState(orgId, {
+    activeHubEndpoint: next,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return next;
+}
+
+async function runWithHubSignatureFailover<T>(
+  orgId: string,
+  hubUrl: string,
+  context: string,
+  op: (hubUrl: string) => Promise<T>,
+): Promise<{ hubUrl: string; result: T }> {
+  try {
+    const result = await op(hubUrl);
+    return { hubUrl, result };
+  } catch (error) {
+    if (!(error instanceof HubSignatureError)) {
+      throw error;
+    }
+
+    const nextHubUrl = await failoverAfterSignatureFailure(orgId, hubUrl);
+    if (!nextHubUrl) {
+      throw new Error(`${context}: hub response signature verification failed and no failover endpoint is available`);
+    }
+
+    try {
+      const result = await op(nextHubUrl);
+      return { hubUrl: nextHubUrl, result };
+    } catch (retryError) {
+      if (retryError instanceof HubSignatureError) {
+        throw new Error(`${context}: hub response signature verification failed on failover endpoint ${nextHubUrl}`);
+      }
+      throw retryError;
+    }
+  }
+}
+
 export async function retrieve(input: RetrieveInput): Promise<Output> {
   await initCrypto();
 
@@ -78,6 +140,8 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     return { status: 'error', error: `org ${input.org_id} not found in memberships` };
   }
 
+  let activeHubUrl = getActiveHubUrlForOrg(membership.orgId) ?? HUB_URL;
+
   const keywords = dissect_to_keywords({
     description: input.query,
     technologies: [],
@@ -99,16 +163,24 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   let rawMemories: ReturnType<typeof deserializeMemoryResult>[] = [];
   try {
-    const data = await queryOrgMemories({
-      hubUrl: HUB_URL,
-      orgId: membership.orgId,
-      agentPubkey: uint8ArrayToHex(identity.edPubkey),
-      keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
-      vector: queryVector,
-      embeddingModelId: EMBEDDING_MODEL,
-      limit: input.limit ?? 5,
-      agentSig: 'stub',
-    });
+    const queryResult = await runWithHubSignatureFailover(
+      membership.orgId,
+      activeHubUrl,
+      'hub query failed',
+      (hubUrl) => queryOrgMemories({
+        hubUrl,
+        orgId: membership.orgId,
+        agentPubkey: uint8ArrayToHex(identity.edPubkey),
+        keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
+        vector: queryVector,
+        embeddingModelId: EMBEDDING_MODEL,
+        limit: input.limit ?? 5,
+        agentSig: 'stub',
+      }),
+    );
+
+    activeHubUrl = queryResult.hubUrl;
+    const data = queryResult.result;
 
     if (data.results) {
       for (const r of data.results) {
@@ -124,24 +196,41 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   for (const m of rawMemories) {
     try {
-      const ctResp = await fetch(`${HUB_URL}/v1/orgs/${membership.orgId}/memories/${m.cid}`, {
-        headers: authHeaders,
-      });
-      if (!ctResp.ok) continue;
-      const ctData = await ctResp.json() as { ciphertext_hex: string };
+      const ciphertextResult = await runWithHubSignatureFailover(
+        membership.orgId,
+        activeHubUrl,
+        `hub ciphertext fetch failed for memory ${m.cid}`,
+        (hubUrl) => hubFetchVerified(
+          membership.orgId,
+          `${hubUrl}/v1/orgs/${membership.orgId}/memories/${m.cid}`,
+          { headers: authHeaders },
+        ),
+      );
+
+      activeHubUrl = ciphertextResult.hubUrl;
+      if (!ciphertextResult.result.res.ok) continue;
+
+      const ctData = ciphertextResult.result.json<{ ciphertext_hex: string }>();
       const ciphertextBytes = new Uint8Array(Buffer.from(ctData.ciphertext_hex, 'hex'));
 
-      const plaintextBytes = await decryptMemoryBlob(
-        m.cid,
-        m.capsule,
-        m.cfrag,
-        m.umbralCiphertext,
-        ciphertextBytes,
-        membership,
-        m.epochId,
-        HUB_URL,
+      const plaintextResult = await runWithHubSignatureFailover(
+        membership.orgId,
+        activeHubUrl,
+        `hub decrypt failed for memory ${m.cid}`,
+        (hubUrl) => decryptMemoryBlob(
+          m.cid,
+          m.capsule,
+          m.cfrag,
+          m.umbralCiphertext,
+          ciphertextBytes,
+          membership,
+          m.epochId,
+          hubUrl,
+        ),
       );
-      const plaintext = Buffer.from(plaintextBytes).toString('utf-8');
+
+      activeHubUrl = plaintextResult.hubUrl;
+      const plaintext = Buffer.from(plaintextResult.result).toString('utf-8');
 
       let sanitizedPlaintext: string;
       try {
@@ -159,21 +248,21 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       const transformed = transformMemoryContent(sanitizedPlaintext, policyResults);
 
       const memoryStats: MemoryStats = {
-          retrieval_count: m.retrievalCount ?? 0,
-          acceptance_count: m.acceptanceCount ?? 0,
-        };
-        const contributorStats: ContributorStats = m.contributorStats ?? {
-          account_age_days: 0,
-          contributions: 0,
-          serve_count: 0,
-          reports_upheld: 0,
-          false_reports_against: 0,
-        };
-        const trustPanelText = formatTrustPanel({
-          content: transformed.text,
-          memory_stats: memoryStats,
-          contributor_stats: contributorStats,
-        });
+        retrieval_count: m.retrievalCount ?? 0,
+        acceptance_count: m.acceptanceCount ?? 0,
+      };
+      const contributorStats: ContributorStats = m.contributorStats ?? {
+        account_age_days: 0,
+        contributions: 0,
+        serve_count: 0,
+        reports_upheld: 0,
+        false_reports_against: 0,
+      };
+      const trustPanelText = formatTrustPanel({
+        content: transformed.text,
+        memory_stats: memoryStats,
+        contributor_stats: contributorStats,
+      });
 
       memories.push({
         cid: m.cid,

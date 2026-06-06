@@ -7,6 +7,7 @@ import { buildWeVibeSignedAuth } from './auth.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
 import { HTTP_HOST, HUB_URL } from './config.js';
+import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 
 const HTTP_PORT = 4450;
 
@@ -251,9 +252,9 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
-  let hubResp: Response;
+  let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
   try {
-    hubResp = await fetch(`${HUB_URL}/v1/orgs/${body.org_id}/serves`, {
+    hubResp = await hubFetchVerified(body.org_id, `${HUB_URL}/v1/orgs/${body.org_id}/serves`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -261,17 +262,21 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
       },
       body: JSON.stringify(hubBody),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof HubSignatureError) {
+      jsonResponse(res, 502, { error: 'upstream signature verification failed' });
+      return;
+    }
     jsonResponse(res, 502, { error: 'upstream error' });
     return;
   }
 
-  if (hubResp.status >= 500) {
+  if (hubResp.res.status >= 500) {
     jsonResponse(res, 502, { error: 'upstream error' });
     return;
   }
 
-  const hubBodyText = await hubResp.text();
+  const hubBodyText = hubResp.bodyText;
   let hubBodyJson: unknown;
   try {
     hubBodyJson = JSON.parse(hubBodyText);
@@ -279,7 +284,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     hubBodyJson = hubBodyText;
   }
 
-  jsonResponse(res, hubResp.status, hubBodyJson);
+  jsonResponse(res, hubResp.res.status, hubBodyJson);
 }
 
 interface ReportRequestBody {
@@ -350,9 +355,9 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
     return;
   }
 
-  let hubResp: Response;
+  let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
   try {
-    hubResp = await fetch(`${HUB_URL}/v1/orgs/${body.org_id}/reports`, {
+    hubResp = await hubFetchVerified(body.org_id, `${HUB_URL}/v1/orgs/${body.org_id}/reports`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -360,17 +365,21 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
       },
       body: JSON.stringify(hubBody),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof HubSignatureError) {
+      jsonResponse(res, 502, { error: 'upstream signature verification failed' });
+      return;
+    }
     jsonResponse(res, 502, { error: 'upstream error' });
     return;
   }
 
-  if (hubResp.status >= 500) {
+  if (hubResp.res.status >= 500) {
     jsonResponse(res, 502, { error: 'upstream error' });
     return;
   }
 
-  const hubBodyText = await hubResp.text();
+  const hubBodyText = hubResp.bodyText;
   let hubBodyJson: unknown;
   try {
     hubBodyJson = JSON.parse(hubBodyText);
@@ -378,7 +387,7 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
     hubBodyJson = hubBodyText;
   }
 
-  jsonResponse(res, hubResp.status, hubBodyJson);
+  jsonResponse(res, hubResp.res.status, hubBodyJson);
 }
 
 interface DenialRequestBody {

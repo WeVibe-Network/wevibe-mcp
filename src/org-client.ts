@@ -8,6 +8,7 @@ import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership } from './types.js';
 import type { MemoryType } from './types.js';
 import { umbralDecryptReencrypted } from './sidecar.js';
+import { hubFetchVerified } from './hub-fetch.js';
 
 interface HubMemberOrgEntry {
   org_id: string;
@@ -107,17 +108,17 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
     pre_pubkey: getPrePublicKeyHex(),
   };
 
-  const response = await fetch(`${params.hubUrl}/v1/orgs/${params.orgId}/query`, {
+  const response = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(requestBody),
   });
 
-  if (!response.ok) {
-    throw new Error(`hub query failed: HTTP ${response.status}`);
+  if (!response.res.ok) {
+    throw new Error(`hub query failed: HTTP ${response.res.status}`);
   }
 
-  return await response.json() as QueryMemoryResponse;
+  return response.json<QueryMemoryResponse>();
 }
 
 export async function registerPrePubkey(
@@ -128,7 +129,8 @@ export async function registerPrePubkey(
 ): Promise<void> {
   try {
     const { headers } = await buildWeVibeSignedAuth();
-    const response = await fetch(
+    const response = await hubFetchVerified(
+      orgId,
       `${hubUrl}/v1/orgs/${orgId}/members/${memberPubkey}/pre-key`,
       {
         method: 'POST',
@@ -137,15 +139,15 @@ export async function registerPrePubkey(
       },
     );
 
-    if (response.status === 404) {
+    if (response.res.status === 404) {
       console.warn(`wevibe-mcp: PRE pubkey registration skipped for org ${orgId} — member not found`);
       return;
     }
 
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => '');
+    if (!response.res.ok) {
+      const errBody = response.bodyText;
       console.warn(
-        `wevibe-mcp: PRE pubkey registration failed for org ${orgId}: HTTP ${response.status}${errBody ? ` — ${errBody}` : ''}`,
+        `wevibe-mcp: PRE pubkey registration failed for org ${orgId}: HTTP ${response.res.status}${errBody ? ` — ${errBody}` : ''}`,
       );
       return;
     }
@@ -164,12 +166,13 @@ async function fetchKeyEnvelope(
   const { headers } = await buildWeVibeSignedAuth();
 
   try {
-    const response = await fetch(
+    const response = await hubFetchVerified(
+      orgId,
       `${hubUrl}/v1/orgs/${orgId}/keys/envelope`,
       { headers },
     );
-    if (!response.ok) return null;
-    return await response.json() as HubKeyEnvelopeResponse;
+    if (!response.res.ok) return null;
+    return response.json<HubKeyEnvelopeResponse>();
   } catch {
     return null;
   }
@@ -195,6 +198,7 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
 
   let response: Response;
   try {
+    // Non-org-scoped route: no single org hub_response_pubkey applies.
     response = await fetch(
       `${hubUrl}/v1/members/${pubkeyHex}/orgs`,
       { headers },
@@ -299,17 +303,17 @@ async function fetchEpochManifest(
 ): Promise<EpochManifestResponse> {
   const { headers } = await buildWeVibeSignedAuth();
 
-  const response = await fetch(
+  const response = await hubFetchVerified(
+    orgId,
     `${hubUrl}/v1/orgs/${orgId}/epoch/${epochId}/manifest`,
     { headers },
   );
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '');
-    throw new Error(`failed to fetch epoch manifest (${response.status})${errBody ? `: ${errBody}` : ''}`);
+  if (!response.res.ok) {
+    throw new Error(`failed to fetch epoch manifest (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
   }
 
-  return await response.json() as EpochManifestResponse;
+  return response.json<EpochManifestResponse>();
 }
 
 async function getEpochUmbralPk(
@@ -461,6 +465,7 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
 
   let response: Response;
   try {
+    // Non-org-scoped route: org does not exist yet, so no org-scoped pubkey applies.
     response = await fetch(`${params.hubUrl}/v1/orgs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -599,9 +604,9 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
 
   let currentEpoch = 0;
   try {
-    const orgResp = await fetch(`${params.hubUrl}/v1/orgs/${params.orgId}`);
-    if (orgResp.ok) {
-      const orgInfo = await orgResp.json() as { current_epoch?: number };
+    const orgResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}`);
+    if (orgResp.res.ok) {
+      const orgInfo = orgResp.json<{ current_epoch?: number }>();
       currentEpoch = orgInfo.current_epoch ?? 0;
     }
   } catch {
@@ -645,24 +650,24 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
 
   let response: Response;
   try {
-    response = await fetch(`${params.hubUrl}/v1/orgs/${params.orgId}/members`, {
+    const verified = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/members`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    response = verified.res;
+    if (!response.ok) {
+      let errMsg: string;
+      try {
+        const errBody = verified.json<{ error?: string }>();
+        errMsg = errBody.error ?? `HTTP ${response.status}`;
+      } catch {
+        errMsg = `HTTP ${response.status}`;
+      }
+      return { status: 'error', error: errMsg };
+    }
   } catch (e) {
     return { status: 'error', error: `hub unavailable: ${e}` };
-  }
-
-  if (!response.ok) {
-    let errMsg: string;
-    try {
-      const errBody = await response.json() as { error?: string };
-      errMsg = errBody.error ?? `HTTP ${response.status}`;
-    } catch {
-      errMsg = `HTTP ${response.status}`;
-    }
-    return { status: 'error', error: errMsg };
   }
 
   return { status: 'invited' };
@@ -696,9 +701,9 @@ export async function rotateEpoch(params: RotateEpochParams): Promise<RotateEpoc
 
   let currentEpoch = 0;
   try {
-    const orgResp = await fetch(`${params.hubUrl}/v1/orgs/${params.orgId}`);
-    if (orgResp.ok) {
-      const orgInfo = await orgResp.json() as { current_epoch?: number };
+    const orgResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}`);
+    if (orgResp.res.ok) {
+      const orgInfo = orgResp.json<{ current_epoch?: number }>();
       currentEpoch = orgInfo.current_epoch ?? 0;
     }
   } catch {
@@ -713,9 +718,9 @@ export async function rotateEpoch(params: RotateEpochParams): Promise<RotateEpoc
 
   let activeMembers: Array<{ pubkey: string; x25519_pubkey: string; role: string }> = [];
   try {
-    const membersResp = await fetch(`${params.hubUrl}/v1/orgs/${params.orgId}/members`);
-    if (membersResp.ok) {
-      const allMembers = await membersResp.json() as Array<{ pubkey: string; x25519_pubkey: string; role: string; active: boolean }>;
+    const membersResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/members`);
+    if (membersResp.res.ok) {
+      const allMembers = membersResp.json<Array<{ pubkey: string; x25519_pubkey: string; role: string; active: boolean }>>();
       activeMembers = allMembers.filter(m => m.active);
     }
   } catch {
@@ -772,64 +777,64 @@ export async function rotateEpoch(params: RotateEpochParams): Promise<RotateEpoc
 
   let response: Response;
   try {
-    response = await fetch(`${params.hubUrl}/v1/orgs/${params.orgId}/epoch/rotate`, {
+    const verified = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/epoch/rotate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    response = verified.res;
+    if (!response.ok) {
+      let errMsg: string;
+      try {
+        const errBody = verified.json<{ error?: string }>();
+        errMsg = errBody.error ?? `HTTP ${response.status}`;
+      } catch {
+        errMsg = `HTTP ${response.status}`;
+      }
+      return { status: 'error', error: errMsg };
+    }
+
+    let bufferedMoved = 0;
+    let respBody: { buffered_moved?: number; epoch_sk?: string; epoch_pk?: string } = {};
+    try {
+      respBody = verified.json<{ buffered_moved?: number; epoch_sk?: string; epoch_pk?: string }>();
+      bufferedMoved = respBody.buffered_moved ?? 0;
+    } catch {
+      // Response parsing optional
+    }
+
+    if (typeof respBody.epoch_sk === 'string' && respBody.epoch_sk.length > 0) {
+      const epochSkBytes = Buffer.from(respBody.epoch_sk, 'hex');
+      if (epochSkBytes.length === 32) {
+        await storeKeyEnvelope(params.orgId, 'epoch-sk', epochSkBytes);
+      }
+    }
+
+    if (typeof respBody.epoch_pk === 'string' && respBody.epoch_pk.length > 0) {
+      const epochPkBytes = Buffer.from(respBody.epoch_pk, 'hex');
+      if (epochPkBytes.length === 33) {
+        await storeKeyEnvelope(params.orgId, 'epoch-pk', epochPkBytes);
+      }
+    }
+
+    await storeKeyEnvelope(params.orgId, 'mod-privkey', newModIdentity.xPrivkey);
+
+    if (isVaultUnlocked()) {
+      await updateVaultEntry(params.orgId, {
+        sk_mod_hex: Buffer.from(newModIdentity.xPrivkey).toString('hex'),
+        current_epoch: newEpoch,
+      }).catch(() => {});
+    }
+
+    return {
+      status: 'rotated',
+      newEpoch,
+      membersRekeyed: activeMembers.length,
+      bufferedMoved,
+    };
   } catch (e) {
     return { status: 'error', error: `hub unavailable: ${e}` };
   }
-
-  if (!response.ok) {
-    let errMsg: string;
-    try {
-      const errBody = await response.json() as { error?: string };
-      errMsg = errBody.error ?? `HTTP ${response.status}`;
-    } catch {
-      errMsg = `HTTP ${response.status}`;
-    }
-    return { status: 'error', error: errMsg };
-  }
-
-  let bufferedMoved = 0;
-  let respBody: { buffered_moved?: number; epoch_sk?: string; epoch_pk?: string } = {};
-  try {
-    respBody = await response.json() as { buffered_moved?: number; epoch_sk?: string; epoch_pk?: string };
-    bufferedMoved = respBody.buffered_moved ?? 0;
-  } catch {
-    // Response parsing optional
-  }
-
-  if (typeof respBody.epoch_sk === 'string' && respBody.epoch_sk.length > 0) {
-    const epochSkBytes = Buffer.from(respBody.epoch_sk, 'hex');
-    if (epochSkBytes.length === 32) {
-      await storeKeyEnvelope(params.orgId, 'epoch-sk', epochSkBytes);
-    }
-  }
-
-  if (typeof respBody.epoch_pk === 'string' && respBody.epoch_pk.length > 0) {
-    const epochPkBytes = Buffer.from(respBody.epoch_pk, 'hex');
-    if (epochPkBytes.length === 33) {
-      await storeKeyEnvelope(params.orgId, 'epoch-pk', epochPkBytes);
-    }
-  }
-
-  await storeKeyEnvelope(params.orgId, 'mod-privkey', newModIdentity.xPrivkey);
-
-  if (isVaultUnlocked()) {
-    await updateVaultEntry(params.orgId, {
-      sk_mod_hex: Buffer.from(newModIdentity.xPrivkey).toString('hex'),
-      current_epoch: newEpoch,
-    }).catch(() => {});
-  }
-
-  return {
-    status: 'rotated',
-    newEpoch,
-    membersRekeyed: activeMembers.length,
-    bufferedMoved,
-  };
 }
 
 interface HubKeywordEntry {
@@ -842,14 +847,13 @@ interface HubKeywordEntry {
 export async function getOrgKeywords(hubUrl: string, orgId: string): Promise<string[]> {
   const { headers } = await buildWeVibeSignedAuth();
 
-  const response = await fetch(`${hubUrl}/v1/orgs/${orgId}/keywords`, { headers });
+  const response = await hubFetchVerified(orgId, `${hubUrl}/v1/orgs/${orgId}/keywords`, { headers });
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '');
-    throw new Error(`failed to fetch org keywords (${response.status})${errBody ? `: ${errBody}` : ''}`);
+  if (!response.res.ok) {
+    throw new Error(`failed to fetch org keywords (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
   }
 
-  const entries = await response.json() as HubKeywordEntry[];
+  const entries = response.json<HubKeywordEntry[]>();
 
   return entries
     .filter(e => !e.deprecated)

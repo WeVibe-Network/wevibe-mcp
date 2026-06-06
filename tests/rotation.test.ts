@@ -53,6 +53,35 @@ vi.mock('../src/canonical.js', () => ({
   rotateEpochMessage: vi.fn().mockReturnValue(new Uint8Array(100)),
 }));
 
+vi.mock('../src/hub-fetch.js', () => {
+  class HubSignatureError extends Error {}
+  return {
+    HubSignatureError,
+    hubFetchVerified: vi.fn(async (_orgId: string, url: string, init?: RequestInit) => {
+      const res = await fetch(url, init);
+      const responseLike = res as {
+        text?: () => Promise<string>;
+        json?: () => Promise<unknown>;
+      };
+
+      let bodyText = '';
+      if (typeof responseLike.text === 'function') {
+        bodyText = await responseLike.text();
+      } else if (typeof responseLike.json === 'function') {
+        bodyText = JSON.stringify(await responseLike.json());
+      }
+
+      return {
+        res: res as Response,
+        bodyText,
+        json<T>(): T {
+          return bodyText ? JSON.parse(bodyText) as T : ({} as T);
+        },
+      };
+    }),
+  };
+});
+
 describe('rotateEpoch', () => {
   beforeEach(() => {
     vi.clearAllMocks();

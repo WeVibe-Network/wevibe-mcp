@@ -25,6 +25,10 @@ export interface ResolveAllOrgsResult {
   changed: ResolveAllOrgsChange[];
 }
 
+export interface PickActiveEndpointOptions {
+  skipEndpoint?: (endpoint: string) => boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -61,13 +65,17 @@ async function checkEndpointHealth(endpoint: string): Promise<boolean> {
   }
 }
 
-async function endpointPassesFailoverChecks(endpoint: string): Promise<boolean> {
+async function endpointPassesFailoverChecks(endpoint: string, opts: PickActiveEndpointOptions): Promise<boolean> {
+  if (opts.skipEndpoint?.(endpoint)) {
+    return false;
+  }
+
   if (!await checkEndpointHealth(endpoint)) {
     return false;
   }
 
-  // TODO(PLUGIN-B): add response-signature-verification failure as an
-  // additional failover trigger before selecting this endpoint as active.
+  // Caller-provided skipEndpoint supports additional failover triggers
+  // (for example response-signature verification failures).
   return true;
 }
 
@@ -115,18 +123,19 @@ export async function queryOrgFromChain(orgId: string): Promise<ChainResolvedOrg
   };
 }
 
-export async function pickActiveEndpoint(endpoints: string[]): Promise<string | null> {
+export async function pickActiveEndpoint(endpoints: string[], opts: PickActiveEndpointOptions = {}): Promise<string | null> {
   const candidates = endpoints
     .map((endpoint) => normalizeEndpoint(endpoint))
     .filter((endpoint) => endpoint.length > 0);
 
   for (const endpoint of candidates) {
-    if (await endpointPassesFailoverChecks(endpoint)) {
+    if (await endpointPassesFailoverChecks(endpoint, opts)) {
       return endpoint;
     }
   }
 
-  return candidates[0] ?? null;
+  const fallback = candidates.find((endpoint) => !(opts.skipEndpoint?.(endpoint))) ?? null;
+  return fallback;
 }
 
 export async function resolveAllOrgsOnce(opts: ResolveAllOrgsOptions = {}): Promise<ResolveAllOrgsResult> {
