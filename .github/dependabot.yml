@@ -12,6 +12,11 @@ updates:
       prefix: "deps"
     labels:
       - "dependencies"
+    # @noble/hashes v2 restructured its module paths (argon2/utils); the major bump
+    # needs a code migration, so major updates for it are excluded from automation.
+    ignore:
+      - dependency-name: "@noble/hashes"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-root:
         patterns:
