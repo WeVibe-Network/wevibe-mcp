@@ -12,10 +12,11 @@ updates:
       prefix: "deps"
     labels:
       - "dependencies"
-    # @noble/hashes v2 restructured its module paths (argon2/utils); the major bump
-    # needs a code migration, so major updates for it are excluded from automation.
+    # Auto-update minor/patch only. Major bumps (e.g. @noble/hashes v2, zod 4,
+    # vitest 4) need deliberate migration, so they are excluded from automation.
+    # Dependabot security updates still apply regardless of this setting.
     ignore:
-      - dependency-name: "@noble/hashes"
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
     groups:
       npm-root:
