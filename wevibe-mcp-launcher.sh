@@ -3,14 +3,18 @@
 # Ollama is NOT required for the MCP server (embeddings bundled via transformers.js, LLM via MCP sampling)
 # Ollama IS required for wevibe-admin CLI (moderation approval uses Ollama for extraction)
 
-export WEVIBE_HUB_URL="http://localhost:4440"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+export WEVIBE_HUB_URL="${WEVIBE_HUB_URL:-http://localhost:4440}"
 
 # Admin CLI only — not used by MCP server:
-export WEVIBE_OLLAMA_URL="http://localhost:11434"
-export WEVIBE_EXTRACTION_MODEL="qwen3.5-128k:latest"
+export WEVIBE_OLLAMA_URL="${WEVIBE_OLLAMA_URL:-http://localhost:11434}"
+export WEVIBE_EXTRACTION_MODEL="${WEVIBE_EXTRACTION_MODEL:-qwen3.5-128k:latest}"
 
-export WEVIBE_GUARD_BIN="/Users/jerrysmith/Desktop/wevibe-workspace/wevibe-guard/target/release/wevibe-guard"
+# Path to the wevibe-guard binary (override WEVIBE_GUARD_BIN to point elsewhere).
+# Defaults to a sibling wevibe-guard checkout's release build.
+export WEVIBE_GUARD_BIN="${WEVIBE_GUARD_BIN:-$SCRIPT_DIR/../wevibe-guard/target/release/wevibe-guard}"
 
 export WEVIBE_AUTO_CONTRIBUTE="1"
 export WEVIBE_ALLOW_UNREVIEWED=1
-exec node /Users/jerrysmith/Desktop/wevibe-workspace/wevibe-mcp/dist/server.js
+exec node "${WEVIBE_MCP_SERVER:-$SCRIPT_DIR/dist/server.js}"
