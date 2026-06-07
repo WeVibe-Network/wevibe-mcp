@@ -76,6 +76,10 @@ interface MemoryWithGuard {
 
 interface ExtractRequestBody {
   transcript?: unknown;
+  model?: unknown;
+  ollama_url?: unknown;
+  prompt?: unknown;
+  num_ctx?: unknown;
   project_context?: {
     title?: unknown;
     directory?: unknown;
@@ -232,6 +236,23 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     ? body.project_context.stack.filter((item): item is string => typeof item === 'string')
     : [];
 
+  const modelOverride = typeof body.model === 'string' && body.model.trim()
+    ? body.model.trim()
+    : undefined;
+  const ollamaUrlOverride = typeof body.ollama_url === 'string' && body.ollama_url.trim()
+    ? body.ollama_url.trim()
+    : undefined;
+  const systemPromptOverride = typeof body.prompt === 'string' && body.prompt.trim().length > 0
+    ? body.prompt
+    : undefined;
+  const numCtxOverride = typeof body.num_ctx === 'number'
+    ? body.num_ctx
+    : undefined;
+
+  const provider = modelOverride
+    ? createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, modelOverride)
+    : getExtractionProvider();
+
   try {
     const result = await extractMemories(
       body.transcript,
@@ -240,7 +261,11 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
         directory,
         stack,
       },
-      getExtractionProvider(),
+      {
+        provider,
+        systemPrompt: systemPromptOverride,
+        numCtx: numCtxOverride,
+      },
     );
 
     jsonResponse(res, 200, { memories: result.memories });

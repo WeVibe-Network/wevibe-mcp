@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { extractMemories, computeEmbedding, extractKeywords } from '../src/extraction.js';
 import { setLlmProvider } from '../src/llm.js';
-import type { LlmProvider } from '../src/llm.js';
+import type { LlmChatOptions, LlmProvider } from '../src/llm.js';
 
 vi.mock('../src/embedding.js', () => ({
   computeLocalEmbedding: vi.fn().mockResolvedValue(new Array(768).fill(0.1)),
@@ -22,10 +22,12 @@ vi.mock('../src/key-store.js', () => ({
   }),
 }));
 
-function createMockLlmProvider(chatFn: (sys: string, user: string) => string | Promise<string>): LlmProvider {
+function createMockLlmProvider(
+  chatFn: (sys: string, user: string, options?: LlmChatOptions) => string | Promise<string>,
+): LlmProvider {
   return {
-    chat: async (systemPrompt: string, userMessage: string) => {
-      return chatFn(systemPrompt, userMessage);
+    chat: async (systemPrompt: string, userMessage: string, options?: LlmChatOptions) => {
+      return chatFn(systemPrompt, userMessage, options);
     },
   };
 }
@@ -40,9 +42,9 @@ describe('extractMemories', () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
-          insight: 'ioredis solved Redis cluster timeouts by persisting slot metadata across reconnects.',
+          implement: 'Use ioredis for Redis Cluster and persist slot metadata across reconnects to prevent timeout storms.',
           context: 'Redis cluster with 6 nodes using TLS, nodejs 20 runtime.',
-          avoid: 'Avoid node-redis for clustered Redis: it drops slot cache on reconnect and causes timeouts.',
+          dnd: 'Do not use node-redis for this cluster setup because slot cache resets on reconnect can trigger repeated timeouts.',
           stack: ['nodejs', 'redis', 'typescript'],
           memory_type: 'memory',
         },
@@ -55,20 +57,81 @@ describe('extractMemories', () => {
     );
 
     expect(result.memories).toHaveLength(1);
-    expect(result.memories[0].insight).toContain('ioredis');
+    expect(result.memories[0].implement).toContain('ioredis');
     expect(result.memories[0].context).toContain('Redis cluster');
-    expect(result.memories[0].avoid).toContain('node-redis');
+    expect(result.memories[0].dnd).toContain('node-redis');
     expect(result.memories[0].stack).toContain('nodejs');
     expect(result.memories[0].memory_type).toBe('memory');
+    expect(result.memories[0].preference_confidence).toBe(0.0);
+    expect(result.memories[0].extraction_hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('parses a fenced json array response', async () => {
+    const provider = createMockLlmProvider(() =>
+      '```json\n[\n  {\n    "implement": "Use PgBouncer transaction pooling for short-lived API requests.",\n    "context": "PostgreSQL 16 behind PgBouncer for Node.js API workers.",\n    "dnd": null,\n    "stack": ["postgresql", "pgbouncer", "nodejs"],\n    "memory_type": "memory"\n  }\n]\n```'
+    );
+
+    const result = await extractMemories(
+      'Database pooling troubleshooting notes',
+      { name: 'test-project', stack: ['postgresql', 'nodejs'], directory: '/Users/test' },
+      { provider },
+    );
+
+    expect(result.memories).toHaveLength(1);
+    expect(result.memories[0].implement).toContain('PgBouncer');
+  });
+
+  it('parses a bare array response', async () => {
+    const provider = createMockLlmProvider(() => JSON.stringify([
+      {
+        implement: 'Set Node.js http keepAliveTimeout above ALB idle timeout to reduce socket resets.',
+        context: 'Node.js 20 service behind AWS ALB with default idle settings.',
+        dnd: null,
+        stack: ['nodejs', 'aws'],
+        memory_type: 'memory',
+      },
+    ]));
+
+    const result = await extractMemories(
+      'Socket reset debugging notes',
+      { name: 'test-project', stack: ['nodejs', 'aws'], directory: '/Users/test' },
+      { provider },
+    );
+
+    expect(result.memories).toHaveLength(1);
+    expect(result.memories[0].implement).toContain('keepAliveTimeout');
+  });
+
+  it('parses a wrapped {memories:[...]} response', async () => {
+    const provider = createMockLlmProvider(() => JSON.stringify({
+      memories: [
+        {
+          implement: 'Set Prisma pool timeout below Lambda max duration to avoid orphaned connections.',
+          context: 'AWS Lambda + Prisma + RDS Proxy under bursty traffic.',
+          dnd: null,
+          stack: ['prisma', 'aws', 'postgresql'],
+          memory_type: 'memory',
+        },
+      ],
+    }));
+
+    const result = await extractMemories(
+      'Prisma timeout triage',
+      { name: 'test-project', stack: ['prisma', 'aws'], directory: '/Users/test' },
+      { provider },
+    );
+
+    expect(result.memories).toHaveLength(1);
+    expect(result.memories[0].implement).toContain('Prisma pool timeout');
   });
 
   it('keeps memories classified as memory', async () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
-          insight: 'Do not disable TLS hostname validation in staging because it masks certificate chain regressions.',
+          implement: 'Keep TLS hostname validation enabled in staging to catch certificate chain regressions early.',
           context: 'Node.js API clients validating internal service certs.',
-          avoid: 'Avoid setting NODE_TLS_REJECT_UNAUTHORIZED=0 because it hides cert failures until production.',
+          dnd: 'Avoid setting NODE_TLS_REJECT_UNAUTHORIZED=0 because it hides cert failures until production.',
           stack: ['nodejs', 'tls'],
           memory_type: 'memory',
         },
@@ -88,9 +151,9 @@ describe('extractMemories', () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
-          insight: 'Pinning Prisma query engine binaries to linux-musl fixed runtime failures in Alpine containers.',
+          implement: 'Pin Prisma query engine binaries to linux-musl for Alpine-based containers to avoid runtime binary mismatch failures.',
           context: 'Prisma 5 on Node.js 20 running in Alpine-based Docker images.',
-          avoid: null,
+          dnd: null,
           stack: ['prisma', 'docker', 'nodejs'],
           memory_type: 'memory',
         },
@@ -111,9 +174,9 @@ describe('extractMemories', () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
-          insight: 'Some invalidly typed memory.',
+          implement: 'Some invalidly typed memory.',
           context: 'Some context.',
-          avoid: null,
+          dnd: null,
           stack: ['nodejs'],
           memory_type: 'preference',
         },
@@ -135,9 +198,9 @@ describe('extractMemories', () => {
     setLlmProvider(createMockLlmProvider(() =>
       JSON.stringify([
         {
-          insight: 'Memory missing type should be dropped.',
+          implement: 'Memory missing type should be dropped.',
           context: 'Some context.',
-          avoid: null,
+          dnd: null,
           stack: ['typescript'],
         },
       ])
@@ -151,6 +214,80 @@ describe('extractMemories', () => {
     expect(result.memories).toHaveLength(0);
     expect(warnSpy).toHaveBeenCalledWith('extraction: dropping memory with invalid memory_type "undefined"');
     warnSpy.mockRestore();
+  });
+
+  it('drops memories missing required implement', async () => {
+    setLlmProvider(createMockLlmProvider(() =>
+      JSON.stringify([
+        {
+          context: 'Node.js service with internal TLS cert rotation.',
+          dnd: null,
+          stack: ['nodejs', 'tls'],
+          memory_type: 'memory',
+        },
+      ])
+    ));
+
+    const result = await extractMemories(
+      'Session where implement was omitted',
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+    );
+
+    expect(result.memories).toHaveLength(0);
+  });
+
+  it('adds deterministic extraction_hash for identical canonical content', async () => {
+    const provider = createMockLlmProvider(() => JSON.stringify([
+      {
+        implement: 'Set NODE_OPTIONS=--max-old-space-size=4096 for CI webpack builds to prevent OOM crashes.',
+        context: 'GitHub Actions ubuntu-latest runners building a Next.js monorepo.',
+        dnd: null,
+        stack: ['nodejs', 'next.js', 'webpack'],
+        memory_type: 'memory',
+        preference_confidence: 0.1,
+      },
+      {
+        implement: 'Set NODE_OPTIONS=--max-old-space-size=4096 for CI webpack builds to prevent OOM crashes.',
+        context: 'GitHub Actions ubuntu-latest runners building a Next.js monorepo.',
+        dnd: null,
+        stack: ['nodejs', 'next.js', 'webpack'],
+        memory_type: 'memory',
+        preference_confidence: 0.9,
+      },
+    ]));
+
+    const result = await extractMemories(
+      'Build pipeline memory extraction',
+      { name: 'test-project', stack: ['nodejs', 'next.js'], directory: '/Users/test' },
+      { provider },
+    );
+
+    expect(result.memories).toHaveLength(2);
+    expect(result.memories[0].extraction_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.memories[1].extraction_hash).toBe(result.memories[0].extraction_hash);
+  });
+
+  it('honors per-request systemPrompt and numCtx overrides', async () => {
+    let capturedSystemPrompt = '';
+    let capturedNumCtx: number | undefined;
+    const provider = createMockLlmProvider((systemPrompt, _userMessage, options) => {
+      capturedSystemPrompt = systemPrompt;
+      capturedNumCtx = options?.numCtx;
+      return '[]';
+    });
+
+    await extractMemories(
+      'Any transcript',
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      {
+        provider,
+        systemPrompt: 'ORG EXTRACTION PROFILE PROMPT',
+        numCtx: 65536,
+      },
+    );
+
+    expect(capturedSystemPrompt).toBe('ORG EXTRACTION PROFILE PROMPT');
+    expect(capturedNumCtx).toBe(65536);
   });
 
   it('returns empty array for routine session', async () => {

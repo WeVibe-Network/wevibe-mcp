@@ -8,7 +8,8 @@
 import type { LlmProvider, LlmChatOptions } from './llm.js';
 
 export function createOllamaProvider(ollamaUrl: string, model: string): LlmProvider {
-  return {
+  const provider: LlmProvider & { model: string } = {
+    model,
     async chat(systemPrompt: string, userMessage: string, options?: LlmChatOptions): Promise<string> {
       const resp = await fetch(`${ollamaUrl}/api/chat`, {
         method: 'POST',
@@ -21,7 +22,10 @@ export function createOllamaProvider(ollamaUrl: string, model: string): LlmProvi
             { role: 'user', content: userMessage },
           ],
           stream: false,
-          options: { temperature: options?.temperature ?? 0.2 },
+          options: {
+            temperature: options?.temperature ?? 0.2,
+            ...(options?.numCtx ? { num_ctx: options.numCtx } : {}),
+          },
           format: options?.jsonFormat ? 'json' : undefined,
           think: false,
         }),
@@ -35,4 +39,6 @@ export function createOllamaProvider(ollamaUrl: string, model: string): LlmProvi
       return data.message.content;
     },
   };
+
+  return provider;
 }

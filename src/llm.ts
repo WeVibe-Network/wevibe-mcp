@@ -11,6 +11,7 @@ export interface LlmChatOptions {
   jsonFormat?: boolean;
   timeoutMs?: number;
   maxTokens?: number;
+  numCtx?: number;
 }
 
 export interface LlmProvider {
