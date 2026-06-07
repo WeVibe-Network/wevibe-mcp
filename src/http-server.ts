@@ -8,8 +8,10 @@ import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
 import { EXTRACTION_MODEL, HTTP_HOST, HUB_URL, OLLAMA_URL } from './config.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
-import { extractMemories } from './extraction.js';
+import { DEFAULT_EXTRACTION_NUM_CTX, extractMemories, getExtractionPrompt } from './extraction.js';
+import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.js';
 import { createOllamaProvider } from './llm-ollama.js';
+import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
 import type { LlmProvider } from './llm.js';
 
 const HTTP_PORT = 4450;
@@ -80,6 +82,9 @@ interface ExtractRequestBody {
   ollama_url?: unknown;
   prompt?: unknown;
   num_ctx?: unknown;
+  provider?: string;
+  api_key?: string;
+  base_url?: string;
   project_context?: {
     title?: unknown;
     directory?: unknown;
@@ -248,10 +253,25 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   const numCtxOverride = typeof body.num_ctx === 'number'
     ? body.num_ctx
     : undefined;
+  const providerOverride = typeof body.provider === 'string' && body.provider.trim().length > 0
+    ? body.provider.trim().toLowerCase()
+    : undefined;
+  const apiKeyOverride = typeof body.api_key === 'string'
+    ? body.api_key
+    : undefined;
+  const baseUrlOverride = typeof body.base_url === 'string'
+    ? body.base_url
+    : undefined;
 
-  const provider = modelOverride
-    ? createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, modelOverride)
-    : getExtractionProvider();
+  const provider = providerOverride && providerOverride !== 'ollama'
+    ? createOpenAICompatibleProvider(
+      baseUrlOverride ?? 'https://openrouter.ai/api/v1',
+      modelOverride ?? EXTRACTION_MODEL,
+      apiKeyOverride ?? '',
+    )
+    : (modelOverride
+      ? createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, modelOverride)
+      : getExtractionProvider());
 
   try {
     const result = await extractMemories(
@@ -273,6 +293,26 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     const message = error instanceof Error ? error.message : String(error);
     jsonResponse(res, 500, { error: `extraction failed: ${message}` });
   }
+}
+
+async function handleExtractDefaults(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  jsonResponse(res, 200, {
+    prompt: getExtractionPrompt(),
+    num_ctx: DEFAULT_EXTRACTION_NUM_CTX,
+    model: EXTRACTION_MODEL,
+    recommended_id: RECOMMENDED_PRESET_ID,
+    presets: EXTRACTION_PRESETS.map(p => ({
+      id: p.id,
+      label: p.label,
+      goal: p.goal,
+      recommended: p.recommended,
+      system_prompt: p.system_prompt,
+    })),
+  });
 }
 
 interface ServeRequestBody {
@@ -536,6 +576,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
   if (method === 'POST' && url === '/v1/extract') {
     await handleExtract(req, res);
+    return;
+  }
+
+  if (method === 'GET' && url === '/v1/extract/defaults') {
+    await handleExtractDefaults(req, res);
     return;
   }
 

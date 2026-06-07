@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { getStore } from './key-store.js';
 import { getLlmProvider, type LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
+import { getRecommendedPreset } from './extraction-presets.js';
 import type { MemoryType } from './types.js';
 
 export interface ClassifiedKeyword {
@@ -50,62 +51,15 @@ export interface ExtractMemoriesOptions {
   numCtx?: number;
 }
 
-const DEFAULT_EXTRACTION_PROMPT = `Extract individual technical implementation memories from this session. Each memory must be a single, self-contained piece of knowledge that stands alone.
+export const DEFAULT_EXTRACTION_PROMPT = getRecommendedPreset().system_prompt;
 
-Rules:
-- ONE atomic insight per memory. If a session contains 5 different learnings, produce 5 separate memories.
-- Be specific: include exact values, directive names, configuration keys, paths, and identifiers.
-- "implement" (REQUIRED): what TO do and how — the correct, specific pattern.
-- "dnd" (nullable): what NOT to do and why (negative knowledge), or null.
-- Include the "context" field: what environment, versions, or conditions this memory applies to.
-- Include "memory_type" and set every memory to exactly:
-  - "memory"
-- For each memory, also assess whether it represents a subjective preference rather than
-  verifiable implementation knowledge or an observable negative signal.
-  Rate "preference_confidence" from 0.0 to 1.0:
-  - 0.0: Clearly factual/verifiable. "PostgreSQL uses MVCC for concurrency control."
-  - 0.2-0.3: Organizational convention stated as fact. "This org uses Prettier with 2-space indent."
-    These ARE valid memories — the convention is verifiable within the org.
-  - 0.5: Ambiguous. "TypeScript strict mode is the way to go." Could be convention or opinion.
-  - 0.7-0.8: Likely preference. "Functional components are better than class components."
-    No org-specific qualifier, stated as general opinion.
-  - 1.0: Pure preference. "I prefer dark mode." No technical substance.
-  Higher preference_confidence signals LOWER-QUALITY/more-subjective knowledge that a human will weigh before committing — score honestly.
-  Important: organizational conventions (how THIS org does things) are NOT preferences.
-  "We always use X" in the context of a specific org = convention = valid memory.
-  "X is always better than Y" without org context = preference = flag it.
-- Include "stack" with the specific technologies involved.
-- Do NOT bundle multiple insights into a single memory.
-- Do NOT produce generic advice. "Use connection pooling" is too vague. "Set PgBouncer default_pool_size to match PostgreSQL max_connections divided by app instance count" is specific.
-- If the session contains no novel technical insights, return an empty array.
-
-Output ONLY a JSON array of objects with keys:
-- implement
-- context
-- dnd
-- stack
-- memory_type (must be "memory")
-- preference_confidence
-
-Do not output any additional keys. Do not output extraction_hash; the engine computes it.
-
-Example output:
-[
-  {
-    "implement": "what TO do and how in 1-2 sentences",
-    "context": "environment and conditions where this applies",
-    "dnd": "what NOT to do and why, or null",
-    "stack": ["technology1", "technology2"],
-    "memory_type": "memory",
-    "preference_confidence": 0.0
-  }
-]`;
+export const DEFAULT_EXTRACTION_NUM_CTX = 32768;
 
 function isMemoryType(value: unknown): value is MemoryCandidate['memory_type'] {
   return value === 'memory';
 }
 
-function getExtractionPrompt(): string {
+export function getExtractionPrompt(): string {
   return process.env.WEVIBE_EXTRACTION_PROMPT ?? DEFAULT_EXTRACTION_PROMPT;
 }
 
@@ -346,7 +300,7 @@ export async function extractMemories(
   const systemPrompt = typeof options.systemPrompt === 'string' && options.systemPrompt.trim().length > 0
     ? options.systemPrompt
     : getExtractionPrompt();
-  const numCtx = typeof options.numCtx === 'number' ? options.numCtx : 32768;
+  const numCtx = typeof options.numCtx === 'number' ? options.numCtx : DEFAULT_EXTRACTION_NUM_CTX;
   let content: string | undefined;
 
   const userMessage = `Project: ${projectContext.name}
@@ -362,7 +316,7 @@ ${rawBuffer}`;
       ? (llm as { model?: string }).model
       : undefined;
     content = await llm.chat(systemPrompt, userMessage, {
-      temperature: 0.3,
+      temperature: 0.1,
       jsonFormat: true,
       timeoutMs: 300000,
       numCtx,
