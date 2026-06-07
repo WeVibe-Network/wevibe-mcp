@@ -6,10 +6,22 @@ import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
-import { HTTP_HOST, HUB_URL } from './config.js';
+import { EXTRACTION_MODEL, HTTP_HOST, HUB_URL, OLLAMA_URL } from './config.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
+import { extractMemories } from './extraction.js';
+import { createOllamaProvider } from './llm-ollama.js';
+import type { LlmProvider } from './llm.js';
 
 const HTTP_PORT = 4450;
+
+let extractionProvider: LlmProvider | null = null;
+
+function getExtractionProvider(): LlmProvider {
+  if (!extractionProvider) {
+    extractionProvider = createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL);
+  }
+  return extractionProvider;
+}
 
 export async function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -59,6 +71,15 @@ interface MemoryWithGuard {
     passed: boolean;
     detections: string[];
     flags: string[];
+  };
+}
+
+interface ExtractRequestBody {
+  transcript?: unknown;
+  project_context?: {
+    title?: unknown;
+    directory?: unknown;
+    stack?: unknown;
   };
 }
 
@@ -184,6 +205,49 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   }
 
   jsonResponse(res, 200, { status: 'ok', memories: memoriesWithGuard });
+}
+
+async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const bodyStr = await readBody(req);
+  let body: ExtractRequestBody;
+  try {
+    body = JSON.parse(bodyStr) as ExtractRequestBody;
+  } catch {
+    jsonResponse(res, 400, { error: 'invalid JSON' });
+    return;
+  }
+
+  if (typeof body.transcript !== 'string') {
+    jsonResponse(res, 400, { error: 'transcript is required and must be a string' });
+    return;
+  }
+
+  const title = typeof body.project_context?.title === 'string' ? body.project_context.title : '';
+  const directory = typeof body.project_context?.directory === 'string' ? body.project_context.directory : '';
+  const stack = Array.isArray(body.project_context?.stack)
+    ? body.project_context.stack.filter((item): item is string => typeof item === 'string')
+    : [];
+
+  try {
+    const result = await extractMemories(
+      body.transcript,
+      {
+        name: title,
+        directory,
+        stack,
+      },
+      getExtractionProvider(),
+    );
+
+    jsonResponse(res, 200, { memories: result.memories });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jsonResponse(res, 500, { error: `extraction failed: ${message}` });
+  }
 }
 
 interface ServeRequestBody {
@@ -442,6 +506,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
   if (method === 'POST' && url === '/v1/recall') {
     await handleRecall(req, res);
+    return;
+  }
+
+  if (method === 'POST' && url === '/v1/extract') {
+    await handleExtract(req, res);
     return;
   }
 

@@ -1,5 +1,5 @@
 import { getStore } from './key-store.js';
-import { getLlmProvider } from './llm.js';
+import { getLlmProvider, type LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
 import type { MemoryType } from './types.js';
 
@@ -211,6 +211,7 @@ export async function setConsentFlag(consented: boolean): Promise<void> {
 export async function extractMemories(
   rawBuffer: string,
   projectContext: ProjectContext,
+  provider?: LlmProvider,
 ): Promise<ExtractionResult> {
   const systemPrompt = getExtractionPrompt();
 
@@ -222,7 +223,7 @@ Session transcript:
 ${rawBuffer}`;
 
   try {
-    const llm = getLlmProvider();
+    const llm = provider ?? getLlmProvider();
     const content = await llm.chat(systemPrompt, userMessage, {
       temperature: 0.3,
       jsonFormat: true,
@@ -251,6 +252,9 @@ ${rawBuffer}`;
     return { memories };
   } catch (e) {
     console.warn(`wevibe-mcp: extraction failed — ${e}`);
+    if (provider) {
+      throw e;
+    }
     return { memories: [] };
   }
 }
