@@ -26,6 +26,17 @@ export interface PendingQueueItem {
   voter_pubkeys?: string[];
 }
 
+export interface ModerationHistoryItem {
+  submission_hash: string;
+  memory_type: MemoryType;
+  epoch_id: number;
+  decision: 'approved' | 'denied';
+  status: string;
+  moderator_pubkey: string | null;
+  decided_at: string;
+  denial_reason: string | null;
+}
+
 export interface DecryptedPendingItem {
   submissionHash: string;
   epochId: number;
@@ -105,6 +116,28 @@ export async function fetchPendingQueue(
   }
 
   return await response.json() as PendingQueueItem[];
+}
+
+export async function fetchModerationHistory(
+  hubUrl: string,
+  orgId: string,
+): Promise<ModerationHistoryItem[]> {
+  await ensureCrypto();
+
+  const { headers } = await buildWeVibeSignedAuth();
+
+  const response = await fetch(
+    `${hubUrl}/v1/orgs/${orgId}/moderation/history`,
+    { headers },
+  );
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`hub returned ${response.status}: ${errBody}`);
+  }
+
+  const payload = await response.json() as { items: ModerationHistoryItem[] };
+  return payload.items;
 }
 
 export function decryptPendingItem(
@@ -212,11 +245,16 @@ export async function approveSubmission(
     signed_by: moderatorPubkeyHex,
   };
 
+  const { headers: authHeaders } = await buildWeVibeSignedAuth();
+
   const response = await fetch(
     `${hubUrl}/v1/orgs/${orgId}/moderation/${item.submission_hash}/approve`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
       body: JSON.stringify(requestBody),
     },
   );
@@ -258,11 +296,16 @@ export async function denySubmission(
     signature: moderatorSigHex,
   };
 
+  const { headers: authHeaders } = await buildWeVibeSignedAuth();
+
   const response = await fetch(
     `${hubUrl}/v1/orgs/${orgId}/moderation/${submissionHash}/deny`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
       body: JSON.stringify(requestBody),
     },
   );

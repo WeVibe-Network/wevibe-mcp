@@ -27,6 +27,7 @@ import { loadMemberships } from './org-client.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import {
   fetchPendingQueue,
+  fetchModerationHistory,
   decryptPendingItem,
   approveSubmission,
   denySubmission,
@@ -133,6 +134,28 @@ function createMcpServer(): McpServer {
       content: [{ type: 'text', text: JSON.stringify(decryptedItems) }],
     };
   }
+  );
+
+  srv.tool(
+    'wevibe_mod_history',
+    'List moderation decisions from the last 24 hours (metadata only).',
+    {},
+    async () => {
+      await initCrypto();
+      const membership = await requireMembership();
+
+      if (membership.role !== 'leader' && membership.role !== 'moderator') {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: `role "${membership.role}" cannot moderate` }) }],
+        };
+      }
+
+      const items = await fetchModerationHistory(HUB_URL, membership.orgId);
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(items) }],
+      };
+    }
   );
 
 srv.tool(
