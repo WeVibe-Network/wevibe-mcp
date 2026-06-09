@@ -24,7 +24,7 @@ import { createSamplingProvider } from './llm-sampling.js';
 import { generateRecoveryPhrase } from './recovery.js';
 import { getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { startHttpServer } from './http-server.js';
-import { initSessionToken } from './session-token.js';
+import { initSessionToken, persistSessionToken } from './session-token.js';
 import { HUB_URL } from './config.js';
 
 const ALLOW_UNREVIEWED = process.env.WEVIBE_ALLOW_UNREVIEWED === '1';
@@ -575,8 +575,11 @@ async function main() {
     lockVault();
   }
 
-  await initSessionToken();
-  startHttpServer();
+  initSessionToken();
+  const httpStarted = await startHttpServer();
+  if (httpStarted) {
+    await persistSessionToken();
+  }
 }
 
 main().catch(console.error);

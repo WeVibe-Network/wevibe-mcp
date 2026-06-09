@@ -10,13 +10,25 @@ export class SessionTokenStore {
 
   constructor(public readonly tokenPath: string) {}
 
-async init(): Promise<void> {
+  initialize(): void {
+    const token = randomBytes(TOKEN_BYTES).toString('hex');
+    this.currentToken = token;
+  }
+
+  async writeToDisk(): Promise<void> {
+    if (!this.currentToken) {
+      throw new Error('Session token not initialized');
+    }
+
     const dir = dirname(this.tokenPath);
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    const token = randomBytes(TOKEN_BYTES).toString('hex');
-    await writeFile(this.tokenPath, token, { mode: 0o600 });
+    await writeFile(this.tokenPath, this.currentToken, { mode: 0o600 });
     await chmod(this.tokenPath, 0o600);
-    this.currentToken = token;
+  }
+
+  async init(): Promise<void> {
+    this.initialize();
+    await this.writeToDisk();
   }
 
 verify(presented: string | undefined): boolean {
@@ -42,8 +54,12 @@ function defaultTokenPath(): string {
 
 export const defaultStore = new SessionTokenStore(defaultTokenPath());
 
-export async function initSessionToken(): Promise<void> {
-  return defaultStore.init();
+export function initSessionToken(): void {
+  defaultStore.initialize();
+}
+
+export async function persistSessionToken(): Promise<void> {
+  await defaultStore.writeToDisk();
 }
 
 export function verifySessionToken(presented: string | undefined): boolean {

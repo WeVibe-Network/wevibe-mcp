@@ -602,29 +602,42 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
   jsonResponse(res, 404, { status: 'error', error: 'not found' });
 }
 
-export function startHttpServer(): void {
-  const server = createServer((req, res) => {
-    handleRequest(req, res).catch(err => {
-      console.error(`wevibe-mcp: HTTP request error: ${err}`);
-      jsonResponse(res, 500, { status: 'error', error: 'internal error' });
+export function startHttpServer(): Promise<boolean> {
+  return new Promise(resolve => {
+    const server = createServer((req, res) => {
+      handleRequest(req, res).catch(err => {
+        console.error(`wevibe-mcp: HTTP request error: ${err}`);
+        jsonResponse(res, 500, { status: 'error', error: 'internal error' });
+      });
     });
-  });
 
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`wevibe-mcp: HTTP port ${HTTP_PORT} already in use — another wevibe-mcp instance may be running. HTTP API disabled.`);
-    } else {
-      console.error(`wevibe-mcp: HTTP server error: ${err}`);
-    }
-  });
+    let settled = false;
+    const settle = (started: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(started);
+    };
 
-  server.listen(HTTP_PORT, HTTP_HOST, () => {
-    console.error(`wevibe-mcp: HTTP API listening on ${HTTP_HOST}:${HTTP_PORT}`);
-    // Periodic flush of denial queue — ensures denials reach the hub even when
-    // the consumer is idle (no recall triggered). 60s interval is sufficient for
-    // background retry; the timer naturally stops when the process exits.
-    setInterval(() => {
-      flushDenials().catch(err => console.error('periodic denial flush failed:', err));
-    }, 60_000);
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`wevibe-mcp: HTTP port ${HTTP_PORT} already in use; another MCP instance owns the session token — not overwriting. HTTP API disabled.`);
+      } else {
+        console.error(`wevibe-mcp: HTTP server error: ${err}`);
+      }
+      settle(false);
+    });
+
+    server.listen(HTTP_PORT, HTTP_HOST, () => {
+      console.error(`wevibe-mcp: HTTP API listening on ${HTTP_HOST}:${HTTP_PORT}`);
+      // Periodic flush of denial queue — ensures denials reach the hub even when
+      // the consumer is idle (no recall triggered). 60s interval is sufficient for
+      // background retry; the timer naturally stops when the process exits.
+      setInterval(() => {
+        flushDenials().catch(err => console.error('periodic denial flush failed:', err));
+      }, 60_000);
+      settle(true);
+    });
   });
 }
