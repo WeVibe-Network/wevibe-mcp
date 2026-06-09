@@ -4,6 +4,16 @@ import { buildWeVibeSignedAuth } from './auth.js';
 import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership, MemoryType } from './types.js';
 import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonical.js';
+import { computeLocalEmbedding } from './embedding.js';
+import { EMBEDDING_MODEL } from './config.js';
+import { getLlmProvider } from './llm.js';
+import {
+  parseMemoryText,
+  buildRetrievalCard,
+  buildAnticipatedNeed,
+  sanitizeForEmbedding,
+  type StructuredMemory,
+} from './retrieval-card.js';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -175,6 +185,22 @@ export function decryptPendingItem(
   return result;
 }
 
+export function decryptCiphertext(
+  ciphertextHex: string,
+  wrappedDekModHex: string,
+  membership: OrgMembership,
+): { plaintext?: string; error?: string } {
+  if (!membership.modPrivkey) return { error: 'no moderation private key available' };
+
+  try {
+    const dek = openEnvelope(new Uint8Array(Buffer.from(wrappedDekModHex, 'hex')), membership.modPrivkey);
+    const plaintext = decryptSymmetric(new Uint8Array(Buffer.from(ciphertextHex, 'hex')), dek);
+    return { plaintext: Buffer.from(plaintext).toString('utf-8') };
+  } catch (e) {
+    return { error: `decryption failed: ${(e as Error).message}` };
+  }
+}
+
 export interface SimilarMemory {
   cid: string;
   score: number;
@@ -221,6 +247,36 @@ export async function approveSubmission(
     return { status: 'error', error: `failed to decrypt content: ${(e as Error).message}` };
   }
 
+  const parsed = parseMemoryText(plaintext);
+  const structured: StructuredMemory = {
+    implement: parsed.implement,
+    context: parsed.context,
+    dnd: parsed.dnd,
+    stack: Array.isArray(item.stack_hint) ? item.stack_hint : [],
+  };
+
+  const cardBase = buildRetrievalCard(structured);
+  let anticipatedNeed = '';
+  try {
+    const llm = getLlmProvider();
+    const chatAdapter = async (system: string, user: string): Promise<string> => llm.chat(system, user);
+    anticipatedNeed = await buildAnticipatedNeed(structured, chatAdapter);
+  } catch (e) {
+    console.warn(`approveSubmission: anticipated need generation failed: ${(e as Error).message}`);
+  }
+
+  const cardText = anticipatedNeed
+    ? `${cardBase}\nAnticipated need: ${anticipatedNeed}`
+    : cardBase;
+
+  let vector: number[] | undefined;
+  try {
+    const sanitized = sanitizeForEmbedding(cardText);
+    vector = await computeLocalEmbedding(sanitized, { role: 'document', prefix: true });
+  } catch (e) {
+    console.warn(`approveSubmission: embedding failed; continuing without vector: ${(e as Error).message}`);
+  }
+
   const moderatorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
   const memoryType = item.memory_type;
 
@@ -238,12 +294,28 @@ export async function approveSubmission(
   const sigBytes = sign(identity.edPrivkey, canonical);
   const moderatorSigHex = Buffer.from(sigBytes).toString('hex');
 
-  const requestBody = {
+  const requestBody: {
+    epoch_id: number;
+    memory_type: MemoryType;
+    moderator_sig: string;
+    signed_by: string;
+    vector?: number[];
+    embedding_model_id?: string;
+    embedding_schema_version?: string;
+    vector_dim?: number;
+  } = {
     epoch_id: item.epoch_id,
     memory_type: memoryType,
     moderator_sig: moderatorSigHex,
     signed_by: moderatorPubkeyHex,
   };
+
+  if (vector !== undefined) {
+    requestBody.vector = vector;
+    requestBody.embedding_model_id = EMBEDDING_MODEL;
+    requestBody.embedding_schema_version = 'retrieval-card-v1';
+    requestBody.vector_dim = vector.length;
+  }
 
   const { headers: authHeaders } = await buildWeVibeSignedAuth();
 

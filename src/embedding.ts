@@ -2,6 +2,8 @@ import { OLLAMA_EMBEDDING_HOST, EMBEDDING_MODEL } from './config.js';
 
 const EXPECTED_DIM = 768;
 
+export type EmbeddingRole = 'document' | 'query';
+
 function getOllamaHost(): string {
   return OLLAMA_EMBEDDING_HOST.replace(/\/$/, '');
 }
@@ -10,13 +12,20 @@ function getEmbeddingModel(): string {
   return EMBEDDING_MODEL;
 }
 
-export async function computeLocalEmbedding(text: string): Promise<number[]> {
+export async function computeLocalEmbedding(
+  text: string,
+  opts?: { role?: EmbeddingRole; prefix?: boolean },
+): Promise<number[]> {
+  const prompt = opts?.prefix === true
+    ? `${opts.role === 'query' ? 'search_query' : 'search_document'}: ${text}`
+    : text;
+
   const response = await fetch(`${getOllamaHost()}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: getEmbeddingModel(),
-      prompt: text,
+      prompt,
     }),
   });
 

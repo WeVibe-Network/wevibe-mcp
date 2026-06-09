@@ -1,8 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { approveSubmission } from '../src/moderation.js';
+import { computeLocalEmbedding } from '../src/embedding.js';
+import { getLlmProvider } from '../src/llm.js';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
+
+const mockChat = vi.fn();
+
+vi.mock('../src/embedding.js', () => ({
+  computeLocalEmbedding: vi.fn(),
+}));
+
+vi.mock('../src/llm.js', () => ({
+  getLlmProvider: vi.fn(),
+}));
 
 vi.mock('../src/crypto.js', () => ({
   initCrypto: vi.fn().mockResolvedValue(undefined),
@@ -53,16 +65,15 @@ const mockPendingItem = {
 };
 
 function queueManifestAndApproveResponses() {
-  mockFetch
-    .mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ umbral_pk: '02' + '11'.repeat(32) }),
-    })
-    .mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-    });
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+  });
+}
+
+function buildMockVector(dim = 768): number[] {
+  return Array.from({ length: dim }, (_, i) => i / dim);
 }
 
 function findApproveCallBody(): Record<string, unknown> {
@@ -80,6 +91,10 @@ describe('moderation approval flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockReset();
+    mockChat.mockReset();
+    mockChat.mockResolvedValue('When this memory is needed during moderation review.');
+    vi.mocked(getLlmProvider).mockReturnValue({ chat: mockChat } as ReturnType<typeof getLlmProvider>);
+    vi.mocked(computeLocalEmbedding).mockResolvedValue(buildMockVector());
   });
 
   it('sends epoch_id, memory_type, signed_by, and moderator_sig to hub', async () => {
@@ -114,22 +129,39 @@ describe('moderation approval flow', () => {
     expect(body.memory_type).toBe('memory');
   });
 
-  it('does not include deprecated embedding fields', async () => {
+  it('includes retrieval-card embedding fields when embedding succeeds', async () => {
     queueManifestAndApproveResponses();
 
     await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
 
     const body = findApproveCallBody();
 
-    expect(body.vector).toBeUndefined();
-    expect(body.embedding_model_id).toBeUndefined();
-    expect(body.embedding_schema_version).toBeUndefined();
-    expect(body.vector_dim).toBeUndefined();
+    expect(Array.isArray(body.vector)).toBe(true);
+    expect((body.vector as number[])).toHaveLength(768);
+    expect(body.embedding_model_id).toBe('nomic-embed-text');
+    expect(body.embedding_schema_version).toBe('retrieval-card-v1');
+    expect(body.vector_dim).toBe(768);
+
     expect(body.keywords).toBeUndefined();
     expect(body.keyword_weights).toBeUndefined();
     expect(body.approved_cid).toBeUndefined();
     expect(body.umbral_capsule).toBeUndefined();
     expect(body.umbral_ciphertext).toBeUndefined();
     expect(body.content_flags).toBeUndefined();
+  });
+
+  it('still approves when embedding fails and omits vector fields', async () => {
+    queueManifestAndApproveResponses();
+    vi.mocked(computeLocalEmbedding).mockRejectedValueOnce(new Error('embedding offline'));
+
+    const result = await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
+
+    expect(result.status).toBe('approved');
+
+    const body = findApproveCallBody();
+    expect(body.vector).toBeUndefined();
+    expect(body.embedding_model_id).toBeUndefined();
+    expect(body.embedding_schema_version).toBeUndefined();
+    expect(body.vector_dim).toBeUndefined();
   });
 });

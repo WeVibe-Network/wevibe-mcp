@@ -29,6 +29,7 @@ import {
   fetchPendingQueue,
   fetchModerationHistory,
   decryptPendingItem,
+  decryptCiphertext,
   approveSubmission,
   denySubmission,
   scanForSteganography,
@@ -134,6 +135,36 @@ function createMcpServer(): McpServer {
       content: [{ type: 'text', text: JSON.stringify(decryptedItems) }],
     };
   }
+  );
+
+  srv.tool(
+    'wevibe_decrypt_batch',
+    'Decrypt a batch of encrypted submissions (ciphertext_hex + wrapped_dek_mod) using the moderation key. Returns plaintext per item.',
+    {
+      org_id: z.string().optional(),
+      items: z.array(z.object({
+        id: z.string(),
+        ciphertext_hex: z.string(),
+        wrapped_dek_mod: z.string(),
+      })),
+    },
+    async (args) => {
+      await initCrypto();
+      const membership = await requireMembership(args.org_id);
+
+      const results = args.items.map((item) => {
+        const r = decryptCiphertext(item.ciphertext_hex, item.wrapped_dek_mod, membership);
+        return {
+          id: item.id,
+          plaintext: r.plaintext ?? null,
+          error: r.error,
+        };
+      });
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(results) }],
+      };
+    }
   );
 
   srv.tool(

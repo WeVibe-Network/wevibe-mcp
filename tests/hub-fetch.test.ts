@@ -155,6 +155,10 @@ describe('retrieve failover on hub signature mismatch', () => {
     const queryOrgMemoriesMock = vi.fn()
       .mockRejectedValueOnce(new HubSignatureError('signature mismatch'))
       .mockResolvedValueOnce({ results: [] });
+    const dissectToKeywordsMock = vi.fn().mockReturnValue([
+      { term: 'redis', weight: 1.0 },
+    ]);
+    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
 
     const pickActiveEndpointMock = vi.fn().mockResolvedValue('https://hub-b.example');
     const getActiveHubUrlForOrgMock = vi.fn().mockReturnValue('https://hub-a.example');
@@ -191,13 +195,11 @@ describe('retrieve failover on hub signature mismatch', () => {
     }));
 
     vi.doMock('../src/session.js', () => ({
-      dissect_to_keywords: vi.fn().mockReturnValue([
-        { term: 'redis', weight: 1.0 },
-      ]),
+      dissect_to_keywords: dissectToKeywordsMock,
     }));
 
     vi.doMock('../src/embedding.js', () => ({
-      computeLocalEmbedding: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
+      computeLocalEmbedding: computeLocalEmbeddingMock,
     }));
 
     vi.doMock('../src/deserialize.js', () => ({
@@ -243,13 +245,38 @@ describe('retrieve failover on hub signature mismatch', () => {
     }));
 
     const { retrieve } = await import('../src/retrieve-cli.js');
-    const result = await retrieve({ query: 'redis config', org_id: 'org-1' });
+    const result = await retrieve({
+      query: 'redis config',
+      org_id: 'org-1',
+      technologies: ['redis', 'typescript'],
+      recentActivity: ['ECONNREFUSED'],
+    });
 
     expect(result).toEqual({
       status: 'ok',
       memories: [],
       org_allowed_providers: ['openai'],
     });
+
+    expect(dissectToKeywordsMock).toHaveBeenCalledTimes(1);
+    const keywordContext = dissectToKeywordsMock.mock.calls[0][0] as {
+      description: string;
+      technologies: string[];
+      recentActivity: string[];
+    };
+    expect(keywordContext.description).toContain('redis config');
+    expect(keywordContext.description).toContain('redis');
+    expect(keywordContext.description).toContain('typescript');
+    expect(keywordContext.technologies).toEqual(['redis', 'typescript']);
+    expect(keywordContext.recentActivity).toEqual(['ECONNREFUSED']);
+
+    expect(computeLocalEmbeddingMock).toHaveBeenCalledTimes(1);
+    expect(computeLocalEmbeddingMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^Intent:/),
+      { role: 'query', prefix: true },
+    );
+    const embeddedText = computeLocalEmbeddingMock.mock.calls[0][0] as string;
+    expect(embeddedText).toContain('Task: redis config');
 
     expect(queryOrgMemoriesMock).toHaveBeenCalledTimes(2);
     expect(queryOrgMemoriesMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ hubUrl: 'https://hub-a.example' }));

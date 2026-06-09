@@ -3,6 +3,7 @@ import { loadIdentity } from './key-store.js';
 import { loadMemberships, queryOrgMemories, decryptMemoryBlob } from './org-client.js';
 import { dissect_to_keywords } from './session.js';
 import { computeLocalEmbedding } from './embedding.js';
+import { buildNeedCard, type NeedHarvest } from './retrieval-card.js';
 import { deserializeMemoryResult } from './deserialize.js';
 import { ocrSanitize } from './ocr-sanitize.js';
 import { extractArtifacts } from './artifact-extract.js';
@@ -20,6 +21,19 @@ export interface RetrieveInput {
   query: string;
   limit?: number;
   org_id?: string;
+  intent?: string;
+  task?: string;
+  description?: string;
+  language?: string;
+  stack?: string[];
+  technologies?: string[];
+  frameworks?: string[];
+  deps?: string[];
+  errorStrings?: string[];
+  recentActivity?: string[];
+  files?: string[];
+  directory?: string;
+  projectName?: string;
 }
 
 export interface MemoryOutput {
@@ -56,6 +70,100 @@ function uint8ArrayToHex(arr: Uint8Array): string {
 
 function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().replace(/\/+$/, '');
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeStringArray(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  const normalized: string[] = [];
+  for (const entry of values) {
+    const value = nonEmptyString(entry);
+    if (!value) {
+      continue;
+    }
+    normalized.push(value);
+  }
+  return normalized;
+}
+
+function mergeDistinctStrings(...valueSets: unknown[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const valueSet of valueSets) {
+    for (const value of normalizeStringArray(valueSet)) {
+      const key = value.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(value);
+    }
+  }
+
+  return merged;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const normalized = nonEmptyString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function optionalArray(values: string[]): string[] | undefined {
+  return values.length > 0 ? values : undefined;
+}
+
+function buildKeywordDescription(input: RetrieveInput, stack: string[]): string {
+  const parts: string[] = [];
+  const query = nonEmptyString(input.query);
+  if (query) {
+    parts.push(query);
+  }
+
+  const description = nonEmptyString(input.description);
+  if (description && description !== query) {
+    parts.push(description);
+  }
+
+  if (stack.length > 0) {
+    parts.push(stack.join(' '));
+  }
+
+  return parts.join(' ').trim();
+}
+
+export function buildQueryHarvest(input: RetrieveInput): NeedHarvest {
+  const stack = mergeDistinctStrings(input.stack, input.technologies);
+  const frameworks = normalizeStringArray(input.frameworks);
+  const deps = normalizeStringArray(input.deps);
+  const errorStrings = mergeDistinctStrings(input.errorStrings, input.recentActivity);
+  const files = normalizeStringArray(input.files);
+
+  return {
+    intent: nonEmptyString(input.intent),
+    task: firstNonEmptyString(input.task, input.description, input.query),
+    language: nonEmptyString(input.language),
+    stack: optionalArray(stack),
+    frameworks: optionalArray(frameworks),
+    deps: optionalArray(deps),
+    errorStrings: optionalArray(errorStrings),
+    files: optionalArray(files),
+  };
 }
 
 async function failoverAfterSignatureFailure(orgId: string, failedHubUrl: string): Promise<string | null> {
@@ -142,12 +250,18 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   let activeHubUrl = getActiveHubUrlForOrg(membership.orgId) ?? HUB_URL;
 
+  const harvest = buildQueryHarvest(input);
+  const needCardText = buildNeedCard(harvest);
+  const stackSignals = harvest.stack ?? [];
+  const recentActivitySignals = harvest.errorStrings ?? [];
+  const keywordDescription = buildKeywordDescription(input, stackSignals);
+
   const keywords = dissect_to_keywords({
-    description: input.query,
-    technologies: [],
-    recentActivity: [],
-    directory: '',
-    projectName: '',
+    description: keywordDescription,
+    technologies: stackSignals,
+    recentActivity: recentActivitySignals,
+    directory: nonEmptyString(input.directory) ?? '',
+    projectName: nonEmptyString(input.projectName) ?? '',
   });
 
   if (keywords.length === 0) {
@@ -156,7 +270,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   let queryVector: number[];
   try {
-    queryVector = await computeLocalEmbedding(input.query);
+    queryVector = await computeLocalEmbedding(needCardText, { role: 'query', prefix: true });
   } catch (e) {
     return { status: 'error', error: `embedding failed: ${e}` };
   }
