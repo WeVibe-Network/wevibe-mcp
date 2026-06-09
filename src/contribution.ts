@@ -10,6 +10,11 @@ import type { OrgMembership, AttestationMetadata, ProvenanceTier } from './types
 import { submitMemoryMessage } from './canonical.js';
 import type { MemoryType } from './types.js';
 
+type MemoryKeywordMetadata = {
+  classified: Array<{ keyword: string; weight: number }>;
+  suggestions: Array<{ keyword: string; weight: number; rationale: string }>;
+};
+
 export async function submitMemory(
   rawNotes: string,
   orgId: string,
@@ -18,6 +23,7 @@ export async function submitMemory(
   memoryType: MemoryType,
   stackHint?: string[],
   sessionTranscript?: string,
+  keywords?: MemoryKeywordMetadata,
 ): Promise<{ status: string; submissionHash?: string; error?: string; attestation?: AttestationMetadata }> {
   if (!memoryType) {
     return { status: 'error', error: 'memory_type is required, did Pass 1 extraction run?' };
@@ -118,6 +124,7 @@ export async function submitMemory(
     contributor_sig: Buffer.from(sig).toString('hex'),
     memory_type: memoryType,
     stack_hint: stackHint ?? [],
+    keywords: keywords ?? { classified: [], suggestions: [] },
     attestation: attestation ?? null,
   };
 

@@ -526,13 +526,28 @@ srv.tool(
       };
     }
 
+    const stackHint = args.stack ?? [];
+    let keywords: { classified: ClassifiedKeyword[]; suggestions: SuggestedKeyword[] } = {
+      classified: [],
+      suggestions: [],
+    };
+
+    try {
+      const orgVocabulary = await getOrgKeywords(HUB_URL, membership.orgId);
+      keywords = await extractKeywords(args.content, stackHint, orgVocabulary);
+    } catch (error) {
+      console.warn(`wevibe-dashboard: wevibe_author_memory keyword extraction failed for org ${membership.orgId}: ${error}`);
+    }
+
     const submitResult = await submitMemory(
       args.content,
       membership.orgId,
       HUB_URL,
 		membership,
 		args.memory_type ?? 'memory',
-		args.stack ?? [],
+		stackHint,
+		undefined,
+		keywords,
 	);
 
     if (submitResult.status !== 'pending' || !submitResult.submissionHash) {
@@ -628,11 +643,17 @@ srv.tool(
   },
   async (args) => {
     await initCrypto();
+    const membership = await requireMembership();
 
     const result = await extractMemories(args.transcript, {
       name: args.project_context.title,
       stack: args.project_context.stack ?? [],
       directory: args.project_context.directory,
+    }, {
+      orgContext: {
+        orgId: membership.orgId,
+        hubUrl: HUB_URL,
+      },
     });
 
     return {

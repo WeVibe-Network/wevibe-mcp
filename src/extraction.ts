@@ -7,6 +7,7 @@ import { getStore } from './key-store.js';
 import { getLlmProvider, type LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
 import { getRecommendedPreset } from './extraction-presets.js';
+import { getOrgKeywords } from './org-client.js';
 import type { MemoryType } from './types.js';
 
 export interface ClassifiedKeyword {
@@ -42,6 +43,10 @@ export interface MemoryCandidate {
   memory_type: MemoryType;
   preference_confidence: number;
   extraction_hash: string;
+  keywords: {
+    classified: ClassifiedKeyword[];
+    suggestions: SuggestedKeyword[];
+  };
 }
 
 export interface ExtractionResult {
@@ -58,6 +63,10 @@ export interface ExtractMemoriesOptions {
   provider?: LlmProvider;
   systemPrompt?: string;
   numCtx?: number;
+  orgContext?: {
+    orgId: string;
+    hubUrl: string;
+  };
 }
 
 export const DEFAULT_EXTRACTION_PROMPT = getRecommendedPreset().system_prompt;
@@ -150,7 +159,32 @@ function normalizeMemoryCandidate(memory: unknown): MemoryCandidate | null {
       dnd,
       stack,
     }),
+    keywords: {
+      classified: [],
+      suggestions: [],
+    },
   };
+}
+
+function createEmptyKeywords(): KeywordExtractionResult {
+  return {
+    classified: [],
+    suggestions: [],
+  };
+}
+
+function buildKeywordClassifierInput(memory: Pick<MemoryCandidate, 'implement' | 'context' | 'dnd' | 'stack'>): string {
+  return `IMPLEMENT:
+${memory.implement}
+
+CONTEXT:
+${memory.context}
+
+DND:
+${memory.dnd ?? ''}
+
+STACK:
+${memory.stack.join(', ')}`;
 }
 
 function extractJsonText(raw: string): string {
@@ -322,6 +356,39 @@ ${rawBuffer}`;
     const memories = arr
       .map(memory => normalizeMemoryCandidate(memory))
       .filter((memory): memory is MemoryCandidate => memory !== null);
+
+    if (options.orgContext) {
+      let orgVocabulary: string[] | null = null;
+
+      try {
+        orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
+      } catch (error) {
+        console.warn(`wevibe-mcp: keyword vocabulary fetch failed for org ${options.orgContext.orgId}: ${error}`);
+      }
+
+      if (orgVocabulary !== null) {
+        for (const memory of memories) {
+          try {
+            memory.keywords = await extractKeywords(
+              buildKeywordClassifierInput(memory),
+              memory.stack,
+              orgVocabulary,
+            );
+          } catch (error) {
+            console.warn(`wevibe-mcp: keyword extraction failed for memory ${memory.extraction_hash}: ${error}`);
+            memory.keywords = createEmptyKeywords();
+          }
+        }
+      } else {
+        for (const memory of memories) {
+          memory.keywords = createEmptyKeywords();
+        }
+      }
+    } else {
+      for (const memory of memories) {
+        memory.keywords = createEmptyKeywords();
+      }
+    }
 
     try {
       const debugDir = `${homedir()}/.wevibe`;
