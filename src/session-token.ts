@@ -1,9 +1,23 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { writeFile, chmod, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 const TOKEN_BYTES = 32;
+const TOKEN_REGEX = /^[A-Za-z0-9]+$/;
+
+function readTokenFromDisk(tokenPath: string): string | null {
+  try {
+    const token = readFileSync(tokenPath, 'utf8').trim();
+    if (token.length > 0 && TOKEN_REGEX.test(token)) {
+      return token;
+    }
+  } catch {
+    // Fall through to random token generation on any read error.
+  }
+  return null;
+}
 
 export class SessionTokenStore {
   private currentToken: string | null = null;
@@ -11,7 +25,9 @@ export class SessionTokenStore {
   constructor(public readonly tokenPath: string) {}
 
   initialize(): void {
-    const token = randomBytes(TOKEN_BYTES).toString('hex');
+    // Read-from-disk-first so concurrent MCP instances (e.g. multiple OpenCode windows)
+    // share one stable token; only the process that binds the HTTP port persists it.
+    const token = readTokenFromDisk(this.tokenPath) ?? randomBytes(TOKEN_BYTES).toString('hex');
     this.currentToken = token;
   }
 
