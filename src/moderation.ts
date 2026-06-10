@@ -389,30 +389,30 @@ export async function denySubmission(
   return { status: 'denied' };
 }
 
-export interface VoteResult {
-  status: string;
-  votes: number;
-  required_approvals: number;
-  ready: boolean;
-  error?: string;
+export interface SubmissionVoteTallies {
+  approve: number;
+  flag: number;
+}
+
+export interface KeywordVoteTallies {
+  include: number;
+  exclude: number;
 }
 
 export async function voteOnSubmission(
   hubUrl: string,
   orgId: string,
   submissionHash: string,
-): Promise<VoteResult> {
+  vote: 'approve' | 'flag',
+  membership: OrgMembership,
+): Promise<SubmissionVoteTallies> {
   await ensureCrypto();
 
-  const identity = await loadIdentity();
-  if (!identity) {
-    return { status: 'error', error: 'no identity in keychain', votes: 0, required_approvals: 0, ready: false };
+  if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    throw new Error(`role "${membership.role}" cannot vote`);
   }
 
-  const moderatorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
-  const timestamp = new Date().toISOString();
-  const sig = sign(identity.edPrivkey, new TextEncoder().encode(timestamp));
-  const sigHex = Buffer.from(sig).toString('hex');
+  const { headers: authHeaders } = await buildWeVibeSignedAuth();
 
   const response = await fetch(
     `${hubUrl}/v1/orgs/${orgId}/moderation/${submissionHash}/vote`,
@@ -420,15 +420,50 @@ export async function voteOnSubmission(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `WeVibe-Signed pubkey=${moderatorPubkeyHex},timestamp=${timestamp},signature=${sigHex}`,
+        ...authHeaders,
       },
+      body: JSON.stringify({ vote }),
     },
   );
 
   if (!response.ok) {
-    return { status: 'error', error: await parseHttpError(response), votes: 0, required_approvals: 0, ready: false };
+    throw new Error(await parseHttpError(response));
   }
 
-  const result = await response.json() as { status: string; votes: number; required_approvals: number; ready: boolean };
-  return result;
+  return await response.json() as SubmissionVoteTallies;
+}
+
+export async function voteOnKeyword(
+  hubUrl: string,
+  orgId: string,
+  submissionHash: string,
+  keyword: string,
+  vote: 'include' | 'exclude',
+  membership: OrgMembership,
+): Promise<KeywordVoteTallies> {
+  await ensureCrypto();
+
+  if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    throw new Error(`role "${membership.role}" cannot vote`);
+  }
+
+  const { headers: authHeaders } = await buildWeVibeSignedAuth();
+
+  const response = await fetch(
+    `${hubUrl}/v1/orgs/${orgId}/submissions/${submissionHash}/keyword-vote`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
+      body: JSON.stringify({ keyword, vote }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await parseHttpError(response));
+  }
+
+  return await response.json() as KeywordVoteTallies;
 }

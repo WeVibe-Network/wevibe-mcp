@@ -34,6 +34,7 @@ import {
   denySubmission,
   scanForSteganography,
   voteOnSubmission,
+  voteOnKeyword,
 } from './moderation.js';
 import { setLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
@@ -283,14 +284,14 @@ srv.tool(
 
 srv.tool(
   'wevibe_mod_vote',
-  'Cast an approval vote on a pending submission. For orgs with required_approvals > 1, multiple moderators must vote before the submission is approved. Returns current vote count and whether quorum is reached.',
+  'Cast an advisory moderation vote (approve or flag) on a pending submission. Returns current vote tallies.',
   {
     submission_hash: z.string().describe('The submission_hash from the moderation queue'),
-    org_id: z.string().optional(),
+    vote: z.enum(['approve', 'flag']).describe('Advisory vote to cast on the submission'),
   },
   async (args) => {
     await initCrypto();
-    const membership = await requireMembership(args.org_id);
+    const membership = await requireMembership();
 
     if (membership.role !== 'leader' && membership.role !== 'moderator') {
       return {
@@ -298,26 +299,62 @@ srv.tool(
       };
     }
 
-    const result = await voteOnSubmission(HUB_URL, membership.orgId, args.submission_hash);
+    try {
+      const result = await voteOnSubmission(
+        HUB_URL,
+        membership.orgId,
+        args.submission_hash,
+        args.vote,
+        membership,
+      );
 
-    if (result.status === 'error') {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: result.error ?? 'vote failed' }) }],
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: (e as Error).message }) }],
+      };
+    }
+  }
+);
+
+srv.tool(
+  'wevibe_mod_keyword_vote',
+  'Cast an advisory include/exclude vote on a submission keyword. Returns current keyword vote tallies.',
+  {
+    submission_hash: z.string().describe('The submission_hash from the moderation queue'),
+    keyword: z.string().describe('Keyword being voted on'),
+    vote: z.enum(['include', 'exclude']).describe('Advisory keyword vote'),
+  },
+  async (args) => {
+    await initCrypto();
+    const membership = await requireMembership();
+
+    if (membership.role !== 'leader' && membership.role !== 'moderator') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: `role "${membership.role}" cannot vote` }) }],
       };
     }
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: result.status,
-          submission_hash: args.submission_hash,
-          votes: result.votes,
-          required_approvals: result.required_approvals,
-          ready: result.ready,
-        }),
-      }],
-    };
+    try {
+      const result = await voteOnKeyword(
+        HUB_URL,
+        membership.orgId,
+        args.submission_hash,
+        args.keyword,
+        args.vote,
+        membership,
+      );
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: (e as Error).message }) }],
+      };
+    }
   }
 );
 
