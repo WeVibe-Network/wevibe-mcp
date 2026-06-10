@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 
 const testPath = join(tmpdir(), `wevibe-mcp-serves-test-${randomUUID()}`, 'mcp-session-token');
 const testStore = new SessionTokenStore(testPath);
+const MEMORY_HASH_HEX = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
 
 vi.stubGlobal('fetch', vi.fn());
 
@@ -132,8 +133,7 @@ describe('POST /v1/serves', () => {
       'Content-Type': 'application/json',
     }, JSON.stringify({
       org_id: 'org-123',
-      memory_hash: 'Qmhash123456',
-      nullifier: 'nullifier-abc',
+      memory_hash: MEMORY_HASH_HEX,
       model_id: 'test-model',
       turn_count: 5,
       matched_keywords: ['some-kw'],
@@ -146,6 +146,29 @@ describe('POST /v1/serves', () => {
     expect(parsed.status).toBe(200);
     expect(parsed.body).toEqual(mockHubResponse);
     expect(fetch).toHaveBeenCalled();
+
+    const fetchCall = vi.mocked(fetch).mock.calls[0];
+    expect(fetchCall).toBeTruthy();
+    const init = fetchCall![1] as RequestInit;
+    const postedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+
+    expect(postedBody).toMatchObject({
+      org_id: 'org-123',
+      epoch_id: 0,
+      memory_content_hash: MEMORY_HASH_HEX,
+      model_id: 'test-model',
+      turn_count: 5,
+      matched_keywords: ['some-kw'],
+    });
+    expect(postedBody).toHaveProperty('serve_key_pubkey');
+    expect(postedBody).toHaveProperty('serve_sig');
+    expect(postedBody).toHaveProperty('nonce');
+    expect(postedBody).toHaveProperty('contributor_id');
+    expect(postedBody).not.toHaveProperty('serve_key');
+    expect(postedBody).not.toHaveProperty('nullifier');
+    expect(postedBody.serve_key_pubkey).toMatch(/^[0-9a-f]{64}$/);
+    expect(postedBody.serve_sig).toMatch(/^[0-9a-f]{128}$/);
+    expect(postedBody.nonce).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it('POST /v1/serves with no Authorization header → 401', async () => {
@@ -153,8 +176,7 @@ describe('POST /v1/serves', () => {
       'Content-Type': 'application/json',
     }, JSON.stringify({
       org_id: 'org-123',
-      memory_hash: 'Qmhash123456',
-      nullifier: 'nullifier-abc',
+      memory_hash: MEMORY_HASH_HEX,
       matched_keywords: ['some-kw'],
     }));
 
@@ -172,8 +194,7 @@ describe('POST /v1/serves', () => {
       'Content-Type': 'application/json',
     }, JSON.stringify({
       org_id: 'org-123',
-      memory_hash: 'Qmhash123456',
-      nullifier: 'nullifier-abc',
+      memory_hash: MEMORY_HASH_HEX,
       matched_keywords: ['some-kw'],
     }));
 
@@ -190,8 +211,7 @@ describe('POST /v1/serves', () => {
       'Authorization': `Bearer ${validToken}`,
       'Content-Type': 'application/json',
     }, JSON.stringify({
-      memory_hash: 'Qmhash123456',
-      nullifier: 'nullifier-abc',
+      memory_hash: MEMORY_HASH_HEX,
       matched_keywords: ['some-kw'],
     }));
 
@@ -215,8 +235,7 @@ describe('POST /v1/serves', () => {
       'Content-Type': 'application/json',
     }, JSON.stringify({
       org_id: 'org-123',
-      memory_hash: 'Qmhash123456',
-      nullifier: 'nullifier-abc',
+      memory_hash: MEMORY_HASH_HEX,
       matched_keywords: ['some-kw'],
     }));
 
@@ -233,8 +252,7 @@ describe('POST /v1/serves', () => {
       'Content-Type': 'application/json',
     }, JSON.stringify({
       org_id: 'org-123',
-      memory_hash: 'Qmhash123456',
-      nullifier: 'nullifier-abc',
+      memory_hash: MEMORY_HASH_HEX,
       matched_keywords: [],
     }));
 

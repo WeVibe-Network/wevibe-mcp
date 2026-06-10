@@ -1,9 +1,16 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { HUB_URL } from './config.js';
 import { hubFetchVerified } from './hub-fetch.js';
+import {
+  buildCanonicalDenialBodyBytes,
+  computeServeFingerprintHex,
+  deriveOrgServeKey,
+  normalizeHex,
+  signCanonicalBody,
+} from './serve-signing.js';
 
 const WEVIBE_DIR = join(homedir(), '.wevibe');
 const QUEUE_PATH = join(WEVIBE_DIR, 'pending-denials.json');
@@ -17,6 +24,7 @@ function _ensureQueueDir(): void {
 export interface PendingDenial {
   id: string;
   org_id: string;
+  epoch_id: number;
   memory_hash: string;
   reason?: string;
   created_at: string;
@@ -86,6 +94,37 @@ export async function flushDenials(): Promise<{ flushed: number; failed: number 
       continue;
     }
 
+    let memoryHashHex: string;
+    let serveKey: Awaited<ReturnType<typeof deriveOrgServeKey>>;
+    let serveFingerprintHex: string;
+    let nonceHex: string;
+    let serveSigHex: string;
+    try {
+      memoryHashHex = normalizeHex(denial.memory_hash, 'memory_hash');
+      if (Buffer.from(memoryHashHex, 'hex').length !== 32) {
+        throw new Error('memory_hash must be 32 bytes');
+      }
+      serveKey = await deriveOrgServeKey(denial.org_id);
+      serveFingerprintHex = computeServeFingerprintHex({
+        memoryContentHashHex: memoryHashHex,
+        serveKeyPubkeyHex: serveKey.pubHex,
+        epoch: denial.epoch_id,
+      });
+      nonceHex = randomBytes(8).toString('hex');
+      const canonicalDenialBody = buildCanonicalDenialBodyBytes({
+        orgId: denial.org_id,
+        memoryHashHex,
+        epoch: denial.epoch_id,
+        serveKeyPubkeyHex: serveKey.pubHex,
+        serveFingerprintHex,
+        nonceHex,
+      });
+      serveSigHex = await signCanonicalBody(canonicalDenialBody, serveKey.priv);
+    } catch {
+      failedIds.push(denial.id);
+      continue;
+    }
+
     let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
     try {
       hubResp = await hubFetchVerified(denial.org_id, `${HUB_URL}/v1/orgs/${denial.org_id}/denials`, {
@@ -95,8 +134,13 @@ export async function flushDenials(): Promise<{ flushed: number; failed: number 
           ...authResult.headers,
         },
         body: JSON.stringify({
-          memory_hash: denial.memory_hash,
-          nullifier: denial.id,
+          org_id: denial.org_id,
+          epoch_id: denial.epoch_id,
+          memory_hash: memoryHashHex,
+          serve_key_pubkey: serveKey.pubHex,
+          serve_sig: serveSigHex,
+          nonce: nonceHex,
+          serve_fingerprint: serveFingerprintHex,
           reason: denial.reason ?? '',
         }),
         signal: AbortSignal.timeout(10000),

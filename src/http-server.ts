@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { retrieve, type RetrieveInput } from './retrieve-cli.js';
 import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
@@ -13,6 +14,12 @@ import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.
 import { createOllamaProvider } from './llm-ollama.js';
 import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
 import type { LlmProvider } from './llm.js';
+import {
+  buildCanonicalServeBodyBytes,
+  deriveOrgServeKeyFromIdentitySeed,
+  normalizeHex,
+  signCanonicalBody,
+} from './serve-signing.js';
 
 const HTTP_PORT = 4450;
 
@@ -325,10 +332,14 @@ async function handleExtractDefaults(req: IncomingMessage, res: ServerResponse):
 interface ServeRequestBody {
   org_id: string;
   memory_hash: string;
-  nullifier: string;
   model_id?: string;
   turn_count?: number;
   matched_keywords: string[];
+}
+
+function currentServeEpochId(): number {
+  // Current MCP serve epoch source: fixed epoch 0 (existing behavior).
+  return 0;
 }
 
 async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -355,7 +366,11 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
-  if (!Array.isArray(body.matched_keywords) || body.matched_keywords.length === 0) {
+  if (
+    !Array.isArray(body.matched_keywords)
+    || body.matched_keywords.length === 0
+    || body.matched_keywords.some(keyword => typeof keyword !== 'string')
+  ) {
     jsonResponse(res, 400, { error: 'matched_keywords is required, non-empty (D-4.2 Implementation Clarifications)' });
     return;
   }
@@ -366,18 +381,59 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
-  const pubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
+  const contributorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
+  const epochId = currentServeEpochId();
+  const sortedMatchedKeywords = [...body.matched_keywords].sort();
+
+  let memoryContentHashHex: string;
+  try {
+    memoryContentHashHex = normalizeHex(body.memory_hash, 'memory_hash');
+    if (Buffer.from(memoryContentHashHex, 'hex').length !== 32) {
+      jsonResponse(res, 400, { status: 'error', error: 'memory_hash must be a 32-byte hex string' });
+      return;
+    }
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'memory_hash must be a 32-byte hex string' });
+    return;
+  }
+
+  let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
+  try {
+    orgServeKey = await deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, body.org_id);
+  } catch {
+    jsonResponse(res, 500, { status: 'error', error: 'failed to derive org serve key' });
+    return;
+  }
+
+  const nonceHex = randomBytes(8).toString('hex');
+
+  let serveSigHex: string;
+  try {
+    const canonicalServeBody = buildCanonicalServeBodyBytes({
+      orgId: body.org_id,
+      memoryContentHashHex,
+      epoch: epochId,
+      serveKeyPubkeyHex: orgServeKey.pubHex,
+      matchedKeywords: sortedMatchedKeywords,
+      nonceHex,
+    });
+    serveSigHex = await signCanonicalBody(canonicalServeBody, orgServeKey.priv);
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'failed to sign serve payload' });
+    return;
+  }
 
   const hubBody = {
     org_id: body.org_id,
-    epoch_id: 0,
-    memory_content_hash: body.memory_hash,
-    serve_key: `serve-${body.memory_hash}`,
-    contributor_id: pubkeyHex,
-    nullifier: body.nullifier,
+    epoch_id: epochId,
+    memory_content_hash: memoryContentHashHex,
+    serve_key_pubkey: orgServeKey.pubHex,
+    serve_sig: serveSigHex,
+    nonce: nonceHex,
+    contributor_id: contributorPubkeyHex,
     model_id: body.model_id ?? 'unknown',
     turn_count: body.turn_count ?? 0,
-    matched_keywords: body.matched_keywords,
+    matched_keywords: sortedMatchedKeywords,
   };
 
   let authResult: { pubkeyHex: string; headers: Record<string, string> };
@@ -556,9 +612,22 @@ async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  let memoryHashHex: string;
+  try {
+    memoryHashHex = normalizeHex(body.memory_hash, 'memory_hash');
+    if (Buffer.from(memoryHashHex, 'hex').length !== 32) {
+      jsonResponse(res, 400, { status: 'error', error: 'memory_hash must be a 32-byte hex string' });
+      return;
+    }
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'memory_hash must be a 32-byte hex string' });
+    return;
+  }
+
   addDenial({
     org_id: body.org_id,
-    memory_hash: body.memory_hash,
+    epoch_id: currentServeEpochId(),
+    memory_hash: memoryHashHex,
     reason: body.reason,
   });
 
