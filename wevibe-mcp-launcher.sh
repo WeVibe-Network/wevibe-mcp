@@ -16,5 +16,4 @@ export WEVIBE_EXTRACTION_MODEL="${WEVIBE_EXTRACTION_MODEL:-qwen3.5-128k:latest}"
 export WEVIBE_GUARD_BIN="${WEVIBE_GUARD_BIN:-$SCRIPT_DIR/../wevibe-guard/target/release/wevibe-guard}"
 
 export WEVIBE_AUTO_CONTRIBUTE="1"
-export WEVIBE_ALLOW_UNREVIEWED=1
 exec node "${WEVIBE_MCP_SERVER:-$SCRIPT_DIR/dist/server.js}"

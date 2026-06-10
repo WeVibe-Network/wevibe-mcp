@@ -27,6 +27,8 @@ import { startHttpServer } from './http-server.js';
 import { initSessionToken, persistSessionToken } from './session-token.js';
 import { HUB_URL } from './config.js';
 
+// D-11.5: default is GATED (approval required). gateMemories() is currently
+// not wired into the live recall path and will be connected in the recall build.
 const ALLOW_UNREVIEWED = process.env.WEVIBE_ALLOW_UNREVIEWED === '1';
 
 function recallTimeScan(plaintext: string): { text: string; flagged: boolean; detections: string[] } {
@@ -534,9 +536,7 @@ async function gateMemories(
       'WeVibe: found memories but your client does not support MCP elicitation (memory review).',
       'Memories are withheld to prevent unreviewed injection.',
       '',
-      'Options:',
       '- Use a client that supports MCP elicitation (Claude Code, VS Code)',
-      '- Set WEVIBE_ALLOW_UNREVIEWED=1 to accept unreviewed memories (at your own risk)',
     ].join('\n'),
   };
 }
