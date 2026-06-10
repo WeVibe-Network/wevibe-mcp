@@ -4,16 +4,10 @@ import { buildWeVibeSignedAuth } from './auth.js';
 import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership, MemoryType } from './types.js';
 import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonical.js';
-import { computeLocalEmbedding } from './embedding.js';
 import { EMBEDDING_MODEL } from './config.js';
 import { getLlmProvider } from './llm.js';
-import {
-  parseMemoryText,
-  buildRetrievalCard,
-  buildAnticipatedNeed,
-  sanitizeForEmbedding,
-  type StructuredMemory,
-} from './retrieval-card.js';
+import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
+import { embedRetrievalCard } from './embed-card.js';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -255,24 +249,18 @@ export async function approveSubmission(
     stack: Array.isArray(item.stack_hint) ? item.stack_hint : [],
   };
 
-  const cardBase = buildRetrievalCard(structured);
-  let anticipatedNeed = '';
-  try {
-    const llm = getLlmProvider();
-    const chatAdapter = async (system: string, user: string): Promise<string> => llm.chat(system, user);
-    anticipatedNeed = await buildAnticipatedNeed(structured, chatAdapter);
-  } catch (e) {
-    console.warn(`approveSubmission: anticipated need generation failed: ${(e as Error).message}`);
-  }
-
-  const cardText = anticipatedNeed
-    ? `${cardBase}\nAnticipated need: ${anticipatedNeed}`
-    : cardBase;
+  const chatAdapter = async (system: string, user: string): Promise<string> => {
+    try {
+      return await getLlmProvider().chat(system, user);
+    } catch (e) {
+      console.warn(`approveSubmission: anticipated need generation failed: ${(e as Error).message}`);
+      throw e;
+    }
+  };
 
   let vector: number[] | undefined;
   try {
-    const sanitized = sanitizeForEmbedding(cardText);
-    vector = await computeLocalEmbedding(sanitized, { role: 'document', prefix: true });
+    ({ vector } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: false }));
   } catch (e) {
     console.warn(`approveSubmission: embedding failed; continuing without vector: ${(e as Error).message}`);
   }

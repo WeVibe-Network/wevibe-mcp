@@ -36,14 +36,16 @@ import {
   voteOnSubmission,
   voteOnKeyword,
 } from './moderation.js';
-import { setLlmProvider } from './llm.js';
+import { setLlmProvider, getLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
 import { vaultExists, isVaultUnlocked, unlockVault, retrievePassphraseFromKeychain } from './vault.js';
 import { submitMemory } from './contribution.js';
 import { getOrgKeywords } from './org-client.js';
 import { extractKeywords, extractMemories, type ClassifiedKeyword, type SuggestedKeyword } from './extraction.js';
-import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
+import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL, EMBEDDING_MODEL } from './config.js';
 import { hubFetchVerified } from './hub-fetch.js';
+import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
+import { embedRetrievalCard } from './embed-card.js';
 
 function resolvePort(): number {
   // CLI flag
@@ -161,6 +163,74 @@ function createMcpServer(): McpServer {
           error: r.error,
         };
       });
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(results) }],
+      };
+    }
+  );
+
+  srv.tool(
+    'wevibe_embed_retrieval_card',
+    'Decrypt and embed retrieval cards for encrypted submissions. Returns document vectors and embedding metadata per item.',
+    {
+      org_id: z.string().optional(),
+      items: z.array(z.object({
+        id: z.string(),
+        ciphertext_hex: z.string(),
+        wrapped_dek_mod: z.string(),
+        stack_hint: z.array(z.string()),
+      })),
+    },
+    async (args) => {
+      await initCrypto();
+      const membership = await requireMembership(args.org_id);
+      const chatAdapter = async (system: string, user: string): Promise<string> => getLlmProvider().chat(system, user);
+
+      const results: Array<{
+        id: string;
+        vector: number[] | null;
+        embedding_model_id: string;
+        embedding_schema_version: string;
+        error?: string;
+      }> = [];
+
+      for (const item of args.items) {
+        try {
+          const decrypted = decryptCiphertext(item.ciphertext_hex, item.wrapped_dek_mod, membership);
+          if (decrypted.error) {
+            throw new Error(decrypted.error);
+          }
+          if (typeof decrypted.plaintext !== 'string') {
+            throw new Error('decryption failed');
+          }
+
+          const parsed = parseMemoryText(decrypted.plaintext);
+          const structured: StructuredMemory = {
+            implement: parsed.implement,
+            context: parsed.context,
+            dnd: parsed.dnd,
+            stack: item.stack_hint,
+          };
+
+          const { vector } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: true });
+
+          results.push({
+            id: item.id,
+            vector,
+            embedding_model_id: EMBEDDING_MODEL,
+            embedding_schema_version: 'retrieval-card-v1',
+          });
+        } catch (e) {
+          results.push({
+            id: item.id,
+            vector: null,
+            embedding_model_id: EMBEDDING_MODEL,
+            embedding_schema_version: 'retrieval-card-v1',
+            error: (e as Error).message,
+          });
+        }
+      }
 
       return {
         content: [{ type: 'text', text: JSON.stringify(results) }],
