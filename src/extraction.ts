@@ -34,6 +34,14 @@ function readPrompt(relativePath: string): string {
 }
 
 const KEYWORD_EXTRACTION_PROMPT = readPrompt('keyword-extraction.md');
+const EXTRACTION_KEYWORD_OUTPUT_PROMPT = readPrompt('extraction.md');
+const SUGGESTION_PATTERN = /^[a-z][a-z0-9_]{1,39}$/;
+const MAX_KEYWORDS_PER_MEMORY = 20;
+const KEYWORD_RANK_DECAY = 0.6;
+
+interface FlatKeywordCandidate {
+  keyword: string;
+}
 
 export interface MemoryCandidate {
   implement: string;
@@ -117,6 +125,109 @@ function computeExtractionHash(content: Pick<MemoryCandidate, 'implement' | 'con
   return createHash('sha256').update(canonicalJson, 'utf-8').digest('hex');
 }
 
+function clampKeywordWeight(weight: unknown): number {
+  if (typeof weight !== 'number' || !Number.isFinite(weight)) {
+    return 0.0;
+  }
+
+  return Math.min(1.0, Math.max(0.0, weight));
+}
+
+function normalizeKeywordBucket<T extends { weight: number }>(keywords: T[]): void {
+  if (keywords.length === 0) {
+    return;
+  }
+
+  const totalWeight = keywords.reduce((sum, kw) => sum + kw.weight, 0);
+  if (totalWeight > 0) {
+    for (const kw of keywords) {
+      kw.weight = kw.weight / totalWeight;
+    }
+  }
+}
+
+function assignRankDecayWeights<T extends { weight: number }>(keywords: T[]): void {
+  for (const [index, keyword] of keywords.entries()) {
+    keyword.weight = KEYWORD_RANK_DECAY ** index;
+  }
+
+  normalizeKeywordBucket(keywords);
+}
+
+function extractFlatKeywordCandidates(memory: unknown): FlatKeywordCandidate[] {
+  if (memory === null || typeof memory !== 'object') {
+    return [];
+  }
+
+  const record = memory as Record<string, unknown>;
+  if (!Array.isArray(record.keywords)) {
+    return [];
+  }
+
+  return record.keywords.flatMap(candidate => {
+    if (candidate === null || typeof candidate !== 'object') {
+      return [];
+    }
+
+    const candidateRecord = candidate as Record<string, unknown>;
+    const rawKeyword = candidateRecord.keyword;
+    if (typeof rawKeyword !== 'string') {
+      return [];
+    }
+
+    const keyword = rawKeyword.trim().toLowerCase();
+    if (keyword.length === 0) {
+      return [];
+    }
+
+    return [{
+      keyword,
+    }];
+  });
+}
+
+function routeKeywordCandidates(
+  candidates: FlatKeywordCandidate[],
+  orgVocabulary: string[],
+): KeywordExtractionResult {
+  const vocabularySet = new Set(orgVocabulary.map(keyword => keyword.toLowerCase()));
+  const classified: ClassifiedKeyword[] = [];
+  const suggestions: SuggestedKeyword[] = [];
+
+  for (const candidate of candidates) {
+    if (vocabularySet.has(candidate.keyword)) {
+      classified.push({
+        keyword: candidate.keyword,
+        weight: 0,
+      });
+      continue;
+    }
+
+    if (!SUGGESTION_PATTERN.test(candidate.keyword)) {
+      console.warn(`extractKeywords: suggestion "${candidate.keyword}" fails pattern validation, dropping`);
+      continue;
+    }
+
+    suggestions.push({
+      keyword: candidate.keyword,
+      weight: 0,
+      rationale: '',
+    });
+  }
+
+  const keptClassified = classified.slice(0, MAX_KEYWORDS_PER_MEMORY);
+  const suggestionSlots = Math.max(0, MAX_KEYWORDS_PER_MEMORY - keptClassified.length);
+  const keptSuggestions = suggestions.slice(0, suggestionSlots);
+
+  assignRankDecayWeights(keptClassified);
+  assignRankDecayWeights(keptSuggestions);
+
+  return {
+    classified: keptClassified,
+    suggestions: keptSuggestions,
+  };
+}
+
 function normalizeMemoryCandidate(memory: unknown): MemoryCandidate | null {
   if (memory === null || typeof memory !== 'object') {
     return null;
@@ -166,27 +277,6 @@ function normalizeMemoryCandidate(memory: unknown): MemoryCandidate | null {
   };
 }
 
-function createEmptyKeywords(): KeywordExtractionResult {
-  return {
-    classified: [],
-    suggestions: [],
-  };
-}
-
-function buildKeywordClassifierInput(memory: Pick<MemoryCandidate, 'implement' | 'context' | 'dnd' | 'stack'>): string {
-  return `IMPLEMENT:
-${memory.implement}
-
-CONTEXT:
-${memory.context}
-
-DND:
-${memory.dnd ?? ''}
-
-STACK:
-${memory.stack.join(', ')}`;
-}
-
 function extractJsonText(raw: string): string {
   const trimmed = raw.trim();
 
@@ -218,6 +308,7 @@ export async function extractKeywords(
   plaintext: string,
   stackHint: string[],
   orgVocabulary: string[],
+  provider?: LlmProvider,
 ): Promise<KeywordExtractionResult> {
   const systemPrompt = KEYWORD_EXTRACTION_PROMPT;
 
@@ -229,7 +320,7 @@ STACK HINT: ${stackHint.join(', ')}
 MEMORY:
 ${plaintext}`;
 
-  const llm = getLlmProvider();
+  const llm = provider ?? getLlmProvider();
   const response = await llm.chat(systemPrompt, userMessage, {
     temperature: 0.2,
     jsonFormat: true,
@@ -238,53 +329,37 @@ ${plaintext}`;
 
   const parsed = JSON.parse(response) as KeywordExtractionResult;
 
-  const vocabLower = orgVocabulary.map(v => v.toLowerCase());
+  const vocabularySet = new Set(orgVocabulary.map(v => v.toLowerCase()));
 
   const classified = (parsed.classified ?? []).filter(c => {
-    if (!vocabLower.includes(c.keyword.toLowerCase())) {
+    if (!vocabularySet.has(c.keyword.toLowerCase())) {
       console.warn(`extractKeywords: classified keyword "${c.keyword}" not in orgVocabulary, dropping`);
       return false;
     }
     return true;
   }).map(c => ({
     keyword: c.keyword.toLowerCase(),
-    weight: Math.min(1.0, Math.max(0.0, c.weight)),
+    weight: clampKeywordWeight(c.weight),
   }));
 
-  const suggestionPattern = /^[a-z][a-z0-9_]{1,39}$/;
   const suggestions = (parsed.suggestions ?? []).filter(s => {
-    if (vocabLower.includes(s.keyword.toLowerCase())) {
+    if (vocabularySet.has(s.keyword.toLowerCase())) {
       console.warn(`extractKeywords: suggestion "${s.keyword}" already in orgVocabulary, dropping`);
       return false;
     }
-    if (!suggestionPattern.test(s.keyword)) {
+    if (!SUGGESTION_PATTERN.test(s.keyword.toLowerCase())) {
       console.warn(`extractKeywords: suggestion "${s.keyword}" fails pattern validation, dropping`);
       return false;
     }
     return true;
   }).map(s => ({
     keyword: s.keyword.toLowerCase(),
-    weight: Math.min(1.0, Math.max(0.0, s.weight)),
+    weight: clampKeywordWeight(s.weight),
     rationale: s.rationale,
   }));
 
-  if (classified.length > 0) {
-    const totalWeight = classified.reduce((sum, kw) => sum + kw.weight, 0);
-    if (totalWeight > 0) {
-      for (const kw of classified) {
-        kw.weight = kw.weight / totalWeight;
-      }
-    }
-  }
-
-  if (suggestions.length > 0) {
-    const totalSugWeight = suggestions.reduce((sum, kw) => sum + kw.weight, 0);
-    if (totalSugWeight > 0) {
-      for (const kw of suggestions) {
-        kw.weight = kw.weight / totalSugWeight;
-      }
-    }
-  }
+  normalizeKeywordBucket(classified);
+  normalizeKeywordBucket(suggestions);
 
   return { classified, suggestions };
 }
@@ -315,9 +390,29 @@ export async function extractMemories(
   const numCtx = typeof options.numCtx === 'number' ? options.numCtx : DEFAULT_EXTRACTION_NUM_CTX;
   let content: string | undefined;
 
+  let orgVocabulary: string[] = [];
+  if (options.orgContext) {
+    try {
+      orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
+    } catch (error) {
+      console.warn(`wevibe-mcp: keyword vocabulary fetch failed for org ${options.orgContext.orgId}: ${error}`);
+      orgVocabulary = [];
+    }
+  }
+
+  const vocabularyBlock = orgVocabulary.length > 0
+    ? orgVocabulary.join('\n')
+    : '(none)';
+
   const userMessage = `Project: ${projectContext.name}
 Stack: ${projectContext.stack.join(', ') || 'unknown'}
 Directory: ${projectContext.directory}
+
+VOCABULARY:
+${vocabularyBlock}
+
+KEYWORD OUTPUT CONTRACT:
+${EXTRACTION_KEYWORD_OUTPUT_PROMPT}
 
 Session transcript:
 ${rawBuffer}`;
@@ -354,41 +449,19 @@ ${rawBuffer}`;
     }
 
     const memories = arr
-      .map(memory => normalizeMemoryCandidate(memory))
+      .map(memory => {
+        const normalizedMemory = normalizeMemoryCandidate(memory);
+        if (normalizedMemory === null) {
+          return null;
+        }
+
+        normalizedMemory.keywords = routeKeywordCandidates(
+          extractFlatKeywordCandidates(memory),
+          orgVocabulary,
+        );
+        return normalizedMemory;
+      })
       .filter((memory): memory is MemoryCandidate => memory !== null);
-
-    if (options.orgContext) {
-      let orgVocabulary: string[] | null = null;
-
-      try {
-        orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
-      } catch (error) {
-        console.warn(`wevibe-mcp: keyword vocabulary fetch failed for org ${options.orgContext.orgId}: ${error}`);
-      }
-
-      if (orgVocabulary !== null) {
-        for (const memory of memories) {
-          try {
-            memory.keywords = await extractKeywords(
-              buildKeywordClassifierInput(memory),
-              memory.stack,
-              orgVocabulary,
-            );
-          } catch (error) {
-            console.warn(`wevibe-mcp: keyword extraction failed for memory ${memory.extraction_hash}: ${error}`);
-            memory.keywords = createEmptyKeywords();
-          }
-        }
-      } else {
-        for (const memory of memories) {
-          memory.keywords = createEmptyKeywords();
-        }
-      }
-    } else {
-      for (const memory of memories) {
-        memory.keywords = createEmptyKeywords();
-      }
-    }
 
     try {
       const debugDir = `${homedir()}/.wevibe`;
