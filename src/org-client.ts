@@ -844,6 +844,12 @@ interface HubKeywordEntry {
   usage_count: number;
 }
 
+interface HubKeywordCandidate {
+  keyword: string;
+  distinct_contributors: number;
+  earned: boolean;
+}
+
 export async function getOrgKeywords(hubUrl: string, orgId: string): Promise<string[]> {
   const { headers } = await buildWeVibeSignedAuth();
 
@@ -858,4 +864,20 @@ export async function getOrgKeywords(hubUrl: string, orgId: string): Promise<str
   return entries
     .filter(e => !e.deprecated)
     .map(e => e.keyword);
+}
+
+export async function getOrgKeywordCandidates(hubUrl: string, orgId: string, limit: number): Promise<string[]> {
+  const { headers } = await buildWeVibeSignedAuth();
+
+  const response = await hubFetchVerified(orgId, `${hubUrl}/v1/orgs/${orgId}/keywords/candidates`, { headers });
+
+  if (!response.res.ok) {
+    throw new Error(`failed to fetch org keyword candidates (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
+  }
+
+  const entries = response.json<HubKeywordCandidate[]>();
+
+  return entries
+    .slice(0, limit)
+    .map(entry => entry.keyword);
 }

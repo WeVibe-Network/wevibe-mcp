@@ -7,7 +7,7 @@ import { getStore } from './key-store.js';
 import { getLlmProvider, type LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
 import { getRecommendedPreset } from './extraction-presets.js';
-import { getOrgKeywords } from './org-client.js';
+import { getOrgKeywordCandidates, getOrgKeywords } from './org-client.js';
 import type { MemoryType } from './types.js';
 
 export interface ClassifiedKeyword {
@@ -38,6 +38,7 @@ const EXTRACTION_KEYWORD_OUTPUT_PROMPT = readPrompt('extraction.md');
 const SUGGESTION_PATTERN = /^[a-z][a-z0-9_]{1,39}$/;
 const MAX_KEYWORDS_PER_MEMORY = 20;
 const KEYWORD_RANK_DECAY = 0.6;
+const CANDIDATE_REUSE_TOPK = 10;
 
 interface FlatKeywordCandidate {
   keyword: string;
@@ -391,6 +392,7 @@ export async function extractMemories(
   let content: string | undefined;
 
   let orgVocabulary: string[] = [];
+  let emergingTerms: string[] = [];
   if (options.orgContext) {
     try {
       orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
@@ -398,11 +400,29 @@ export async function extractMemories(
       console.warn(`wevibe-mcp: keyword vocabulary fetch failed for org ${options.orgContext.orgId}: ${error}`);
       orgVocabulary = [];
     }
+
+    try {
+      emergingTerms = await getOrgKeywordCandidates(
+        options.orgContext.hubUrl,
+        options.orgContext.orgId,
+        CANDIDATE_REUSE_TOPK,
+      );
+    } catch (error) {
+      console.warn(`wevibe-mcp: emerging keyword candidates fetch failed for org ${options.orgContext.orgId}: ${error}`);
+      emergingTerms = [];
+    }
   }
 
   const vocabularyBlock = orgVocabulary.length > 0
     ? orgVocabulary.join('\n')
     : '(none)';
+
+  const emergingTermsBlock = emergingTerms.length > 0
+    ? `EMERGING TERMS (other contributors recently proposed these; PREFER reusing an applicable one over inventing a new term):
+${emergingTerms.join('\n')}
+
+`
+    : '';
 
   const userMessage = `Project: ${projectContext.name}
 Stack: ${projectContext.stack.join(', ') || 'unknown'}
@@ -411,7 +431,7 @@ Directory: ${projectContext.directory}
 VOCABULARY:
 ${vocabularyBlock}
 
-KEYWORD OUTPUT CONTRACT:
+${emergingTermsBlock}KEYWORD OUTPUT CONTRACT:
 ${EXTRACTION_KEYWORD_OUTPUT_PROMPT}
 
 Session transcript:
