@@ -62,6 +62,7 @@ function resolvePort(): number {
 }
 
 const PORT = resolvePort();
+const BIND_HOST = process.env.WEVIBE_BIND_HOST ?? '127.0.0.1';
 
 function uint8ArrayToHex(arr: Uint8Array): string {
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -868,7 +869,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  app.listen(PORT, () => {
+  app.listen(PORT, BIND_HOST, () => {
     console.warn(`wevibe-dashboard: MCP server running on http://localhost:${PORT}`);
     console.warn(`wevibe-dashboard: SSE endpoint: http://localhost:${PORT}/sse`);
     console.warn(`wevibe-dashboard: Health check: http://localhost:${PORT}/health`);
