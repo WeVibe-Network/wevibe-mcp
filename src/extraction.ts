@@ -7,7 +7,7 @@ import { getStore } from './key-store.js';
 import { getLlmProvider, type LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
 import { getRecommendedPreset } from './extraction-presets.js';
-import { getOrgKeywordCandidates, getOrgKeywords } from './org-client.js';
+import { getOrgInfo, getOrgKeywordCandidates, getOrgKeywords, type OrgInfo } from './org-client.js';
 import type { MemoryType } from './types.js';
 
 export interface ClassifiedKeyword {
@@ -209,6 +209,12 @@ function routeKeywordCandidates(
       continue;
     }
 
+    const underscoreCount = (candidate.keyword.match(/_/g) ?? []).length;
+    if (underscoreCount >= 2) {
+      console.warn(`extractKeywords: suggestion "${candidate.keyword}" has ${underscoreCount} underscores, dropping`);
+      continue;
+    }
+
     suggestions.push({
       keyword: candidate.keyword,
       weight: 0,
@@ -393,7 +399,10 @@ export async function extractMemories(
 
   let orgVocabulary: string[] = [];
   let emergingTerms: string[] = [];
+  let orgInfo: OrgInfo | null = null;
   if (options.orgContext) {
+    orgInfo = await getOrgInfo(options.orgContext.hubUrl, options.orgContext.orgId);
+
     try {
       orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
     } catch (error) {
@@ -424,11 +433,49 @@ ${emergingTerms.join('\n')}
 `
     : '';
 
+  const orgContextLines: string[] = [];
+  if (orgInfo) {
+    const orgName = typeof orgInfo.org_name === 'string' ? orgInfo.org_name.trim() : '';
+    const domain = typeof orgInfo.domain === 'string' ? orgInfo.domain.trim() : '';
+    const description = typeof orgInfo.description === 'string' ? orgInfo.description.trim() : '';
+    const techStack = typeof orgInfo.tech_stack === 'string' ? orgInfo.tech_stack.trim() : '';
+    const focusAreas = typeof orgInfo.focus_areas === 'string' ? orgInfo.focus_areas.trim() : '';
+
+    if (orgName.length > 0) {
+      orgContextLines.push(`Name: ${orgName}`);
+    }
+
+    if (domain.length > 0) {
+      orgContextLines.push(`Domain: ${domain}`);
+    }
+
+    if (description.length > 0) {
+      orgContextLines.push(`About: ${description}`);
+    }
+
+    if (techStack.length > 0) {
+      orgContextLines.push(`Tech stack: ${techStack}`);
+    }
+
+    if (focusAreas.length > 0) {
+      orgContextLines.push(`Focus areas: ${focusAreas}`);
+    }
+  }
+
+  const orgContextBlock = orgContextLines.length > 0
+    ? `ORG CONTEXT — the organization this knowledge is for:
+${orgContextLines.join('\n')}
+
+Use ORG CONTEXT as DIRECTIONAL BIAS only: when the session's actual content overlaps the org's domain or tech stack, prefer the org's canonical terms for those overlapping concepts so suggested keywords align with the org's vocabulary. Do NOT force unrelated session content to conform to the org's domain, and NEVER invent keywords the transcript does not actually support. Faithfulness to the transcript always wins over alignment.
+
+`
+    : '';
+
   const userMessage = `Project: ${projectContext.name}
 Stack: ${projectContext.stack.join(', ') || 'unknown'}
 Directory: ${projectContext.directory}
 
-VOCABULARY:
+${orgContextBlock}VOCABULARY:
 ${vocabularyBlock}
 
 ${emergingTermsBlock}KEYWORD OUTPUT CONTRACT:
