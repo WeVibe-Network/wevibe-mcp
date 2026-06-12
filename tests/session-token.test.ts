@@ -25,12 +25,17 @@ describe('session-token', () => {
     expect(s.mode & 0o777).toBe(0o600);
   });
 
-  it('init rotates the token when called twice', async () => {
+  it('init reuses the persisted token on re-init (stable across instances)', async () => {
     await testStore.init();
     const first = await readFile(testPath, 'utf-8');
     await testStore.init();
     const second = await readFile(testPath, 'utf-8');
-    expect(second).not.toBe(first);
+
+    expect(second).toBe(first);
+
+    const secondStore = new SessionTokenStore(testPath);
+    await secondStore.init();
+    expect(secondStore.getToken()).toBe(first);
   });
 
   it('verify returns true for the current token', async () => {
