@@ -42,6 +42,7 @@ export interface MemoryOutput {
   memory_type: string;
   score: number;
   keywords: Array<{ keyword: string; weight: number }>;
+  matched_keywords: string[];
   text: string;
   redacted_count: number;
   annotations: string[];
@@ -384,6 +385,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         memory_type: m.memoryType,
         score: m.freshnessScore,
         keywords: m.keywords,
+        matched_keywords: m.matchedKeywords ?? [],
         text: transformed.text,
         redacted_count: transformed.redactedCount,
         annotations: transformed.annotations,

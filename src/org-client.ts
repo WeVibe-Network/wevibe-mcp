@@ -69,6 +69,7 @@ export interface QueryMemoryResult {
   retrieval_count?: number;
   acceptance_count?: number;
   keywords?: Array<{ keyword: string; weight: number }>;
+  matched_keywords?: string[];
   contributor_stats?: {
     account_age_days: number;
     contributions: number;
@@ -848,6 +849,29 @@ interface HubKeywordCandidate {
   keyword: string;
   distinct_contributors: number;
   earned: boolean;
+}
+
+export interface OrgInfo {
+  org_name?: string;
+  domain?: string;
+  description?: string;
+  tech_stack?: string;
+  focus_areas?: string;
+}
+
+export async function getOrgInfo(hubUrl: string, orgId: string): Promise<OrgInfo | null> {
+  try {
+    const { headers } = await buildWeVibeSignedAuth();
+    const response = await hubFetchVerified(orgId, `${hubUrl}/v1/orgs/${orgId}`, { headers });
+
+    if (!response.res.ok) {
+      return null;
+    }
+
+    return response.json<OrgInfo>();
+  } catch {
+    return null;
+  }
 }
 
 export async function getOrgKeywords(hubUrl: string, orgId: string): Promise<string[]> {

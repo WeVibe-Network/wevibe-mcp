@@ -64,6 +64,7 @@ export interface MemoryResult {
     false_reports_against: number;
   };
   breakdown?: ScoringBreakdown;
+  matchedKeywords?: string[];
 }
 
 export interface OrgMembership {

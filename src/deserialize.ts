@@ -14,6 +14,7 @@ interface RawMemoryResult {
   retrieval_count: number;
   acceptance_count: number;
   keywords?: Array<{ keyword: string; weight: number }>;
+  matched_keywords?: string[];
   contributor_stats?: {
     account_age_days: number;
     contributions: number;
@@ -69,6 +70,7 @@ export function deserializeMemoryResult(raw: RawMemoryResult): MemoryResult {
       keyword: kw.keyword,
       weight: kw.weight,
     })),
+    matchedKeywords: raw.matched_keywords ?? [],
     contributorStats: raw.contributor_stats,
     breakdown: raw.scoring_breakdown,
   };

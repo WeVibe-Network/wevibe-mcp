@@ -69,6 +69,7 @@ interface MemoryWithGuard {
   memory_type: string;
   score: number;
   keywords: Array<{ keyword: string; weight: number }>;
+  matched_keywords?: string[];
   text: string;
   redacted_count: number;
   annotations: string[];
@@ -208,6 +209,7 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
 
     memoriesWithGuard.push({
       ...memory,
+      matched_keywords: memory.matched_keywords ?? [],
       guard,
     });
   }
