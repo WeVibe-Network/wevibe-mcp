@@ -304,7 +304,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
       },
     );
 
-    jsonResponse(res, 200, { memories: result.memories });
+    jsonResponse(res, 200, { memories: result.memories, ...(result.meta ? { meta: result.meta } : {}) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     jsonResponse(res, 500, { error: `extraction failed: ${message}` });
