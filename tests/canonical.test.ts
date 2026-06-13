@@ -69,19 +69,23 @@ describe('canonical signing messages', () => {
         'enc_env_base64_data',
         'srch_env_base64_data',
         'mod_envelope_data',
+        true,
+        false,
       ));
 
       const lines = msg.split('\n');
-      expect(lines).toHaveLength(9);
+      expect(lines).toHaveLength(11);
       expect(lines[0]).toBe('wevibe.invite_member.v1');
-      expect(lines[1]).toBe('enc_envelope:enc_env_base64_data');
-      expect(lines[2]).toBe('mod_envelope:mod_envelope_data');
-      expect(lines[3]).toBe('org_id:org-test-1');
-      expect(lines[4]).toBe('pubkey:invitee_pubkey_hex');
-      expect(lines[5]).toBe('role:member');
-      expect(lines[6]).toBe('search_envelope:srch_env_base64_data');
-      expect(lines[7]).toBe('signed_by:leader_pubkey_hex');
-      expect(lines[8]).toBe('x25519_pubkey:invitee_x25519_hex');
+      expect(lines[1]).toBe('can_contribute:true');
+      expect(lines[2]).toBe('can_moderate:false');
+      expect(lines[3]).toBe('enc_envelope:enc_env_base64_data');
+      expect(lines[4]).toBe('mod_envelope:mod_envelope_data');
+      expect(lines[5]).toBe('org_id:org-test-1');
+      expect(lines[6]).toBe('pubkey:invitee_pubkey_hex');
+      expect(lines[7]).toBe('role:member');
+      expect(lines[8]).toBe('search_envelope:srch_env_base64_data');
+      expect(lines[9]).toBe('signed_by:leader_pubkey_hex');
+      expect(lines[10]).toBe('x25519_pubkey:invitee_x25519_hex');
     });
 
     it('produces correct format with empty mod_envelope for member role', () => {
@@ -94,11 +98,15 @@ describe('canonical signing messages', () => {
         'enc_env',
         'srch_env',
         '',
+        false,
+        false,
       ));
 
       const lines = msg.split('\n');
-      expect(lines).toHaveLength(9);
-      expect(lines[2]).toBe('mod_envelope:');
+      expect(lines).toHaveLength(11);
+      expect(lines[1]).toBe('can_contribute:false');
+      expect(lines[2]).toBe('can_moderate:false');
+      expect(lines[4]).toBe('mod_envelope:');
     });
   });
 

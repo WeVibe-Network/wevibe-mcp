@@ -70,7 +70,9 @@ export interface MemoryResult {
 export interface OrgMembership {
   orgId: string;
   orgName: string;
-  role: 'leader' | 'moderator' | 'member';
+  role: 'leader' | 'member';
+  canContribute: boolean;
+  canModerate: boolean;
   currentEpoch: number;
   historyAccessFromEpoch: number;
   egressMode: 'local_only' | 'allowlist' | 'unrestricted';

@@ -95,7 +95,7 @@ function createMcpServer(): McpServer {
     await initCrypto();
     const membership = await requireMembership(args.org_id);
 
-    if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    if (membership.role !== 'leader' && !membership.canModerate) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ error: `role "${membership.role}" cannot moderate` }) }],
       };
@@ -247,7 +247,7 @@ function createMcpServer(): McpServer {
       await initCrypto();
       const membership = await requireMembership();
 
-      if (membership.role !== 'leader' && membership.role !== 'moderator') {
+      if (membership.role !== 'leader' && !membership.canModerate) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ error: `role "${membership.role}" cannot moderate` }) }],
         };
@@ -272,7 +272,7 @@ srv.tool(
     await initCrypto();
     const membership = await requireMembership(args.org_id);
 
-    if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    if (membership.role !== 'leader' && !membership.canModerate) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: `role "${membership.role}" cannot approve` }) }],
       };
@@ -326,7 +326,7 @@ srv.tool(
     await initCrypto();
     const membership = await requireMembership(args.org_id);
 
-    if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    if (membership.role !== 'leader' && !membership.canModerate) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: `role "${membership.role}" cannot deny` }) }],
       };
@@ -364,7 +364,7 @@ srv.tool(
     await initCrypto();
     const membership = await requireMembership();
 
-    if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    if (membership.role !== 'leader' && !membership.canModerate) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: `role "${membership.role}" cannot vote` }) }],
       };
@@ -402,7 +402,7 @@ srv.tool(
     await initCrypto();
     const membership = await requireMembership();
 
-    if (membership.role !== 'leader' && membership.role !== 'moderator') {
+    if (membership.role !== 'leader' && !membership.canModerate) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: `role "${membership.role}" cannot vote` }) }],
       };
@@ -859,7 +859,7 @@ async function main(): Promise<void> {
   const m = memberships[0];
   console.warn(`wevibe-dashboard: org: ${m.orgName} (${m.orgId.slice(0, 8)}...), role: ${m.role}, epoch: ${m.currentEpoch}`);
 
-  if (m.role !== 'leader' && m.role !== 'moderator') {
+  if (m.role !== 'leader' && !m.canModerate) {
     console.error(`wevibe-dashboard: FATAL — role "${m.role}" cannot moderate. Dashboard requires leader or moderator role.`);
     process.exit(1);
   }

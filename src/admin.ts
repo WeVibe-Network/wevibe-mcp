@@ -755,7 +755,8 @@ async function cmdInvite(flags: Record<string, string>) {
   const pubkey = requireFlag(flags, 'pubkey');
   const x25519 = requireFlag(flags, 'x25519');
   const prePubkeyFlag = flags['pre-pubkey'];
-  const role = (flags['role'] ?? 'member') as 'member' | 'moderator';
+  const canContribute = flags['can-contribute'] === 'true' || flags['can-contribute'] === '1';
+  const canModerate = flags['can-moderate'] === 'true' || flags['can-moderate'] === '1';
 
   const epochSk = await loadKeyEnvelope(orgId, 'epoch-sk');
   if (!epochSk) {
@@ -780,11 +781,12 @@ async function cmdInvite(flags: Record<string, string>) {
     inviteeX25519PubkeyHex: x25519,
     prePubkeyHex: inviteePrePubkeyHex,
     epochSkHex: Buffer.from(epochSk).toString('hex'),
-    role,
+    canContribute,
+    canModerate,
     hubUrl: HUB_URL,
   });
   if (result.status === 'error') die(`Invitation failed: ${result.error}`);
-  console.log(`Member invited to ${orgId} as ${role}.`);
+  console.log(`Member invited to ${orgId} (contribute=${canContribute}, moderate=${canModerate}).`);
 }
 
 async function cmdRotate(flags: Record<string, string>) {
@@ -799,7 +801,7 @@ async function cmdRotate(flags: Record<string, string>) {
 
 async function cmdModerateQueue(flags: Record<string, string>) {
   const membership = await getMembership(flags['org']);
-  if (membership.role !== 'leader' && membership.role !== 'moderator') die(`Role "${membership.role}" cannot moderate.`);
+  if (membership.role !== 'leader' && !membership.canModerate) die(`Role "${membership.role}" cannot moderate.`);
 
   const items = await fetchPendingQueue(HUB_URL, membership.orgId);
   if (items.length === 0) {
@@ -830,7 +832,7 @@ async function cmdModerateQueue(flags: Record<string, string>) {
 async function cmdModerateApprove(flags: Record<string, string>) {
   const hash = requireFlag(flags, 'hash');
   const membership = await getMembership(flags['org']);
-  if (membership.role !== 'leader' && membership.role !== 'moderator') die(`Role "${membership.role}" cannot approve.`);
+  if (membership.role !== 'leader' && !membership.canModerate) die(`Role "${membership.role}" cannot approve.`);
 
   const items = await fetchPendingQueue(HUB_URL, membership.orgId);
   const item = items.find(i => i.submission_hash === hash);
@@ -851,7 +853,7 @@ async function cmdModerateDeny(flags: Record<string, string>) {
   const hash = requireFlag(flags, 'hash');
   const reason = requireFlag(flags, 'reason');
   const membership = await getMembership(flags['org']);
-  if (membership.role !== 'leader' && membership.role !== 'moderator') die(`Role "${membership.role}" cannot deny.`);
+  if (membership.role !== 'leader' && !membership.canModerate) die(`Role "${membership.role}" cannot deny.`);
 
   const result = await denySubmission(HUB_URL, membership.orgId, hash, reason);
   if (result.status === 'error') die(`Denial failed: ${result.error}`);

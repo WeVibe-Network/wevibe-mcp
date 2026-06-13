@@ -396,7 +396,7 @@ export async function voteOnSubmission(
 ): Promise<SubmissionVoteTallies> {
   await ensureCrypto();
 
-  if (membership.role !== 'leader' && membership.role !== 'moderator') {
+  if (membership.role !== 'leader' && !membership.canModerate) {
     throw new Error(`role "${membership.role}" cannot vote`);
   }
 
@@ -431,7 +431,7 @@ export async function voteOnKeyword(
 ): Promise<KeywordVoteTallies> {
   await ensureCrypto();
 
-  if (membership.role !== 'leader' && membership.role !== 'moderator') {
+  if (membership.role !== 'leader' && !membership.canModerate) {
     throw new Error(`role "${membership.role}" cannot vote`);
   }
 

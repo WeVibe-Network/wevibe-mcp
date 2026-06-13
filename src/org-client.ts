@@ -14,6 +14,8 @@ interface HubMemberOrgEntry {
   org_id: string;
   org_name: string;
   role: string;
+  can_contribute?: boolean;
+  can_moderate?: boolean;
   current_epoch: number;
   history_access_from_epoch: number;
   egress_mode: string;
@@ -262,7 +264,7 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
     }
 
     let modPrivkey: Uint8Array | null = null;
-    if ((org.role === 'leader' || org.role === 'moderator') && envResponse?.mod_envelope) {
+    if ((org.role === 'leader' || org.can_moderate) && envResponse?.mod_envelope) {
       try {
         const sealedMod = new Uint8Array(Buffer.from(envResponse.mod_envelope, 'base64'));
         modPrivkey = openEnvelope(sealedMod, identity.xPrivkey);
@@ -274,7 +276,9 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
     memberships.push({
       orgId: org.org_id,
       orgName: org.org_name,
-      role: org.role as 'leader' | 'moderator' | 'member',
+      role: org.role as 'leader' | 'member',
+      canContribute: org.can_contribute ?? false,
+      canModerate: org.can_moderate ?? false,
       currentEpoch: org.current_epoch,
       historyAccessFromEpoch: org.history_access_from_epoch,
       egressMode: org.egress_mode as 'local_only' | 'allowlist' | 'unrestricted',
@@ -285,7 +289,7 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
       modPrivkey,
     });
 
-    if (isVaultUnlocked() && (org.role === 'leader' || org.role === 'moderator') && modPrivkey) {
+    if (isVaultUnlocked() && (org.role === 'leader' || org.can_moderate) && modPrivkey) {
       const skModHex = Buffer.from(modPrivkey).toString('hex');
       await updateVaultEntry(org.org_id, {
         sk_mod_hex: skModHex,
@@ -561,7 +565,8 @@ export interface InviteMemberParams {
   inviteeX25519PubkeyHex: string;
   epochSkHex: string;
   prePubkeyHex: string;
-  role: 'member' | 'moderator';
+  canContribute: boolean;
+  canModerate: boolean;
   hubUrl: string;
 }
 
@@ -594,7 +599,7 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
   const inviteeX25519Pubkey = new Uint8Array(Buffer.from(params.inviteeX25519PubkeyHex, 'hex'));
 
   let modEnvelopeB64 = '';
-  if (params.role === 'moderator') {
+  if (params.canModerate) {
     const skMod = await loadKeyEnvelope(params.orgId, 'mod-privkey');
     if (!skMod) {
       return { status: 'error', error: 'no mod private key found — leader local keychain may be missing SK_mod for this org' };
@@ -628,8 +633,9 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
 
   const canonical = inviteMemberMessage(
     params.orgId, params.inviteePubkeyHex, params.inviteeX25519PubkeyHex,
-    params.role, leaderPubkeyHex,
+    'member', leaderPubkeyHex,
     encEnvelopeB64, searchEnvelopeB64, modEnvelopeB64,
+    params.canContribute, params.canModerate,
   );
   const sig = sign(identity.edPrivkey, canonical);
   const sigHex = Buffer.from(sig).toString('hex');
@@ -639,7 +645,9 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
     x25519_pubkey: params.inviteeX25519PubkeyHex,
     pre_pubkey: params.prePubkeyHex,
     epoch_sk: params.epochSkHex,
-    role: params.role,
+    role: 'member',
+    can_contribute: params.canContribute,
+    can_moderate: params.canModerate,
     signed_by: leaderPubkeyHex,
     signature: sigHex,
     enc_envelope: encEnvelopeB64,
@@ -717,12 +725,19 @@ export async function rotateEpoch(params: RotateEpochParams): Promise<RotateEpoc
   const newModIdentity = generateIdentity();
   const newPkModHex = Buffer.from(newModIdentity.xPubkey).toString('hex');
 
-  let activeMembers: Array<{ pubkey: string; x25519_pubkey: string; role: string }> = [];
+  let activeMembers: Array<{ pubkey: string; x25519_pubkey: string; role: string; can_moderate?: boolean }> = [];
   try {
     const membersResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/members`);
     if (membersResp.res.ok) {
-      const allMembers = membersResp.json<Array<{ pubkey: string; x25519_pubkey: string; role: string; active: boolean }>>();
-      activeMembers = allMembers.filter(m => m.active);
+      const allMembers = membersResp.json<Array<{ pubkey: string; x25519_pubkey: string; role: string; can_moderate?: boolean; active: boolean }>>();
+      activeMembers = allMembers
+        .filter(m => m.active)
+        .map(m => ({
+          pubkey: m.pubkey,
+          x25519_pubkey: m.x25519_pubkey,
+          role: m.role,
+          can_moderate: m.can_moderate,
+        }));
     }
   } catch {
     return { status: 'error', error: 'failed to fetch member list' };
@@ -746,7 +761,7 @@ export async function rotateEpoch(params: RotateEpochParams): Promise<RotateEpoc
     const searchEnvelopeB64 = Buffer.from(sealedSearch).toString('base64');
 
     let modEnvelopeB64: string | null = null;
-    if (member.role === 'leader' || member.role === 'moderator') {
+    if (member.role === 'leader' || member.can_moderate) {
       const sealedMod = sealToPubkey(newModIdentity.xPrivkey, memberX25519);
       modEnvelopeB64 = Buffer.from(sealedMod).toString('base64');
     }

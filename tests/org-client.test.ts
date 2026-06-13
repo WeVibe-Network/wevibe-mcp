@@ -509,7 +509,8 @@ describe('inviteMember', () => {
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
       epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
-      role: 'member',
+      canContribute: false,
+      canModerate: false,
       hubUrl: 'http://localhost:4440',
     });
 
@@ -541,7 +542,8 @@ describe('inviteMember', () => {
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
       epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
-      role: 'member',
+      canContribute: false,
+      canModerate: false,
       hubUrl: 'http://localhost:4440',
     });
 
@@ -568,7 +570,8 @@ describe('inviteMember', () => {
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
       epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
-      role: 'member',
+      canContribute: false,
+      canModerate: false,
       hubUrl: 'http://localhost:4440',
     });
 
@@ -598,7 +601,8 @@ describe('inviteMember', () => {
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
       epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
-      role: 'moderator',
+      canContribute: false,
+      canModerate: true,
       hubUrl: 'http://localhost:4440',
     });
 
@@ -609,7 +613,8 @@ describe('inviteMember', () => {
     const body = JSON.parse(opts.body);
     expect(body.mod_envelope).toBeTruthy();
     expect(body.mod_envelope.length).toBeGreaterThan(0);
-    expect(body.role).toBe('moderator');
+    expect(body.role).toBe('member');
+    expect(body.can_moderate).toBe(true);
   });
 
   it('does NOT include mod_envelope when inviting member', async () => {
@@ -633,7 +638,8 @@ describe('inviteMember', () => {
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
       epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
-      role: 'member',
+      canContribute: false,
+      canModerate: false,
       hubUrl: 'http://localhost:4440',
     });
 

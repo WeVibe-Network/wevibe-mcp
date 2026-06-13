@@ -47,9 +47,13 @@ export function inviteMemberMessage(
   encEnvelope: string,
   searchEnvelope: string,
   modEnvelope: string,
+  canContribute: boolean,
+  canModerate: boolean,
 ): Uint8Array {
   const msg = [
     'wevibe.invite_member.v1',
+    `can_contribute:${canContribute}`,
+    `can_moderate:${canModerate}`,
     `enc_envelope:${encEnvelope}`,
     `mod_envelope:${modEnvelope}`,
     `org_id:${orgId}`,
