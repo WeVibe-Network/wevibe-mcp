@@ -138,7 +138,7 @@ describe('moderation approval flow', () => {
 
     expect(Array.isArray(body.vector)).toBe(true);
     expect((body.vector as number[])).toHaveLength(768);
-    expect(body.embedding_model_id).toBe('nomic-embed-text');
+    expect(body.embedding_model_id).toBe('text-embedding-nomic-embed-text-v1.5');
     expect(body.embedding_schema_version).toBe('retrieval-card-v1');
     expect(body.vector_dim).toBe(768);
 

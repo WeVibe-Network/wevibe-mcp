@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeLocalEmbedding } from '../../src/embedding.js';
 
-process.env.OLLAMA_HOST ??= 'http://localhost:11434';
+process.env.WEVIBE_EMBEDDING_BASE_URL ??= 'http://127.0.0.1:1234/v1';
 
 const RUN_EMBEDDING_QUALITY_TESTS = process.env.RUN_EMBEDDING_QUALITY_TESTS === '1';
 

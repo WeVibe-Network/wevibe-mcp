@@ -1,11 +1,18 @@
-import { OLLAMA_EMBEDDING_HOST, EMBEDDING_MODEL } from './config.js';
+import {
+  EMBEDDING_BASE_URL,
+  EMBEDDING_API_KEY,
+  EMBEDDING_MODEL,
+  EMBEDDING_DIM,
+  EMBEDDING_QUERY_PREFIX,
+  EMBEDDING_DOCUMENT_PREFIX,
+} from './config.js';
 
-const EXPECTED_DIM = 768;
+const EXPECTED_DIM = EMBEDDING_DIM;
 
 export type EmbeddingRole = 'document' | 'query';
 
-function getOllamaHost(): string {
-  return OLLAMA_EMBEDDING_HOST.replace(/\/$/, '');
+function getEmbeddingsEndpoint(): string {
+  return `${EMBEDDING_BASE_URL.replace(/\/$/, '')}/embeddings`;
 }
 
 function getEmbeddingModel(): string {
@@ -17,38 +24,49 @@ export async function computeLocalEmbedding(
   opts?: { role?: EmbeddingRole; prefix?: boolean },
 ): Promise<number[]> {
   const prompt = opts?.prefix === true
-    ? `${opts.role === 'query' ? 'search_query' : 'search_document'}: ${text}`
+    ? `${opts.role === 'query' ? EMBEDDING_QUERY_PREFIX : EMBEDDING_DOCUMENT_PREFIX}${text}`
     : text;
 
-  const response = await fetch(`${getOllamaHost()}/api/embeddings`, {
+  const endpoint = getEmbeddingsEndpoint();
+
+  const response = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${EMBEDDING_API_KEY}`,
+    },
     body: JSON.stringify({
       model: getEmbeddingModel(),
-      prompt,
+      input: prompt,
     }),
   });
 
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(`ollama embeddings request failed (${response.status}): ${details}`);
+    throw new Error(`embeddings request failed at /v1/embeddings (${response.status}): ${details}`);
   }
 
-  const body = await response.json() as { embedding?: unknown };
-  if (!Array.isArray(body.embedding)) {
-    throw new Error('ollama embeddings response missing embedding array');
+  const body = await response.json() as { data?: unknown };
+  const firstItem = Array.isArray(body.data) ? body.data[0] : undefined;
+  const rawEmbedding =
+    firstItem && typeof firstItem === 'object'
+      ? (firstItem as { embedding?: unknown }).embedding
+      : undefined;
+
+  if (!Array.isArray(rawEmbedding)) {
+    throw new Error('embeddings endpoint /v1/embeddings response missing data[0].embedding array');
   }
 
-  const embedding = body.embedding.map((value) => {
+  const embedding = rawEmbedding.map((value) => {
     if (typeof value !== 'number') {
-      throw new Error('ollama embeddings response contains non-numeric values');
+      throw new Error('embeddings endpoint /v1/embeddings response contains non-numeric values');
     }
     return value;
   });
 
   if (embedding.length !== EXPECTED_DIM) {
     throw new Error(
-      `Embedding dimension mismatch: got ${embedding.length}, expected ${EXPECTED_DIM}. ` +
+      `Embedding dimension mismatch from /v1/embeddings: got ${embedding.length}, expected ${EXPECTED_DIM}. ` +
       `Model ${getEmbeddingModel()} may not match Qdrant collection expectations.`
     );
   }
