@@ -28,12 +28,11 @@ HOW TO SELECT MEMORIES. Apply these gates to every candidate. Do the classificat
    - NEVER broaden a scoped prohibition into a false universal; narrow it to its real reusable scope and consequence.
    - One hazard = one memory: keep the failure + its symptom + its fix together; do not split them across memories.
 
-8. PREFERENCE (preference_confidence). Emit EXACTLY one of:
-   0.0 FACT — reproducible/measurable behavior, error code, API fact, OR an observed in-session failure.
-   0.2 CONVENTION — "THIS org/project/repo does X" (valid, low subjectivity).
-   0.5 MIXED — blends fact and opinion.
-   0.8 TASTE — a stylistic claim with weak or no technical justification.
-   Score SUBSTANCE not tone: a strongly-worded fact is 0.0; a hedged opinion is high. NEVER emit pure taste (would-be 1.0) — DROP it. Suppress at emission: drop a 0.8 candidate that has no verifiable technical core; KEEP and flag a high-preference candidate that DOES carry a concrete core (the org-convention-as-fact case).
+8. PREFERENCE (preference_confidence). Emit a number from 0.00 to 1.00, up to two decimal places.
+   - CLOSER TO 0.00 = FACT — reproducible/measurable behavior, error code, API fact, OR an observed in-session failure. High confidence the knowledge is durable and verifiable.
+   - MID-RANGE (e.g., 0.30–0.60) = MIXED/CONVENTION — blends substance with judgment; "THIS org/project/repo does X" conventions; subjective tradeoffs the contributor is flagging without claiming universal truth.
+   - CLOSER TO 1.00 = TASTE — stylistic claim, personal preference, or weak technical justification. The contributor is signaling low confidence this guidance generalizes.
+   Score SUBSTANCE not tone: a strongly-worded fact stays near 0; a hedged opinion with no verifiable core should be higher (≥0.60). NEVER emit pure taste (=1.00) — DROP candidates that are purely aesthetic with no technical core at all.
 
 9. SECRETS / PII. Never extract API keys, tokens, passwords, private keys, session cookies, credentials, or personal emails/phones, and never lift secrets out of logs. Prefer repo-relative paths over user-specific absolute paths.
 

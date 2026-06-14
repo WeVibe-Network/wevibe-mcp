@@ -21,10 +21,9 @@ import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
-import { initCrypto, decryptSymmetric } from './crypto.js';
+import { initCrypto } from './crypto.js';
 import { loadIdentity } from './key-store.js';
 import { loadMemberships } from './org-client.js';
-import { buildWeVibeSignedAuth } from './auth.js';
 import {
   fetchPendingQueue,
   fetchModerationHistory,
@@ -43,7 +42,6 @@ import { submitMemory } from './contribution.js';
 import { getOrgKeywords } from './org-client.js';
 import { extractKeywords, extractMemories, type ClassifiedKeyword, type SuggestedKeyword } from './extraction.js';
 import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL, EMBEDDING_MODEL } from './config.js';
-import { hubFetchVerified } from './hub-fetch.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
 
@@ -495,120 +493,6 @@ srv.tool(
           hub_url: HUB_URL,
           mod_key_available: !!membership.modPrivkey,
           enc_key_count: membership.encKeys.size,
-        }),
-      }],
-    };
-  }
-);
-
-srv.tool(
-  'wevibe_list_memories',
-  'List all approved memories in the org with decrypted content. Returns a JSON array of memories with plaintext, keywords, epoch, and contributor info.',
-  { org_id: z.string().optional(), limit: z.number().optional(), offset: z.string().optional() },
-  async (args) => {
-    await initCrypto();
-    const membership = await requireMembership(args.org_id);
-    const { headers } = await buildWeVibeSignedAuth();
-
-    const limit = args.limit && Number.isFinite(args.limit) ? Math.max(1, Math.min(200, Math.trunc(args.limit))) : 50;
-
-    const params = new URLSearchParams({ limit: limit.toString() });
-    if (args.offset) {
-      params.set('offset', args.offset);
-    }
-
-    const listResp = await hubFetchVerified(
-      membership.orgId,
-      `${HUB_URL}/v1/orgs/${membership.orgId}/memories?${params.toString()}`,
-      { headers },
-    );
-
-    if (!listResp.res.ok) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: `hub returned ${listResp.res.status}` }) }],
-      };
-    }
-
-	const listData = listResp.json<{
-		memories: Array<{
-			cid: string;
-			org_id: string;
-			epoch_id: number;
-			memory_type: 'memory';
-			wrapped_dek_enc: string;
-        keywords?: Array<{ keyword: string; weight: number }>;
-        content_flags?: string[];
-        retrieval_count?: number;
-      }>;
-      count: number;
-      next_offset?: string | null;
-    }>();
-
-    const decryptedMemories: Array<Record<string, unknown>> = [];
-
-    for (const mem of listData.memories) {
-      const encKey = membership.encKeys.get(mem.epoch_id);
-      if (!encKey) {
-        decryptedMemories.push({
-          cid: mem.cid,
-          epoch_id: mem.epoch_id,
-          error: `no enc key for epoch ${mem.epoch_id}`,
-        });
-        continue;
-      }
-
-      if (!mem.wrapped_dek_enc) {
-        decryptedMemories.push({ cid: mem.cid, epoch_id: mem.epoch_id, error: 'no wrapped_dek_enc' });
-        continue;
-      }
-
-      try {
-        const ctResp = await hubFetchVerified(
-          membership.orgId,
-          `${HUB_URL}/v1/orgs/${membership.orgId}/memories/${mem.cid}`,
-        );
-        if (!ctResp.res.ok) {
-          decryptedMemories.push({
-            cid: mem.cid,
-            epoch_id: mem.epoch_id,
-            error: `ciphertext fetch failed: ${ctResp.res.status}`,
-          });
-          continue;
-        }
-
-        const ctData = ctResp.json<{ ciphertext_hex: string }>();
-
-        const wrappedDekEncBytes = new Uint8Array(Buffer.from(mem.wrapped_dek_enc, 'hex'));
-        const dek = decryptSymmetric(wrappedDekEncBytes, encKey);
-        const ciphertextBytes = new Uint8Array(Buffer.from(ctData.ciphertext_hex, 'hex'));
-        const plaintextBytes = decryptSymmetric(ciphertextBytes, dek);
-        const plaintext = Buffer.from(plaintextBytes).toString('utf-8');
-
-        decryptedMemories.push({
-          cid: mem.cid,
-          epoch_id: mem.epoch_id,
-          memory_type: mem.memory_type,
-          plaintext,
-          keywords: mem.keywords ?? [],
-          content_flags: mem.content_flags ?? [],
-          retrieval_count: mem.retrieval_count ?? 0,
-        });
-      } catch (e) {
-        decryptedMemories.push({
-          cid: mem.cid,
-          epoch_id: mem.epoch_id,
-          error: `decrypt failed: ${(e as Error).message}`,
-        });
-      }
-    }
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          memories: decryptedMemories,
-          count: listData.count,
-          next_offset: listData.next_offset ?? null,
         }),
       }],
     };

@@ -320,7 +320,7 @@ async function rerankByRelevance(
 
     const systemPrompt = `You are a relevance judge. Given a developer's query and candidate memories from a knowledge base, rank the memories by how directly they answer the query.
 
-Return ONLY a JSON array of indices (0-based) ordered from most relevant to least relevant. Example: [2, 0, 1]
+Return ONLY a JSON object of the form {"ranking": [<indices>]} where the indices are 0-based, ordered from most relevant to least relevant. Example: {"ranking": [2, 0, 1]}
 
 Criteria:
 - The memory that most directly solves the specific problem in the query ranks first
@@ -334,10 +334,28 @@ Criteria:
         const response = await llm.chat(systemPrompt, userMessage, {
             temperature: 0.0,
             jsonFormat: true,
+            jsonSchema: {
+                name: 'wevibe_rerank',
+                schema: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['ranking'],
+                    properties: {
+                        ranking: { type: 'array', items: { type: 'integer' } },
+                    },
+                },
+            },
             timeoutMs: 30000,
         });
 
-        const indices = JSON.parse(response) as number[];
+        // Accept the schema-wrapped object {"ranking": [...]} or a bare array
+        // (older/unconstrained providers may still return the latter).
+        const parsed = JSON.parse(response) as unknown;
+        const indices = Array.isArray(parsed)
+            ? parsed as number[]
+            : (parsed && typeof parsed === 'object' && Array.isArray((parsed as { ranking?: unknown }).ranking)
+                ? (parsed as { ranking: number[] }).ranking
+                : null);
         if (!Array.isArray(indices) || indices.length !== topN) {
             console.warn('rerankByRelevance: invalid response format');
             return memories;

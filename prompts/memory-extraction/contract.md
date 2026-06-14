@@ -4,7 +4,7 @@ Output ONLY a JSON array. Each element is one memory object with these keys:
 - "dnd": string or null — what NOT to do and the EXACT consequence (negative knowledge); null if there is no negative signal.
 - "stack": array of lowercase strings — the specific technologies involved.
 - "memory_type": string — always exactly "memory".
-- "preference_confidence": number — EXACTLY one of 0.0, 0.2, 0.5, 0.8.
+- "preference_confidence": number — a value from 0.00 to 1.00 (up to two decimal places). Lower = more factual/durable; higher = more taste/subjective.
 - "keywords": array (REQUIRED) — follow the KEYWORD CONTRACT supplied in the user message: a flat, rank-ordered array of {"keyword": "..."} objects.
 Do NOT output any other key. Do NOT output "extraction_hash" (the engine computes it).
 Do NOT wrap the array in markdown code fences and do NOT add any prose before or after it.

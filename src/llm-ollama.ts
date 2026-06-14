@@ -26,7 +26,11 @@ export function createOllamaProvider(ollamaUrl: string, model: string): LlmProvi
             temperature: options?.temperature ?? 0.2,
             ...(options?.numCtx ? { num_ctx: options.numCtx } : {}),
           },
-          format: options?.jsonFormat ? 'json' : undefined,
+          // Ollama accepts either the literal string 'json' or a full JSON Schema
+          // object as `format`. Prefer the schema when one is supplied.
+          format: options?.jsonSchema
+            ? options.jsonSchema.schema
+            : (options?.jsonFormat ? 'json' : undefined),
           think: false,
         }),
       });

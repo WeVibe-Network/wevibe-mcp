@@ -380,6 +380,42 @@ function extractJsonCandidates(raw: string): string[] {
   return out;
 }
 
+// Structured-output schema for standalone keyword extraction (admin/author path).
+// Mirrors KeywordExtractionResult's model-supplied shape (base_weight is computed
+// downstream, never emitted by the model).
+const KEYWORD_EXTRACTION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['classified', 'suggestions'],
+  properties: {
+    classified: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['keyword', 'weight'],
+        properties: {
+          keyword: { type: 'string' },
+          weight: { type: 'number' },
+        },
+      },
+    },
+    suggestions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['keyword', 'weight', 'rationale'],
+        properties: {
+          keyword: { type: 'string' },
+          weight: { type: 'number' },
+          rationale: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
 export async function extractKeywords(
   plaintext: string,
   stackHint: string[],
@@ -400,6 +436,7 @@ ${plaintext}`;
   const response = await llm.chat(systemPrompt, userMessage, {
     temperature: 0.2,
     jsonFormat: true,
+    jsonSchema: { name: 'wevibe_keyword_extraction', schema: KEYWORD_EXTRACTION_SCHEMA },
     timeoutMs: 300000,
   });
 
@@ -457,6 +494,46 @@ export async function setConsentFlag(consented: boolean): Promise<void> {
     await store.deletePassword(SERVICE, 'auto-contribute-consent');
   }
 }
+
+// Structured-output schema for memory extraction. Required so LM Studio / MiniMax
+// (which reject `response_format: json_object`) produce the array reliably; also
+// makes output shape deterministic on OpenRouter. The parser already unwraps the
+// top-level `memories` key, and OpenAI strict json_schema requires an object root.
+const MEMORY_EXTRACTION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['memories'],
+  properties: {
+    memories: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['implement', 'context', 'dnd', 'stack', 'memory_type', 'preference_confidence', 'keywords'],
+        properties: {
+          implement: { type: 'string' },
+          context: { type: 'string' },
+          dnd: { type: ['string', 'null'] },
+          stack: { type: 'array', items: { type: 'string' } },
+          memory_type: { type: 'string', enum: ['memory'] },
+          preference_confidence: { type: 'number' },
+          keywords: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['keyword', 'weight'],
+              properties: {
+                keyword: { type: 'string' },
+                weight: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
 
 export async function extractMemories(
   rawBuffer: string,
@@ -567,6 +644,7 @@ ${rawBuffer}
     content = await llm.chat(systemPrompt, userMessage, {
       temperature: 0.1,
       jsonFormat: true,
+      jsonSchema: { name: 'wevibe_memory_extraction', schema: MEMORY_EXTRACTION_SCHEMA },
       timeoutMs: 300000,
       numCtx,
     });
