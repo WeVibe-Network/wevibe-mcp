@@ -11,8 +11,8 @@ import { submitMemoryMessage } from './canonical.js';
 import type { MemoryType } from './types.js';
 
 type MemoryKeywordMetadata = {
-  classified: Array<{ keyword: string; weight: number }>;
-  suggestions: Array<{ keyword: string; weight: number; rationale: string }>;
+  classified: Array<{ keyword: string; weight: number; base_weight: number }>;
+  suggestions: Array<{ keyword: string; weight: number; base_weight: number; rationale: string }>;
 };
 
 export async function submitMemory(

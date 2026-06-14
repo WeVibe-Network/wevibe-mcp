@@ -8,10 +8,10 @@ Add a "keywords" array to each memory object while keeping all existing fields i
 - "memory_type"
 - "preference_confidence"
 
-`keywords` must be a flat RANKED array of candidate keyword objects, most important first (array order is rank):
+`keywords` must be a flat array of candidate keyword objects, ordered most-important-first. Assign each a relevancy weight in (0, 1] (higher = more relevant to this memory):
 [
-  { "keyword": "attestation" },
-  { "keyword": "provenance" }
+  { "keyword": "attestation", "weight": 0.9 },
+  { "keyword": "provenance", "weight": 0.6 }
 ]
 
 ORG CONTEXT (if provided):
@@ -21,7 +21,7 @@ ORG CONTEXT (if provided):
 
 Rules:
 - Emit 3-8 keywords when possible.
-- Do NOT output weights. A `weight` field may appear but is ignored downstream.
+- Assign each keyword a relevancy weight in (0,1] (higher = more relevant). Weights need not sum to anything; they are normalized downstream. Do not emit zero or negative weights.
 - Prefer single atomic canonical lowercase domain nouns.
 - Keyword must match `^[a-z][a-z0-9_]{1,39}$`.
 - Use underscores only (no spaces or hyphens), and allow at most ONE underscore only for genuine established terms of art.

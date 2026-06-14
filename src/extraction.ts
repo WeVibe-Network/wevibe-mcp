@@ -13,11 +13,13 @@ import type { MemoryType } from './types.js';
 export interface ClassifiedKeyword {
   keyword: string;
   weight: number;
+  base_weight: number;
 }
 
 export interface SuggestedKeyword {
   keyword: string;
   weight: number;
+  base_weight: number;
   rationale: string;
 }
 
@@ -42,6 +44,7 @@ const CANDIDATE_REUSE_TOPK = 10;
 
 interface FlatKeywordCandidate {
   keyword: string;
+  weight: number;
 }
 
 export interface MemoryCandidate {
@@ -148,6 +151,39 @@ function normalizeKeywordBucket<T extends { weight: number }>(keywords: T[]): vo
   }
 }
 
+function assignUnionBaseWeights<
+  TClassified extends { weight: number; base_weight: number },
+  TSuggested extends { weight: number; base_weight: number },
+>(classified: TClassified[], suggestions: TSuggested[]): void {
+  const totalCount = classified.length + suggestions.length;
+  if (totalCount === 0) {
+    return;
+  }
+
+  const unionWeightSum = classified.reduce((sum, kw) => sum + kw.weight, 0)
+    + suggestions.reduce((sum, kw) => sum + kw.weight, 0);
+
+  if (unionWeightSum > 0) {
+    for (const kw of classified) {
+      kw.base_weight = kw.weight / unionWeightSum;
+    }
+
+    for (const kw of suggestions) {
+      kw.base_weight = kw.weight / unionWeightSum;
+    }
+    return;
+  }
+
+  const fallbackWeight = 1 / totalCount;
+  for (const kw of classified) {
+    kw.base_weight = fallbackWeight;
+  }
+
+  for (const kw of suggestions) {
+    kw.base_weight = fallbackWeight;
+  }
+}
+
 function assignRankDecayWeights<T extends { weight: number }>(keywords: T[]): void {
   for (const [index, keyword] of keywords.entries()) {
     keyword.weight = KEYWORD_RANK_DECAY ** index;
@@ -184,8 +220,18 @@ function extractFlatKeywordCandidates(memory: unknown): FlatKeywordCandidate[] {
 
     return [{
       keyword,
+      weight: clampKeywordWeight(candidateRecord.weight),
     }];
   });
+}
+
+function normalizeOrRankDecay<T extends { weight: number }>(keywords: T[]): void {
+  const sum = keywords.reduce((acc, kw) => acc + kw.weight, 0);
+  if (sum > 0) {
+    normalizeKeywordBucket(keywords);
+  } else {
+    assignRankDecayWeights(keywords);
+  }
 }
 
 function routeKeywordCandidates(
@@ -200,7 +246,8 @@ function routeKeywordCandidates(
     if (vocabularySet.has(candidate.keyword)) {
       classified.push({
         keyword: candidate.keyword,
-        weight: 0,
+        weight: candidate.weight,
+        base_weight: 0,
       });
       continue;
     }
@@ -218,7 +265,8 @@ function routeKeywordCandidates(
 
     suggestions.push({
       keyword: candidate.keyword,
-      weight: 0,
+      weight: candidate.weight,
+      base_weight: 0,
       rationale: '',
     });
   }
@@ -227,8 +275,9 @@ function routeKeywordCandidates(
   const suggestionSlots = Math.max(0, MAX_KEYWORDS_PER_MEMORY - keptClassified.length);
   const keptSuggestions = suggestions.slice(0, suggestionSlots);
 
-  assignRankDecayWeights(keptClassified);
-  assignRankDecayWeights(keptSuggestions);
+  assignUnionBaseWeights(keptClassified, keptSuggestions);
+  normalizeOrRankDecay(keptClassified);
+  normalizeOrRankDecay(keptSuggestions);
 
   return {
     classified: keptClassified,
@@ -367,6 +416,7 @@ ${plaintext}`;
   }).map(c => ({
     keyword: c.keyword.toLowerCase(),
     weight: clampKeywordWeight(c.weight),
+    base_weight: 0,
   }));
 
   const suggestions = (parsed.suggestions ?? []).filter(s => {
@@ -382,9 +432,11 @@ ${plaintext}`;
   }).map(s => ({
     keyword: s.keyword.toLowerCase(),
     weight: clampKeywordWeight(s.weight),
+    base_weight: 0,
     rationale: s.rationale,
   }));
 
+  assignUnionBaseWeights(classified, suggestions);
   normalizeKeywordBucket(classified);
   normalizeKeywordBucket(suggestions);
 

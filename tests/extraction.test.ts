@@ -344,6 +344,19 @@ describe('extractMemories', () => {
 describe('extractKeywords', () => {
   const testVocab = ['docker', 'kubernetes', 'nginx', 'postgresql', 'redis', 'typescript', 'golang'];
 
+  function assertUnionBaseWeights(result: Awaited<ReturnType<typeof extractKeywords>>): void {
+    const allKeywords = [...result.classified, ...result.suggestions];
+    expect(allKeywords.length).toBeGreaterThan(0);
+
+    for (const keyword of allKeywords) {
+      expect(Number.isFinite(keyword.base_weight)).toBe(true);
+      expect(keyword.base_weight).toBeGreaterThan(0);
+    }
+
+    const unionBaseWeightSum = allKeywords.reduce((sum, keyword) => sum + keyword.base_weight, 0);
+    expect(Math.abs(unionBaseWeightSum - 1.0)).toBeLessThanOrEqual(1e-6);
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockReset();
@@ -371,6 +384,7 @@ describe('extractKeywords', () => {
     const sum = weights.reduce((a, b) => a + b, 0);
     expect(sum).toBeCloseTo(1.0, 10);
     expect(result.suggestions).toHaveLength(0);
+    assertUnionBaseWeights(result);
   });
 
   it('returns suggestions with normalized weights summing to 1.0', async () => {
@@ -394,6 +408,7 @@ describe('extractKeywords', () => {
     const sugWeights = result.suggestions.map(kw => kw.weight);
     const sugSum = sugWeights.reduce((a, b) => a + b, 0);
     expect(sugSum).toBeCloseTo(1.0, 10);
+    assertUnionBaseWeights(result);
   });
 
   it('returns classified and suggested keywords with normalized separate distributions', async () => {
@@ -419,6 +434,7 @@ describe('extractKeywords', () => {
     expect(result.suggestions[0].keyword).toBe('load_balancing');
     expect(result.suggestions[0].weight).toBe(1.0);
     expect(result.suggestions[0].rationale).toBe('Describes the traffic distribution pattern used');
+    assertUnionBaseWeights(result);
   });
 
   it('drops classified keywords not in vocabulary', async () => {
