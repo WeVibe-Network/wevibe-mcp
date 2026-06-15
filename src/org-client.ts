@@ -863,7 +863,8 @@ interface HubKeywordEntry {
 interface HubKeywordCandidate {
   keyword: string;
   distinct_contributors: number;
-  earned: boolean;
+  distinct_occasions: number;
+  commonly_suggested: boolean;
 }
 
 export interface OrgInfo {

@@ -555,8 +555,8 @@ export async function extractMemories(
     try {
       orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
     } catch (error) {
-      console.warn(`wevibe-mcp: keyword vocabulary fetch failed for org ${options.orgContext.orgId}: ${error}`);
-      orgVocabulary = [];
+      const cause = error instanceof Error ? error.message : String(error);
+      throw new Error(`failed to load org vocabulary for alignment (org ${options.orgContext.orgId}): ${cause} — extraction aborted to avoid minting duplicate keywords`);
     }
 
     try {
@@ -566,7 +566,8 @@ export async function extractMemories(
         CANDIDATE_REUSE_TOPK,
       );
     } catch (error) {
-      console.warn(`wevibe-mcp: emerging keyword candidates fetch failed for org ${options.orgContext.orgId}: ${error}`);
+      const cause = error instanceof Error ? error.message : String(error);
+      console.error(`wevibe-mcp: emerging keyword candidates fetch failed for org ${options.orgContext.orgId}: ${cause}`);
       emergingTerms = [];
     }
   }
