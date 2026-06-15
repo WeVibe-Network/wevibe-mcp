@@ -3,6 +3,7 @@ import { loadIdentity } from './key-store.js';
 import { loadMemberships, queryOrgMemories, decryptMemoryBlob } from './org-client.js';
 import { dissect_to_keywords } from './session.js';
 import { computeLocalEmbedding } from './embedding.js';
+import { loadEmbeddingConfig } from './embedding-config.js';
 import { buildNeedCard, type NeedHarvest } from './retrieval-card.js';
 import { deserializeMemoryResult } from './deserialize.js';
 import { ocrSanitize } from './ocr-sanitize.js';
@@ -270,8 +271,9 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   }
 
   let queryVector: number[];
+  const embeddingConfig = loadEmbeddingConfig();
   try {
-    queryVector = await computeLocalEmbedding(needCardText, { role: 'query', prefix: true });
+    queryVector = await computeLocalEmbedding(needCardText, { role: 'query', prefix: true }, embeddingConfig);
   } catch (e) {
     return { status: 'error', error: `embedding failed: ${e}` };
   }

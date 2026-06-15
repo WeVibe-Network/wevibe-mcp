@@ -1,4 +1,5 @@
 import { computeLocalEmbedding } from './embedding.js';
+import { loadEmbeddingConfig } from './embedding-config.js';
 import {
   buildAnticipatedNeed,
   buildRetrievalCard,
@@ -12,7 +13,8 @@ export async function embedRetrievalCard(
   structured: StructuredMemory,
   chat: ChatAdapter,
   opts: { strictAnticipated: boolean },
-): Promise<{ vector: number[]; cardText: string }> {
+): Promise<{ vector: number[]; cardText: string; embeddingModelId: string }> {
+  const embeddingConfig = loadEmbeddingConfig();
   const cardBase = buildRetrievalCard(structured);
 
   let anticipatedNeed = '';
@@ -28,7 +30,11 @@ export async function embedRetrievalCard(
     ? `${cardBase}\nAnticipated need: ${anticipatedNeed}`
     : cardBase;
 
-  const vector = await computeLocalEmbedding(sanitizeForEmbedding(cardText), { role: 'document', prefix: true });
+  const vector = await computeLocalEmbedding(
+    sanitizeForEmbedding(cardText),
+    { role: 'document', prefix: true },
+    embeddingConfig,
+  );
 
-  return { vector, cardText };
+  return { vector, cardText, embeddingModelId: embeddingConfig.model };
 }

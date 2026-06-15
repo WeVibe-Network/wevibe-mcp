@@ -212,12 +212,12 @@ function createMcpServer(): McpServer {
             stack: item.stack_hint,
           };
 
-          const { vector } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: true });
+          const { vector, embeddingModelId } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: true });
 
           results.push({
             id: item.id,
             vector,
-            embedding_model_id: EMBEDDING_MODEL,
+            embedding_model_id: embeddingModelId,
             embedding_schema_version: 'retrieval-card-v1',
           });
         } catch (e) {
