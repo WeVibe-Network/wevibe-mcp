@@ -223,6 +223,11 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  if (memoriesWithGuard.length === 0) {
+    jsonResponse(res, 200, { status: 'ok', memories: memoriesWithGuard, reason_code: 'no_memories' });
+    return;
+  }
+
   jsonResponse(res, 200, { status: 'ok', memories: memoriesWithGuard });
 }
 
