@@ -96,9 +96,14 @@ export interface QueryMemoryResult {
   };
 }
 
+function sanitizeRecallLogValue(value: string): string {
+  return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
 export async function queryOrgMemories(params: QueryMemoryRequest): Promise<QueryMemoryResponse> {
   await getOrCreatePreIdentity();
   const { headers } = await buildWeVibeSignedAuth();
+  const prePubkey = getPrePublicKeyHex();
 
   const requestBody = {
     org_id: params.orgId,
@@ -108,8 +113,19 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
     embedding_model_id: params.embeddingModelId,
     limit: params.limit,
     agent_sig: params.agentSig,
-    pre_pubkey: getPrePublicKeyHex(),
+    pre_pubkey: prePubkey,
   };
+
+  console.error(
+    '[recall] hub query request org=%s hubUrl=%s vector_len=%d keyword_count=%d embedding_model_id=%s limit=%d pre_pubkey_present=%s',
+    params.orgId,
+    params.hubUrl,
+    params.vector.length,
+    params.keywordWeights.length,
+    sanitizeRecallLogValue(params.embeddingModelId),
+    params.limit,
+    prePubkey && prePubkey.length > 0 ? 'yes' : 'no',
+  );
 
   const response = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/query`, {
     method: 'POST',
@@ -117,8 +133,12 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
     body: JSON.stringify(requestBody),
   });
 
+  console.error('[recall] hub query response org=%s hubUrl=%s status=%d', params.orgId, params.hubUrl, response.res.status);
+
   if (!response.res.ok) {
-    throw new Error(`hub query failed: HTTP ${response.res.status}`);
+    const body = sanitizeRecallLogValue(response.bodyText.slice(0, 500));
+    console.error('[recall] hub query org=%s status=%d body=%s', params.orgId, response.res.status, body);
+    throw new Error(`hub query failed: HTTP ${response.res.status} body=${body}`);
   }
 
   return response.json<QueryMemoryResponse>();

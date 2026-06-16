@@ -32,8 +32,8 @@
  *   wevibe-admin recover-org --org <org_id> --phrase "24 word phrase"
  *   wevibe-admin setup-threshold --org <org_id> --share2 <hex> --share3 <hex>
  *   wevibe-admin recover-threshold --org <org_id> --share <hex>
- *   wevibe-admin install-opencode [--config-dir <path>] [--node <path>] [--force] [--json]
- *   wevibe-admin uninstall-opencode [--config-dir <path>] [--json]
+ *   wevibe-admin install-opencode [--config-dir <path>] [--node <path>] [--engine-path <abs>] [--force] [--json]
+ *   wevibe-admin uninstall-opencode [--config-dir <path>] [--engine-path <abs>] [--json]
  */
 
 import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed, generateIdentityFromSeed } from './crypto.js';
@@ -69,6 +69,8 @@ type JsonObject = Record<string, unknown>;
 type JsonWriteStatus = 'created' | 'updated' | 'unchanged';
 type PluginFileStatus = 'created' | 'updated' | 'unchanged';
 type PluginRemovalStatus = 'removed' | 'absent';
+type EnginePluginInstallStatus = 'registered' | 'missing';
+type EnginePluginRemovalStatus = 'removed' | 'absent';
 type OpencodePluginOptions = {
   adminScript: string;
   node: string;
@@ -78,6 +80,8 @@ type InstallOpencodeResult = {
   ok: true;
   configDir: string;
   pluginPath: string;
+  enginePluginPath: string;
+  enginePluginStatus: EnginePluginInstallStatus;
   tuiJson: JsonWriteStatus;
   opencodeJson: JsonWriteStatus;
   adminScript: string;
@@ -88,6 +92,8 @@ type UninstallOpencodeResult = {
   ok: true;
   configDir: string;
   pluginPath: string;
+  enginePluginPath: string;
+  enginePluginStatus: EnginePluginRemovalStatus;
   pluginFile: PluginRemovalStatus;
   tuiJson: 'updated' | 'unchanged';
   opencodeJson: 'updated' | 'unchanged';
@@ -268,13 +274,24 @@ function resolveOpencodeConfigDir(flags: Record<string, string>): string {
   return path.join(os.homedir(), '.config', 'opencode');
 }
 
-function resolveAdminRuntimePaths(): { adminScript: string; serverScript: string; pluginSource: string } {
+function resolveAdminRuntimePaths(flags: Record<string, string>): {
+  adminScript: string;
+  serverScript: string;
+  pluginSource: string;
+  enginePluginPath: string;
+} {
   const adminScript = fileURLToPath(import.meta.url);
   const distDir = path.dirname(adminScript);
   const serverScript = path.join(distDir, 'server.js');
   const repoRoot = path.resolve(distDir, '..');
   const pluginSource = path.join(repoRoot, 'opencode-plugin', 'wevibe.tsx');
-  return { adminScript, serverScript, pluginSource };
+  const siblingEnginePath = path.resolve(repoRoot, '..', 'wevibe-opencode-plugin', 'plugins', 'wevibe-plugin.ts');
+  const enginePathOverride =
+    getOptionalValueFlag(flags, 'engine-path') ??
+    process.env.WEVIBE_ENGINE_PATH ??
+    siblingEnginePath;
+  const enginePluginPath = path.resolve(enginePathOverride);
+  return { adminScript, serverScript, pluginSource, enginePluginPath };
 }
 
 async function copyCanonicalPlugin(sourcePath: string, destinationPath: string, force: boolean): Promise<PluginFileStatus> {
@@ -364,6 +381,51 @@ export function mergeMcpEntry(existing: JsonObject, node: string, serverScriptPa
       },
     },
   };
+}
+
+export function mergeServerPluginEntry(existing: JsonObject, enginePath: string): JsonObject {
+  const existingPlugins = Array.isArray(existing.plugin) ? [...existing.plugin] : [];
+  const mergedPlugins: unknown[] = [];
+  let found = false;
+
+  for (const entry of existingPlugins) {
+    if (typeof entry === 'string' && entry === enginePath) {
+      if (!found) {
+        mergedPlugins.push(entry);
+        found = true;
+      }
+      continue;
+    }
+    mergedPlugins.push(entry);
+  }
+
+  if (!found) {
+    mergedPlugins.push(enginePath);
+  }
+
+  return {
+    ...existing,
+    plugin: mergedPlugins,
+  };
+}
+
+export function removeServerPluginEntry(existing: JsonObject, enginePath: string): JsonObject {
+  if (!Array.isArray(existing.plugin)) {
+    return { ...existing };
+  }
+
+  const filteredPlugins = existing.plugin.filter((entry) => !(typeof entry === 'string' && entry === enginePath));
+  return {
+    ...existing,
+    plugin: filteredPlugins,
+  };
+}
+
+function hasServerPluginEntry(existing: JsonObject, enginePath: string): boolean {
+  if (!Array.isArray(existing.plugin)) {
+    return false;
+  }
+  return existing.plugin.some((entry) => typeof entry === 'string' && entry === enginePath);
 }
 
 export function removeMcpEntry(existing: JsonObject): JsonObject {
@@ -1025,9 +1087,18 @@ async function cmdInstallOpencode(flags: Record<string, string>) {
   const nodeBin = getOptionalValueFlag(flags, 'node') ?? 'node';
   const configDir = resolveOpencodeConfigDir(flags);
 
-  const { adminScript, serverScript, pluginSource } = resolveAdminRuntimePaths();
+  const { adminScript, serverScript, pluginSource, enginePluginPath } = resolveAdminRuntimePaths(flags);
   if (!await pathExists(pluginSource)) {
     die(`Canonical opencode plugin source is missing: ${pluginSource}`);
+  }
+
+  const enginePluginExists = await pathExists(enginePluginPath);
+  const enginePluginStatus: EnginePluginInstallStatus = enginePluginExists ? 'registered' : 'missing';
+  if (!enginePluginExists) {
+    console.warn(
+      `Warning: Canonical opencode engine plugin source is missing: ${enginePluginPath}. ` +
+      'Skipping opencode.json plugin registration.',
+    );
   }
 
   const tuiDir = path.join(configDir, 'tui');
@@ -1050,18 +1121,23 @@ async function cmdInstallOpencode(flags: Record<string, string>) {
   const opencodeParseError =
     `Failed to parse ${opencodeJsonPath} as strict JSON. ` +
     'install-opencode will not modify commented JSON/JSONC files. ' +
-    'Please add the mcp.wevibe entry manually to avoid clobbering your config.';
+    'Please add the mcp.wevibe and plugin entries manually to avoid clobbering your config.';
   const opencodeExisting = await readJsonObjectFile(opencodeJsonPath, opencodeParseError);
   const opencodeSeed: JsonObject = opencodeExisting ?? {
     '$schema': 'https://opencode.ai/config.json',
   };
-  const opencodeMerged = mergeMcpEntry(opencodeSeed, nodeBin, serverScript);
+  let opencodeMerged = mergeMcpEntry(opencodeSeed, nodeBin, serverScript);
+  if (enginePluginExists) {
+    opencodeMerged = mergeServerPluginEntry(opencodeMerged, enginePluginPath);
+  }
   const opencodeJson = await writeJsonObjectFile(opencodeJsonPath, opencodeExisting, opencodeMerged, force);
 
   const result: InstallOpencodeResult = {
     ok: true,
     configDir,
     pluginPath,
+    enginePluginPath,
+    enginePluginStatus,
     tuiJson,
     opencodeJson,
     adminScript,
@@ -1076,6 +1152,7 @@ async function cmdInstallOpencode(flags: Record<string, string>) {
   console.log('Installed WeVibe opencode integration.');
   console.log(`  configDir: ${configDir}`);
   console.log(`  plugin: ${pluginPath} (${pluginStatus})`);
+  console.log(`  engine: ${enginePluginPath} (${enginePluginStatus})`);
   console.log(`  tui.json: ${tuiJsonPath} (${tuiJson})`);
   console.log(`  opencode.json: ${opencodeJsonPath} (${opencodeJson})`);
   console.log('Restart opencode to load updated plugin/MCP settings.');
@@ -1084,6 +1161,7 @@ async function cmdInstallOpencode(flags: Record<string, string>) {
 async function cmdUninstallOpencode(flags: Record<string, string>) {
   const asJson = hasFlag(flags, 'json');
   const configDir = resolveOpencodeConfigDir(flags);
+  const { enginePluginPath } = resolveAdminRuntimePaths(flags);
 
   const tuiJsonPath = path.join(configDir, 'tui.json');
   const pluginPath = path.join(configDir, 'tui', 'wevibe.tsx');
@@ -1099,14 +1177,19 @@ async function cmdUninstallOpencode(flags: Record<string, string>) {
 
   const pluginFile = await removeFileIfExists(pluginPath);
 
+  let enginePluginStatus: EnginePluginRemovalStatus = 'absent';
   let opencodeJson: 'updated' | 'unchanged' = 'unchanged';
   const opencodeParseError =
     `Failed to parse ${opencodeJsonPath} as strict JSON. ` +
     'uninstall-opencode will not modify commented JSON/JSONC files. ' +
-    'Please remove mcp.wevibe manually to avoid clobbering your config.';
+    'Please remove mcp.wevibe and plugin entries manually to avoid clobbering your config.';
   const opencodeExisting = await readJsonObjectFile(opencodeJsonPath, opencodeParseError);
   if (opencodeExisting) {
-    const opencodeRemoved = removeMcpEntry(opencodeExisting);
+    if (hasServerPluginEntry(opencodeExisting, enginePluginPath)) {
+      enginePluginStatus = 'removed';
+    }
+    const opencodeWithoutMcp = removeMcpEntry(opencodeExisting);
+    const opencodeRemoved = removeServerPluginEntry(opencodeWithoutMcp, enginePluginPath);
     const status = await writeJsonObjectFile(opencodeJsonPath, opencodeExisting, opencodeRemoved, false);
     opencodeJson = status === 'created' ? 'updated' : status;
   }
@@ -1115,6 +1198,8 @@ async function cmdUninstallOpencode(flags: Record<string, string>) {
     ok: true,
     configDir,
     pluginPath,
+    enginePluginPath,
+    enginePluginStatus,
     pluginFile,
     tuiJson,
     opencodeJson,
@@ -1128,6 +1213,7 @@ async function cmdUninstallOpencode(flags: Record<string, string>) {
   console.log('Uninstalled WeVibe opencode integration.');
   console.log(`  configDir: ${configDir}`);
   console.log(`  plugin: ${pluginPath} (${pluginFile})`);
+  console.log(`  engine: ${enginePluginPath} (${enginePluginStatus})`);
   console.log(`  tui.json: ${tuiJsonPath} (${tuiJson})`);
   console.log(`  opencode.json: ${opencodeJsonPath} (${opencodeJson})`);
   console.log('Restart opencode to apply the updated configuration.');
@@ -1158,12 +1244,13 @@ Commands:
   recover-org --org --phrase      Recover from 24-word phrase
   setup-threshold --org --share2 --share3   Set up 2-of-3 recovery
   recover-threshold --org --share           Recover from threshold shares
-  install-opencode [--config-dir] [--node] [--force] [--json]  Install opencode plugin + MCP wiring
-  uninstall-opencode [--config-dir] [--json]                    Remove opencode plugin + MCP wiring
+  install-opencode [--config-dir] [--node] [--engine-path] [--force] [--json]  Install opencode plugin + MCP wiring
+  uninstall-opencode [--config-dir] [--engine-path] [--json]                    Remove opencode plugin + MCP wiring
 
 Environment:
   WEVIBE_HUB_URL    Hub URL (default: ${HUB_URL})
   WEVIBE_CHAIN_REST_URL  Chain REST URL (default: ${CHAIN_REST_URL})
+  WEVIBE_ENGINE_PATH  Override engine plugin path for opencode.json plugin[]
   OPENCODE_CONFIG_DIR  Override opencode config directory
   XDG_CONFIG_HOME      Base directory used to resolve <xdg>/opencode
 `);

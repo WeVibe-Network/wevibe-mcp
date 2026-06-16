@@ -5,14 +5,17 @@ const {
   mockFetch,
   getOrgHubStateMock,
   setOrgHubStateMock,
+  loadEmbeddingConfigMock,
 } = vi.hoisted(() => {
   const mockFetch = vi.fn();
   const getOrgHubStateMock = vi.fn();
   const setOrgHubStateMock = vi.fn();
+  const loadEmbeddingConfigMock = vi.fn();
   return {
     mockFetch,
     getOrgHubStateMock,
     setOrgHubStateMock,
+    loadEmbeddingConfigMock,
   };
 });
 
@@ -202,6 +205,10 @@ describe('retrieve failover on hub signature mismatch', () => {
       computeLocalEmbedding: computeLocalEmbeddingMock,
     }));
 
+    vi.doMock('../src/embedding-config.js', () => ({
+      loadEmbeddingConfig: loadEmbeddingConfigMock,
+    }));
+
     vi.doMock('../src/deserialize.js', () => ({
       deserializeMemoryResult: vi.fn(),
     }));
@@ -244,6 +251,13 @@ describe('retrieve failover on hub signature mismatch', () => {
       pickActiveEndpoint: pickActiveEndpointMock,
     }));
 
+    loadEmbeddingConfigMock.mockReturnValue({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test',
+      model: 'test-embedding-model',
+      usePrefix: false,
+    });
+
     const { retrieve } = await import('../src/retrieve-cli.js');
     const result = await retrieve({
       query: 'redis config',
@@ -274,6 +288,9 @@ describe('retrieve failover on hub signature mismatch', () => {
     expect(computeLocalEmbeddingMock).toHaveBeenCalledWith(
       expect.stringMatching(/^Intent:/),
       { role: 'query', prefix: true },
+      expect.objectContaining({
+        model: 'test-embedding-model',
+      }),
     );
     const embeddedText = computeLocalEmbeddingMock.mock.calls[0][0] as string;
     expect(embeddedText).toContain('Task: redis config');

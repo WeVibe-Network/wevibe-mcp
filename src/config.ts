@@ -14,6 +14,6 @@ export const EXTRACTION_MODEL = process.env.WEVIBE_EXTRACTION_MODEL ?? 'qwen3:4b
 export const EMBEDDING_BASE_URL = process.env.WEVIBE_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:1234/v1';
 export const EMBEDDING_API_KEY = process.env.WEVIBE_EMBEDDING_API_KEY ?? 'lm-studio';
 export const EMBEDDING_MODEL = process.env.WEVIBE_EMBEDDING_MODEL ?? 'text-embedding-nomic-embed-text-v1.5';
-export const EMBEDDING_DIM = Number(process.env.WEVIBE_EMBEDDING_DIM ?? 768);
+export const EMBEDDING_DIM = Number(process.env.WEVIBE_EMBEDDING_DIM ?? 3072);
 export const EMBEDDING_QUERY_PREFIX = process.env.WEVIBE_EMBEDDING_QUERY_PREFIX ?? 'search_query: ';
 export const EMBEDDING_DOCUMENT_PREFIX = process.env.WEVIBE_EMBEDDING_DOCUMENT_PREFIX ?? 'search_document: ';

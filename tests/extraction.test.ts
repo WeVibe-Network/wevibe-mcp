@@ -4,7 +4,16 @@ import { setLlmProvider } from '../src/llm.js';
 import type { LlmChatOptions, LlmProvider } from '../src/llm.js';
 
 vi.mock('../src/embedding.js', () => ({
-  computeLocalEmbedding: vi.fn().mockResolvedValue(new Array(768).fill(0.1)),
+  computeLocalEmbedding: vi.fn().mockResolvedValue(new Array(3072).fill(0.1)),
+}));
+
+vi.mock('../src/embedding-config.js', () => ({
+  loadEmbeddingConfig: vi.fn().mockReturnValue({
+    baseUrl: 'http://127.0.0.1:1234/v1',
+    apiKey: 'lm-studio',
+    model: 'text-embedding-3-large',
+    usePrefix: false,
+  }),
 }));
 
 const mockFetch = vi.fn();
@@ -504,10 +513,10 @@ describe('computeEmbedding', () => {
     vi.clearAllMocks();
   });
 
-  it('returns 768-dimension embedding vector', async () => {
+  it('returns 3072-dimension embedding vector', async () => {
     const result = await computeEmbedding('test query text');
 
-    expect(result).toHaveLength(768);
+    expect(result).toHaveLength(3072);
     expect(result[0]).toBeCloseTo(0.1);
   });
 
@@ -515,6 +524,15 @@ describe('computeEmbedding', () => {
     const { computeLocalEmbedding } = await import('../src/embedding.js');
     await computeEmbedding('test query');
 
-    expect(computeLocalEmbedding).toHaveBeenCalledWith('test query');
+    expect(computeLocalEmbedding).toHaveBeenCalledWith(
+      'test query',
+      undefined,
+      expect.objectContaining({
+        baseUrl: expect.any(String),
+        apiKey: expect.any(String),
+        model: expect.any(String),
+        usePrefix: expect.any(Boolean),
+      }),
+    );
   });
 });

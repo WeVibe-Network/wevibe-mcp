@@ -13,7 +13,7 @@ import { transformMemoryContent } from './artifact-transform.js';
 import { formatTrustPanel, type MemoryStats, type ContributorStats } from './trust-panel.js';
 import { is_blacklisted } from './blacklist.js';
 import { buildWeVibeSignedAuth } from './auth.js';
-import { HUB_URL, EMBEDDING_MODEL } from './config.js';
+import { HUB_URL } from './config.js';
 import { getActiveHubUrlForOrg, pickActiveEndpoint } from './hub-resolver.js';
 import { getOrgHubState, setOrgHubState } from './identity-sidecar.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
@@ -130,6 +130,10 @@ function optionalArray(values: string[]): string[] | undefined {
   return values.length > 0 ? values : undefined;
 }
 
+function sanitizeRecallLogValue(value: string): string {
+  return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
 function buildKeywordDescription(input: RetrieveInput, stack: string[]): string {
   const parts: string[] = [];
   const query = nonEmptyString(input.query);
@@ -228,17 +232,25 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   const identity = await loadIdentity();
   if (!identity) {
+    console.error('[recall] retrieve error=no identity found in keychain');
     return { status: 'error', error: 'no identity found in keychain' };
   }
+  console.error('[recall] identity ok');
 
   let memberships: Awaited<ReturnType<typeof loadMemberships>>;
   try {
     memberships = await loadMemberships(HUB_URL);
   } catch (e) {
+    console.error(
+      '[recall] retrieve error=failed to load org memberships hub_url=%s detail=%s',
+      HUB_URL,
+      sanitizeRecallLogValue(String(e)),
+    );
     return { status: 'error', error: `failed to load org memberships: ${e}` };
   }
 
   if (memberships.length === 0) {
+    console.error('[recall] retrieve error=no org membership found');
     return { status: 'error', error: 'no org membership found' };
   }
 
@@ -247,13 +259,16 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     : memberships[0];
 
   if (!membership) {
+    console.error('[recall] retrieve error=org membership missing requested_org=%s', sanitizeRecallLogValue(input.org_id ?? ''));
     return { status: 'error', error: `org ${input.org_id} not found in memberships` };
   }
+  console.error('[recall] membership resolved org_id=%s', membership.orgId);
 
   let activeHubUrl = getActiveHubUrlForOrg(membership.orgId) ?? HUB_URL;
 
   const harvest = buildQueryHarvest(input);
   const needCardText = buildNeedCard(harvest);
+  console.error('[recall] need-card built length=%d', needCardText.length);
   const stackSignals = harvest.stack ?? [];
   const recentActivitySignals = harvest.errorStrings ?? [];
   const keywordDescription = buildKeywordDescription(input, stackSignals);
@@ -266,20 +281,33 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     projectName: nonEmptyString(input.projectName) ?? '',
   });
 
+  const keywordTerms = keywords.map(kw => sanitizeRecallLogValue(kw.term));
+  console.error('[recall] keywords extracted count=%d terms=%s', keywords.length, keywordTerms.join(','));
+
   if (keywords.length === 0) {
+    console.error('[recall] retrieve error=no keywords extracted query=%s', sanitizeRecallLogValue(input.query));
     return { status: 'error', error: `no keywords extracted for "${input.query}"` };
   }
 
   let queryVector: number[];
-  const embeddingConfig = loadEmbeddingConfig();
+  let embeddingModelId = '';
   try {
+    const embeddingConfig = loadEmbeddingConfig();
     queryVector = await computeLocalEmbedding(needCardText, { role: 'query', prefix: true }, embeddingConfig);
+    embeddingModelId = embeddingConfig.model;
+    console.error(
+      '[recall] embedding computed vector_dim=%d model=%s',
+      queryVector.length,
+      sanitizeRecallLogValue(embeddingModelId),
+    );
   } catch (e) {
+    console.error('[recall] retrieve error=embedding failed detail=%s', sanitizeRecallLogValue(String(e)));
     return { status: 'error', error: `embedding failed: ${e}` };
   }
 
   let rawMemories: ReturnType<typeof deserializeMemoryResult>[] = [];
   try {
+    console.error('[recall] about-to-call-hub org_id=%s hubUrl=%s', membership.orgId, activeHubUrl);
     const queryResult = await runWithHubSignatureFailover(
       membership.orgId,
       activeHubUrl,
@@ -290,7 +318,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         agentPubkey: uint8ArrayToHex(identity.edPubkey),
         keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
         vector: queryVector,
-        embeddingModelId: EMBEDDING_MODEL,
+        embeddingModelId,
         limit: input.limit ?? 5,
         agentSig: 'stub',
       }),
@@ -298,6 +326,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
     activeHubUrl = queryResult.hubUrl;
     const data = queryResult.result;
+    console.error('[recall] hub returned raw_count=%d', data.results?.length ?? 0);
 
     if (data.results) {
       for (const r of data.results) {
@@ -305,6 +334,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       }
     }
   } catch (e) {
+    console.error('[recall] retrieve error=hub query failed detail=%s', sanitizeRecallLogValue(String(e)));
     return { status: 'error', error: `hub query failed: ${e}` };
   }
 
@@ -401,6 +431,8 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     }
   }
 
+  console.error('[recall] decrypt complete decrypted_count=%d', memories.length);
+
   const preFilterCount = memories.length;
   const filteredMemories = memories.filter(m => {
     const packId = (m as { pack_id?: string }).pack_id;
@@ -409,6 +441,8 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   if (preFilterCount > filteredMemories.length) {
     console.error(`[wevibe-blacklist] Filtered ${preFilterCount - filteredMemories.length} blacklisted memories`);
   }
+
+  console.error('[recall] final memories returned count=%d', filteredMemories.length);
 
   return { status: 'ok', memories: filteredMemories, org_allowed_providers: membership.allowedProviders };
 }

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { getStore } from './key-store.js';
 import { getLlmProvider, type LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
+import { loadEmbeddingConfig } from './embedding-config.js';
 import { getRecommendedPreset } from './extraction-presets.js';
 import { getOrgInfo, getOrgKeywordCandidates, getOrgKeywords, type OrgInfo } from './org-client.js';
 import type { MemoryType } from './types.js';
@@ -748,5 +749,5 @@ ${rawBuffer}
 }
 
 export async function computeEmbedding(text: string): Promise<number[]> {
-  return computeLocalEmbedding(text);
+  return computeLocalEmbedding(text, undefined, loadEmbeddingConfig());
 }

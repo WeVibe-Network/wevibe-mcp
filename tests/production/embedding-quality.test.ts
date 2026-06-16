@@ -49,8 +49,8 @@ describe.skipIf(!RUN_EMBEDDING_QUALITY_TESTS)('Embedding quality', () => {
     expect(sim).toBeGreaterThan(0.999);
   }, 60000);
 
-  it('produces 768-dimensional vectors', async () => {
+  it('produces 3072-dimensional vectors', async () => {
     const vec = await computeLocalEmbedding('dimension check');
-    expect(vec).toHaveLength(768);
+    expect(vec).toHaveLength(3072);
   }, 60000);
 });

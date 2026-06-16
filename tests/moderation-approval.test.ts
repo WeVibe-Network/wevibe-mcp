@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { approveSubmission } from '../src/moderation.js';
 import { computeLocalEmbedding } from '../src/embedding.js';
+import { loadEmbeddingConfig } from '../src/embedding-config.js';
 import { getLlmProvider } from '../src/llm.js';
 
 const mockFetch = vi.fn();
@@ -8,8 +9,21 @@ global.fetch = mockFetch;
 
 const mockChat = vi.fn();
 
+const mockEmbeddingConfig = {
+  baseUrl: 'http://test.local/v1',
+  apiKey: 'test',
+  model: 'test-embedding-model',
+  usePrefix: false,
+};
+
+let mockEmbeddingVector: number[] = [];
+
 vi.mock('../src/embedding.js', () => ({
   computeLocalEmbedding: vi.fn(),
+}));
+
+vi.mock('../src/embedding-config.js', () => ({
+  loadEmbeddingConfig: vi.fn(),
 }));
 
 vi.mock('../src/llm.js', () => ({
@@ -72,7 +86,7 @@ function queueManifestAndApproveResponses() {
   });
 }
 
-function buildMockVector(dim = 768): number[] {
+function buildMockVector(dim = 3072): number[] {
   return Array.from({ length: dim }, (_, i) => i / dim);
 }
 
@@ -94,7 +108,9 @@ describe('moderation approval flow', () => {
     mockChat.mockReset();
     mockChat.mockResolvedValue('When this memory is needed during moderation review.');
     vi.mocked(getLlmProvider).mockReturnValue({ chat: mockChat } as ReturnType<typeof getLlmProvider>);
-    vi.mocked(computeLocalEmbedding).mockResolvedValue(buildMockVector());
+    mockEmbeddingVector = buildMockVector(19);
+    vi.mocked(computeLocalEmbedding).mockResolvedValue(mockEmbeddingVector);
+    vi.mocked(loadEmbeddingConfig).mockReturnValue(mockEmbeddingConfig);
   });
 
   it('sends epoch_id, memory_type, signed_by, and moderator_sig to hub', async () => {
@@ -137,10 +153,10 @@ describe('moderation approval flow', () => {
     const body = findApproveCallBody();
 
     expect(Array.isArray(body.vector)).toBe(true);
-    expect((body.vector as number[])).toHaveLength(768);
-    expect(body.embedding_model_id).toBe('text-embedding-nomic-embed-text-v1.5');
+    expect((body.vector as number[])).toHaveLength(mockEmbeddingVector.length);
+    expect(body.embedding_model_id).toBe(mockEmbeddingConfig.model);
     expect(body.embedding_schema_version).toBe('retrieval-card-v1');
-    expect(body.vector_dim).toBe(768);
+    expect(body.vector_dim).toBe(mockEmbeddingVector.length);
 
     expect(body.keywords).toBeUndefined();
     expect(body.keyword_weights).toBeUndefined();
@@ -153,6 +169,23 @@ describe('moderation approval flow', () => {
   it('still approves when embedding fails and omits vector fields', async () => {
     queueManifestAndApproveResponses();
     vi.mocked(computeLocalEmbedding).mockRejectedValueOnce(new Error('embedding offline'));
+
+    const result = await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
+
+    expect(result.status).toBe('approved');
+
+    const body = findApproveCallBody();
+    expect(body.vector).toBeUndefined();
+    expect(body.embedding_model_id).toBeUndefined();
+    expect(body.embedding_schema_version).toBeUndefined();
+    expect(body.vector_dim).toBeUndefined();
+  });
+
+  it('still approves when embedding config load fails and omits vector fields', async () => {
+    queueManifestAndApproveResponses();
+    vi.mocked(loadEmbeddingConfig).mockImplementationOnce(() => {
+      throw new Error('OpenRouter API key missing or masked in dashboard.json; paste a real key');
+    });
 
     const result = await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
 

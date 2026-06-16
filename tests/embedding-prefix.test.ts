@@ -9,7 +9,7 @@ function mockEmbeddingResponse(): void {
     ok: true,
     status: 200,
     json: async () => ({
-      data: [{ embedding: new Array(768).fill(0.1) }],
+      data: [{ embedding: new Array(3072).fill(0.1) }],
     }),
   });
 }

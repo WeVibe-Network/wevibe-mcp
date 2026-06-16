@@ -4,14 +4,17 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   mergeMcpEntry,
+  mergeServerPluginEntry,
   mergeTuiPluginEntry,
   removeMcpEntry,
+  removeServerPluginEntry,
   removeTuiPluginEntry,
 } from '../src/admin.js';
 
 const pluginRelPath = './tui/wevibe.tsx';
 const adminScript = '/abs/wevibe-mcp/dist/admin.js';
 const serverScript = '/abs/wevibe-mcp/dist/server.js';
+const enginePluginPath = '/abs/wevibe-opencode-plugin/plugins/wevibe-plugin.ts';
 
 describe('install-opencode merge helpers', () => {
   it('mergeTuiPluginEntry adds WeVibe plugin and preserves other keys/plugins', () => {
@@ -129,6 +132,46 @@ describe('install-opencode merge helpers', () => {
     });
   });
 
+  it('mergeServerPluginEntry adds engine plugin path exactly once', () => {
+    const existing = {
+      '$schema': 'https://opencode.ai/config.json',
+      plugin: [
+        './plugins/alpha.ts',
+        ['./plugins/tuple.ts', { demo: true }],
+        enginePluginPath,
+        enginePluginPath,
+      ],
+      keep: 'value',
+    } as Record<string, unknown>;
+
+    const merged = mergeServerPluginEntry(existing, enginePluginPath);
+    expect(merged.plugin).toEqual([
+      './plugins/alpha.ts',
+      ['./plugins/tuple.ts', { demo: true }],
+      enginePluginPath,
+    ]);
+    expect(merged.keep).toBe('value');
+  });
+
+  it('removeServerPluginEntry removes only matching engine plugin string entries', () => {
+    const existing = {
+      plugin: [
+        './plugins/alpha.ts',
+        enginePluginPath,
+        ['./plugins/tuple.ts', { demo: true }],
+        enginePluginPath,
+      ],
+      keep: { untouched: true },
+    } as Record<string, unknown>;
+
+    const removed = removeServerPluginEntry(existing, enginePluginPath);
+    expect(removed.plugin).toEqual([
+      './plugins/alpha.ts',
+      ['./plugins/tuple.ts', { demo: true }],
+    ]);
+    expect(removed.keep).toEqual({ untouched: true });
+  });
+
   it('merge helpers are idempotent at object level', () => {
     const baseTui = {
       '$schema': 'https://opencode.ai/tui.json',
@@ -151,6 +194,14 @@ describe('install-opencode merge helpers', () => {
     const mergedMcp = mergeMcpEntry(baseMcp, 'node', serverScript);
     const mergedMcpAgain = mergeMcpEntry(mergedMcp, 'node', serverScript);
     expect(mergedMcpAgain).toEqual(mergedMcp);
+
+    const baseServerPlugins = {
+      '$schema': 'https://opencode.ai/config.json',
+      plugin: ['./plugins/alpha.ts'],
+    } as Record<string, unknown>;
+    const mergedServerPlugins = mergeServerPluginEntry(baseServerPlugins, enginePluginPath);
+    const mergedServerPluginsAgain = mergeServerPluginEntry(mergedServerPlugins, enginePluginPath);
+    expect(mergedServerPluginsAgain).toEqual(mergedServerPlugins);
   });
 
   it('preserves pre-existing opencode config blocks from a temp --config-dir fixture', () => {

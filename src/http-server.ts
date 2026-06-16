@@ -160,6 +160,10 @@ function providerAllowedByPolicy(
   return normalizedAllowlist.includes(provider);
 }
 
+function sanitizeRecallLogValue(value: string): string {
+  return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
 async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!authorize(req, res)) {
     return;
@@ -174,18 +178,33 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
     rawInput = JSON.parse(body) as Record<string, unknown>;
     input = rawInput as unknown as RetrieveInput;
   } catch {
+    console.error('[recall] /v1/recall error=invalid JSON');
     jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
     return;
   }
 
   if (!input.query || typeof input.query !== 'string') {
+    console.error('[recall] /v1/recall error=query missing or invalid');
     jsonResponse(res, 400, { status: 'error', error: 'query is required and must be a string' });
     return;
   }
 
-  const result = await retrieve(input);
+  const queryPreview = sanitizeRecallLogValue(input.query.slice(0, 80));
+  const requestedLimit = typeof input.limit === 'number' && Number.isFinite(input.limit) ? input.limit : 5;
+  console.error('[recall] /v1/recall received query="%s" limit=%d', queryPreview, requestedLimit);
+
+  let result: Awaited<ReturnType<typeof retrieve>>;
+  try {
+    result = await retrieve(input);
+  } catch (error) {
+    const detail = sanitizeRecallLogValue(error instanceof Error ? (error.stack ?? error.message) : String(error));
+    console.error('[recall] /v1/recall error=%s', detail);
+    jsonResponse(res, 500, { status: 'error', error: 'internal error' });
+    return;
+  }
 
   if (result.status === 'error') {
+    console.error('[recall] /v1/recall error=%s', sanitizeRecallLogValue(result.error));
     jsonResponse(res, 500, { status: 'error', error: result.error });
     return;
   }
@@ -219,15 +238,18 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   const orgAllowlist = result.org_allowed_providers ?? [];
 
   if (!providerAllowedByPolicy(providerPolicy, detectedProvider, orgAllowlist)) {
+    console.error('[recall] /v1/recall result_count=0 reason_code=provider_not_allowed');
     jsonResponse(res, 200, { status: 'ok', memories: [], reason_code: 'provider_not_allowed' });
     return;
   }
 
   if (memoriesWithGuard.length === 0) {
+    console.error('[recall] /v1/recall result_count=0 reason_code=no_memories');
     jsonResponse(res, 200, { status: 'ok', memories: memoriesWithGuard, reason_code: 'no_memories' });
     return;
   }
 
+  console.error('[recall] /v1/recall result_count=%d', memoriesWithGuard.length);
   jsonResponse(res, 200, { status: 'ok', memories: memoriesWithGuard });
 }
 

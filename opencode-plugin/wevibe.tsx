@@ -33,6 +33,24 @@ interface PluginOptions {
   node?: string;
 }
 
+type QueueEntry = {
+  id: string;
+  cid: string;
+  text: string;
+  source: string;
+  createdAt: number;
+};
+
+type ReportReason = "inappropriate" | "inaccurate" | "security" | "policy" | "other";
+
+type QueueDecision = {
+  memoryID: string;
+  action: "accept" | "deny" | "report";
+  reason?: ReportReason;
+  note?: string;
+  timestamp: number;
+};
+
 const THRESHOLD = 3;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const KV_COUNTED = "wevibe.counted";
@@ -93,6 +111,7 @@ function parseLastJson(s: string): any {
 
 const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown) => {
   const loc = await locateAdmin(api, options);
+  let wevibeDialogActive = false;
 
   const toast = (variant: string, message: string, duration?: number) => {
     try {
@@ -103,25 +122,42 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   };
   const alert = (message: string) => {
     try {
-      api.ui.dialog.replace(() => api.ui.DialogAlert({ title: "WeVibe", message, onConfirm: () => api.ui.dialog.clear() }));
+      wevibeDialogActive = true;
+      api.ui.dialog.replace(() =>
+        api.ui.DialogAlert({
+          title: "WeVibe",
+          message,
+          onConfirm: () => {
+            wevibeDialogActive = false;
+            api.ui.dialog.clear();
+          },
+        }),
+      );
     } catch {
+      wevibeDialogActive = false;
       /* ignore */
     }
   };
   const confirm = (message: string, onYes: () => void) => {
     try {
+      wevibeDialogActive = true;
       api.ui.dialog.replace(() =>
         api.ui.DialogConfirm({
           title: "WeVibe",
           message,
           onConfirm: () => {
+            wevibeDialogActive = false;
             api.ui.dialog.clear();
             onYes();
           },
-          onCancel: () => api.ui.dialog.clear(),
+          onCancel: () => {
+            wevibeDialogActive = false;
+            api.ui.dialog.clear();
+          },
         }),
       );
     } catch {
+      wevibeDialogActive = false;
       /* ignore */
     }
   };
@@ -140,6 +176,302 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
       /* ignore */
     }
   };
+
+  const stateRoot = api?.state?.path?.worktree ?? api?.state?.path?.directory ?? process.cwd();
+  const stateDir = path.join(stateRoot, ".opencode");
+  const queuePath = path.join(stateDir, "wevibe-plugin-queue.json");
+  const decisionsPath = path.join(stateDir, "wevibe-plugin-decisions.json");
+  const heartbeatPath = path.join(stateDir, "wevibe-tui-active.json");
+
+  const ensureStateDir = () => {
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const truncate = (value: string, max: number) => {
+    if (typeof value !== "string") return "";
+    if (value.length <= max) return value;
+    if (max <= 1) return "…";
+    return `${value.slice(0, max - 1)}…`;
+  };
+
+  const readJsonArray = <T,>(filePath: string): T[] => {
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const writeJsonArray = (filePath: string, value: unknown[]) => {
+    try {
+      ensureStateDir();
+      fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+      return true;
+    } catch {
+      return false;
+      /* ignore */
+    }
+  };
+
+  const readQueue = () =>
+    readJsonArray<any>(queuePath).filter(
+      (entry: any): entry is QueueEntry => entry && typeof entry.id === "string" && entry.id.length > 0,
+    );
+
+  const removeFromQueue = (id: string) => {
+    try {
+      const nextQueue = readQueue().filter((entry) => entry.id !== id);
+      writeJsonArray(queuePath, nextQueue);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const recordDecision = (decision: QueueDecision) => {
+    try {
+      const decisions = readJsonArray<QueueDecision>(decisionsPath);
+      decisions.push(decision);
+      if (writeJsonArray(decisionsPath, decisions)) {
+        removeFromQueue(decision.memoryID);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  let activeMemoryId: string | null = null;
+  let reviewDialogNonce = 0;
+
+  const openReviewDialog = (render: () => any, onClose: () => void) => {
+    const nonce = ++reviewDialogNonce;
+    wevibeDialogActive = true;
+    try {
+      api.ui.dialog.replace(render, () => {
+        if (reviewDialogNonce !== nonce) return;
+        wevibeDialogActive = false;
+        onClose();
+      });
+    } catch {
+      if (reviewDialogNonce === nonce) {
+        wevibeDialogActive = false;
+      }
+      onClose();
+    }
+  };
+
+  const queueAdvance = () => {
+    activeMemoryId = null;
+    wevibeDialogActive = false;
+    setTimeout(() => processQueue(), 0);
+  };
+
+  const reportReasonOptions: Array<{ title: string; value: ReportReason; description: string }> = [
+    { title: "Inappropriate", value: "inappropriate", description: "Content is abusive, offensive, or irrelevant" },
+    { title: "Inaccurate", value: "inaccurate", description: "Memory is incorrect or misleading" },
+    { title: "Security", value: "security", description: "Potential security or privacy risk" },
+    { title: "Policy", value: "policy", description: "Violates policy or usage guidelines" },
+    { title: "Other", value: "other", description: "Another issue not listed above" },
+  ];
+
+  const showReviewDialog = (entry: QueueEntry) => {
+    openReviewDialog(
+      () =>
+        api.ui.DialogSelect({
+          title: "WeVibe — Review Memory",
+          placeholder: `Source: ${entry.source}\n\n"${truncate(entry.text, 200)}"`,
+          options: [
+            { title: "Accept — inject into session", value: "accept" as const },
+            { title: "Deny — discard", value: "deny" as const },
+            { title: "Report — flag & discard", value: "report" as const },
+          ],
+          onSelect: (option: { value: "accept" | "deny" | "report" }) => {
+            const action = option?.value;
+            if (action === "accept") {
+              recordDecision({ memoryID: entry.id, action: "accept", timestamp: Date.now() });
+              toast("success", "Memory accepted");
+              try {
+                api.ui.dialog.clear();
+              } catch {
+                /* ignore */
+              }
+              queueAdvance();
+            } else if (action === "deny") {
+              showDenyConfirm(entry);
+            } else if (action === "report") {
+              showReportReasonDialog(entry);
+            }
+          },
+        }),
+      () => {
+        activeMemoryId = null;
+      },
+    );
+  };
+
+  const showDenyConfirm = (entry: QueueEntry) => {
+    openReviewDialog(
+      () =>
+        api.ui.DialogConfirm({
+          title: "Deny this memory?",
+          message: "This memory will be discarded.",
+          onConfirm: () => {
+            recordDecision({ memoryID: entry.id, action: "deny", timestamp: Date.now() });
+            toast("info", "Memory denied");
+            try {
+              api.ui.dialog.clear();
+            } catch {
+              /* ignore */
+            }
+            queueAdvance();
+          },
+          onCancel: () => showReviewDialog(entry),
+        }),
+      () => {
+        activeMemoryId = null;
+      },
+    );
+  };
+
+  const showReportConfirm = (entry: QueueEntry, reason: ReportReason, noteInput?: string) => {
+    const note = typeof noteInput === "string" ? noteInput.trim() : "";
+    openReviewDialog(
+      () =>
+        api.ui.DialogConfirm({
+          title: "Report this memory?",
+          message: `Reason: ${reason}${note ? `\nNote: ${note}` : ""}\n\nThis will flag and discard this memory.`,
+          onConfirm: () => {
+            const decision: QueueDecision = {
+              memoryID: entry.id,
+              action: "report",
+              reason,
+              timestamp: Date.now(),
+            };
+            if (note.length > 0) {
+              decision.note = note;
+            }
+            recordDecision(decision);
+            toast("warning", "Memory reported");
+            try {
+              api.ui.dialog.clear();
+            } catch {
+              /* ignore */
+            }
+            queueAdvance();
+          },
+          onCancel: () => showReviewDialog(entry),
+        }),
+      () => {
+        activeMemoryId = null;
+      },
+    );
+  };
+
+  const showReportNotePrompt = (entry: QueueEntry, reason: ReportReason) => {
+    openReviewDialog(
+      () =>
+        api.ui.DialogPrompt({
+          title: "Report memory — optional note",
+          placeholder: "Optional note",
+          onConfirm: (value: string) => showReportConfirm(entry, reason, value),
+          onCancel: () => showReportConfirm(entry, reason),
+        }),
+      () => {
+        activeMemoryId = null;
+      },
+    );
+  };
+
+  const showReportReasonDialog = (entry: QueueEntry) => {
+    openReviewDialog(
+      () =>
+        api.ui.DialogSelect({
+          title: "Report memory — choose reason",
+          options: reportReasonOptions,
+          onSelect: (option: { value: ReportReason }) => {
+            const reason = option?.value;
+            if (reason === "inappropriate" || reason === "inaccurate" || reason === "security" || reason === "policy" || reason === "other") {
+              showReportNotePrompt(entry, reason);
+            } else {
+              showReviewDialog(entry);
+            }
+          },
+        }),
+      () => {
+        activeMemoryId = null;
+      },
+    );
+  };
+
+  const processQueue = (force = false) => {
+    const queue = readQueue();
+    if (queue.length === 0) {
+      activeMemoryId = null;
+      if (force) {
+        toast("info", "No pending memories");
+      }
+      return;
+    }
+
+    if (!force && wevibeDialogActive && activeMemoryId === null) {
+      return;
+    }
+
+    const next = queue[0];
+    if (!force && activeMemoryId === next.id && wevibeDialogActive) {
+      return;
+    }
+
+    activeMemoryId = next.id;
+    showReviewDialog(next);
+  };
+
+  const writeHeartbeat = () => {
+    try {
+      ensureStateDir();
+      fs.writeFileSync(heartbeatPath, `${JSON.stringify({ ts: Date.now() })}\n`, "utf8");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  writeHeartbeat();
+  const heartbeatInterval = setInterval(() => writeHeartbeat(), 10000);
+  const queueInterval = setInterval(() => processQueue(), 1500);
+
+  let unsubscribeMessageUpdated: (() => void) | null = null;
+  try {
+    const unsubscribe = api.event.on("message.updated", () => processQueue());
+    if (typeof unsubscribe === "function") {
+      unsubscribeMessageUpdated = unsubscribe;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    api.lifecycle.onDispose(() => {
+      clearInterval(heartbeatInterval);
+      clearInterval(queueInterval);
+      try {
+        unsubscribeMessageUpdated?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        fs.unlinkSync(heartbeatPath);
+      } catch {
+        /* ignore */
+      }
+    });
+  } catch {
+    /* dispose hook unavailable */
+  }
 
   const getStatus = async () => parseLastJson((await runAdmin(loc, ["identity-status", "--json"])).stdout);
 
@@ -322,6 +654,21 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
                   `Sessions counted: ${counted.size}`,
               );
             });
+          },
+        },
+        {
+          name: "wevibe.review",
+          title: "WeVibe: Review pending memories",
+          category: "WeVibe",
+          namespace: "palette",
+          slashName: "wevibe-review",
+          run: () => {
+            const queue = readQueue();
+            if (queue.length === 0) {
+              toast("info", "No pending memories");
+              return;
+            }
+            processQueue(true);
           },
         },
       ],

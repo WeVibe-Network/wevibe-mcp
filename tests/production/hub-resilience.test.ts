@@ -36,7 +36,7 @@ vi.mock('../../src/session.js', () => ({
 }));
 
 vi.mock('../../src/embedding.js', () => ({
-  computeLocalEmbedding: vi.fn().mockResolvedValue(new Array(768).fill(0.1)),
+  computeLocalEmbedding: vi.fn().mockResolvedValue(new Array(3072).fill(0.1)),
 }));
 
 describe('Hub error resilience', () => {

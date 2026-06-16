@@ -259,8 +259,9 @@ export async function approveSubmission(
   };
 
   let vector: number[] | undefined;
+  let embeddingModelId: string | undefined;
   try {
-    ({ vector } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: false }));
+    ({ vector, embeddingModelId } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: false }));
   } catch (e) {
     console.warn(`approveSubmission: embedding failed; continuing without vector: ${(e as Error).message}`);
   }
@@ -300,7 +301,7 @@ export async function approveSubmission(
 
   if (vector !== undefined) {
     requestBody.vector = vector;
-    requestBody.embedding_model_id = EMBEDDING_MODEL;
+    requestBody.embedding_model_id = embeddingModelId ?? EMBEDDING_MODEL;
     requestBody.embedding_schema_version = 'retrieval-card-v1';
     requestBody.vector_dim = vector.length;
   }
