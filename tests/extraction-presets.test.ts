@@ -28,7 +28,7 @@ describe('extraction presets', () => {
       expect(preset.system_prompt).toContain('because');
       expect(preset.system_prompt).toContain('memory_type');
       expect(preset.system_prompt).toContain('preference_confidence');
-      expect(preset.system_prompt).toContain('EXACTLY one of 0.0, 0.2, 0.5, 0.8');
+      expect(preset.system_prompt).toContain('a value from 0.00 to 1.00');
 
       expect(preset.system_prompt.startsWith('You are')).toBe(true);
 

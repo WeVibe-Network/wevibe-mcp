@@ -14,7 +14,7 @@ interface DashboardEmbeddingSettings {
   embedding_ollama_model?: unknown;
   embedding_lmstudio_model?: unknown;
   embedding_openrouter_model?: unknown;
-  openrouter_api_key?: unknown;
+  embedding_api_key?: unknown;
   ollama_url?: unknown;
   lmstudio_url?: unknown;
 }
@@ -23,57 +23,7 @@ function asStringOrEmpty(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function resolveFromEnv(provider: string): ResolvedEmbeddingConfig {
-  const rawModel = process.env.WEVIBE_EMBEDDING_MODEL;
-  const model = rawModel === undefined || rawModel === ''
-    ? 'openai/text-embedding-3-large'
-    : rawModel.trim();
-
-  if (model.length === 0) {
-    throw new Error(
-      `embedding model is empty for provider "${provider}" from environment; set WEVIBE_EMBEDDING_MODEL`,
-    );
-  }
-
-  if (provider === 'openrouter') {
-    const apiKey = asStringOrEmpty(process.env.OPENROUTER_API_KEY);
-    if (apiKey.length === 0 || apiKey.startsWith('\u2022')) {
-      throw new Error('OPENROUTER_API_KEY missing or masked in environment; set a real key');
-    }
-    return {
-      baseUrl: 'https://openrouter.ai/api/v1',
-      apiKey,
-      model,
-      usePrefix: model.toLowerCase().includes('nomic'),
-    };
-  }
-
-  if (provider === 'lm_studio') {
-    const baseUrl = asStringOrEmpty(process.env.WEVIBE_LMSTUDIO_URL) || 'http://127.0.0.1:1234/v1';
-    return {
-      baseUrl,
-      apiKey: 'lm-studio',
-      model,
-      usePrefix: model.toLowerCase().includes('nomic'),
-    };
-  }
-
-  if (provider === 'ollama') {
-    const ollamaBaseUrl = asStringOrEmpty(process.env.WEVIBE_OLLAMA_URL) || 'http://localhost:11434';
-    return {
-      baseUrl: `${ollamaBaseUrl.replace(/\/$/, '')}/v1`,
-      apiKey: 'ollama',
-      model,
-      usePrefix: model.toLowerCase().includes('nomic'),
-    };
-  }
-
-  throw new Error(
-    `WEVIBE_EMBEDDING_PROVIDER "${provider}" is invalid; expected openrouter, lm_studio, or ollama`,
-  );
-}
-
-function resolveFromDashboard(): ResolvedEmbeddingConfig {
+export function loadEmbeddingConfig(): ResolvedEmbeddingConfig {
   const settingsPath = join(homedir(), '.config', 'wevibe', 'dashboard.json');
 
   let raw: string;
@@ -113,7 +63,7 @@ function resolveFromDashboard(): ResolvedEmbeddingConfig {
   let model = '';
 
   if (provider === 'openrouter') {
-    const openRouterApiKey = parsed.openrouter_api_key;
+    const openRouterApiKey = parsed.embedding_api_key;
     const trimmedOpenRouterApiKey = typeof openRouterApiKey === 'string'
       ? openRouterApiKey.trim()
       : '';
@@ -150,13 +100,4 @@ function resolveFromDashboard(): ResolvedEmbeddingConfig {
     model,
     usePrefix: model.toLowerCase().includes('nomic'),
   };
-}
-
-export function loadEmbeddingConfig(): ResolvedEmbeddingConfig {
-  const providerFromEnv = asStringOrEmpty(process.env.WEVIBE_EMBEDDING_PROVIDER);
-  if (providerFromEnv.length > 0) {
-    return resolveFromEnv(providerFromEnv);
-  }
-
-  return resolveFromDashboard();
 }
