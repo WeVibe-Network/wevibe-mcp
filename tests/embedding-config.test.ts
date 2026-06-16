@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { readFileSyncMock, homedirMock } = vi.hoisted(() => ({
   readFileSyncMock: vi.fn(),
@@ -27,6 +27,11 @@ describe('loadEmbeddingConfig', () => {
     readFileSyncMock.mockReset();
     homedirMock.mockReset();
     homedirMock.mockReturnValue(TEST_HOME);
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('resolves OpenRouter dashboard settings', () => {
@@ -100,6 +105,95 @@ describe('loadEmbeddingConfig', () => {
       baseUrl: 'http://localhost:11434/v1',
       apiKey: 'ollama',
       model: 'text-embedding-3-large',
+      usePrefix: false,
+    });
+  });
+
+  it('resolves OpenRouter settings from environment', () => {
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'openrouter');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', 'nomic-embed-text-v1.5');
+    vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-env');
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-env',
+      model: 'nomic-embed-text-v1.5',
+      usePrefix: true,
+    });
+    expect(readFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('uses environment config precedence over dashboard.json', () => {
+    mockDashboardJson({
+      embedding_provider: 'ollama',
+      embedding_ollama_model: 'should-not-be-used',
+      ollama_url: 'http://localhost:11434',
+    });
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'openrouter');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', 'openai/text-embedding-3-large');
+    vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-env-precedence');
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-env-precedence',
+      model: 'openai/text-embedding-3-large',
+      usePrefix: false,
+    });
+    expect(readFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('throws when OpenRouter env key is missing', () => {
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'openrouter');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', 'openai/text-embedding-3-large');
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+
+    expect(() => loadEmbeddingConfig()).toThrow(
+      /OPENROUTER_API_KEY missing or masked in environment/,
+    );
+  });
+
+  it('resolves LM Studio settings from environment with default URL', () => {
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'lm_studio');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', 'text-embedding-3-large');
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'http://127.0.0.1:1234/v1',
+      apiKey: 'lm-studio',
+      model: 'text-embedding-3-large',
+      usePrefix: false,
+    });
+  });
+
+  it('resolves Ollama settings from environment with default URL', () => {
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'ollama');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', 'text-embedding-3-large');
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: 'ollama',
+      model: 'text-embedding-3-large',
+      usePrefix: false,
+    });
+  });
+
+  it('throws when environment provider is unknown', () => {
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'anthropic');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', 'text-embedding-3-large');
+
+    expect(() => loadEmbeddingConfig()).toThrow(
+      /WEVIBE_EMBEDDING_PROVIDER "anthropic" is invalid/,
+    );
+  });
+
+  it('defaults model when WEVIBE_EMBEDDING_MODEL is empty in environment', () => {
+    vi.stubEnv('WEVIBE_EMBEDDING_PROVIDER', 'openrouter');
+    vi.stubEnv('WEVIBE_EMBEDDING_MODEL', '');
+    vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-default-model');
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-default-model',
+      model: 'openai/text-embedding-3-large',
       usePrefix: false,
     });
   });
