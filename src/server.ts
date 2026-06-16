@@ -23,7 +23,7 @@ import { getRiskAppetite, setRiskAppetite, getProviderPolicy, setProviderPolicy 
 import { createSamplingProvider } from './llm-sampling.js';
 import { generateRecoveryPhrase } from './recovery.js';
 import { getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
-import { startHttpServer } from './http-server.js';
+import { startHttpServer, stopHttpServer } from './http-server.js';
 import { initSessionToken, persistSessionToken } from './session-token.js';
 import { HUB_URL } from './config.js';
 
@@ -573,6 +573,62 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  let shuttingDown = false;
+  const shutdown = async (reason: string): Promise<void> => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+
+    const exitNow = (): void => {
+      try {
+        process.exit(0);
+      } catch (err) {
+        console.error(`wevibe-mcp: process exit failed: ${err}`);
+      }
+    };
+
+    console.error(`wevibe-mcp: shutting down (${reason})`);
+    const hardTimeout = setTimeout(() => exitNow(), 3000);
+    hardTimeout.unref();
+
+    await stopHttpServer();
+
+    try {
+      await server.close();
+    } catch (err) {
+      console.error(`wevibe-mcp: MCP server close failed: ${err}`);
+    }
+
+    try {
+      await transport.close();
+    } catch (err) {
+      console.error(`wevibe-mcp: transport close failed: ${err}`);
+    }
+
+    exitNow();
+  };
+
+  const priorTransportOnClose = transport.onclose;
+  transport.onclose = () => {
+    priorTransportOnClose?.();
+    void shutdown('transport-close');
+  };
+
+  process.stdin.on('end', () => {
+    void shutdown('stdin-end');
+  });
+
+  process.stdin.on('close', () => {
+    void shutdown('stdin-close');
+  });
+
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
+    process.on(sig, () => {
+      void shutdown(sig);
+    });
+  }
 
   try {
     await initCrypto();

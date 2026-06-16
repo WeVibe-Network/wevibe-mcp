@@ -24,6 +24,8 @@ import {
 const HTTP_PORT = 4450;
 
 let extractionProvider: LlmProvider | null = null;
+let httpServerInstance: import('node:http').Server | null = null;
+let denialFlushTimer: NodeJS.Timeout | null = null;
 
 function getExtractionProvider(): LlmProvider {
   if (!extractionProvider) {
@@ -715,6 +717,7 @@ export function startHttpServer(): Promise<boolean> {
         jsonResponse(res, 500, { status: 'error', error: 'internal error' });
       });
     });
+    httpServerInstance = server;
 
     let settled = false;
     const settle = (started: boolean): void => {
@@ -739,10 +742,38 @@ export function startHttpServer(): Promise<boolean> {
       // Periodic flush of denial queue — ensures denials reach the hub even when
       // the consumer is idle (no recall triggered). 60s interval is sufficient for
       // background retry; the timer naturally stops when the process exits.
-      setInterval(() => {
+      denialFlushTimer = setInterval(() => {
         flushDenials().catch(err => console.error('periodic denial flush failed:', err));
       }, 60_000);
+      denialFlushTimer.unref();
       settle(true);
     });
   });
+}
+
+export async function stopHttpServer(): Promise<void> {
+  if (denialFlushTimer) {
+    clearInterval(denialFlushTimer);
+    denialFlushTimer = null;
+  }
+
+  if (!httpServerInstance) {
+    return;
+  }
+
+  const serverToClose = httpServerInstance;
+  httpServerInstance = null;
+
+  try {
+    await new Promise<void>(resolve => {
+      serverToClose.close(err => {
+        if (err) {
+          console.error(`wevibe-mcp: HTTP server close error: ${err}`);
+        }
+        resolve();
+      });
+    });
+  } catch (err) {
+    console.error(`wevibe-mcp: HTTP server close threw: ${err}`);
+  }
 }
