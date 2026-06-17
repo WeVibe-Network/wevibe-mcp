@@ -1,5 +1,4 @@
 import { initCrypto } from './crypto.js';
-import { loadIdentity } from './key-store.js';
 import { loadMemberships, queryOrgMemories, decryptMemoryBlob } from './org-client.js';
 import { dissect_to_keywords } from './session.js';
 import { computeLocalEmbedding } from './embedding.js';
@@ -16,6 +15,7 @@ import { buildWeVibeSignedAuth } from './auth.js';
 import { HUB_URL } from './config.js';
 import { getActiveHubUrlForOrg, pickActiveEndpoint } from './hub-resolver.js';
 import { getOrgHubState, setOrgHubState } from './identity-sidecar.js';
+import { ensureIdentity } from './identity-runtime.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 
 export interface RetrieveInput {
@@ -230,7 +230,7 @@ async function runWithHubSignatureFailover<T>(
 export async function retrieve(input: RetrieveInput): Promise<Output> {
   await initCrypto();
 
-  const identity = await loadIdentity();
+  const identity = await ensureIdentity();
   if (!identity) {
     console.error('[recall] retrieve error=no identity found in keychain');
     return { status: 'error', error: 'no identity found in keychain' };

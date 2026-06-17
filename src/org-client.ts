@@ -7,8 +7,10 @@ import { isVaultUnlocked, addOrgToVault, getVaultCache, updateVaultEntry, type V
 import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership } from './types.js';
 import type { MemoryType } from './types.js';
-import { umbralDecryptReencrypted } from './sidecar.js';
+import { umbralDecryptReencrypted, umbralDeriveEpochKeypair, umbralGenerateKfrag } from './sidecar.js';
 import { hubFetchVerified } from './hub-fetch.js';
+import { HUB_URL } from './config.js';
+import { hkdfSync } from 'node:crypto';
 
 interface HubMemberOrgEntry {
   org_id: string;
@@ -40,6 +42,19 @@ interface EpochManifestResponse {
 }
 
 const epochUmbralPkCache = new Map<string, string>();
+const UMBRAL_EPOCH_SEED_LEN_BYTES = 32;
+
+function epochUmbralSeed(masterKey: Uint8Array, epoch: number): Buffer {
+  return Buffer.from(
+    hkdfSync(
+      'sha256',
+      Buffer.from(masterKey),
+      Buffer.alloc(0),
+      Buffer.from(`wevibe-umbral-epoch-${epoch}`),
+      UMBRAL_EPOCH_SEED_LEN_BYTES,
+    ),
+  );
+}
 
 export interface QueryMemoryRequest {
   hubUrl: string;
@@ -321,6 +336,17 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
   return memberships;
 }
 
+async function fetchCurrentEpoch(hubUrl: string, orgId: string): Promise<number> {
+  const response = await hubFetchVerified(orgId, `${hubUrl}/v1/orgs/${orgId}`);
+
+  if (!response.res.ok) {
+    throw new Error(`failed to fetch org ${orgId} (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
+  }
+
+  const orgInfo = response.json<{ current_epoch?: number }>();
+  return typeof orgInfo.current_epoch === 'number' ? orgInfo.current_epoch : 0;
+}
+
 async function fetchEpochManifest(
   hubUrl: string,
   orgId: string,
@@ -341,7 +367,7 @@ async function fetchEpochManifest(
   return response.json<EpochManifestResponse>();
 }
 
-async function getEpochUmbralPk(
+export async function getEpochUmbralPk(
   hubUrl: string,
   orgId: string,
   epochId: number,
@@ -412,17 +438,35 @@ export interface CreateOrgParams {
 export interface CreateOrgResult {
   orgId: string;
   status: 'created' | 'error';
-  epochSkHex?: string;
-  epochPkHex?: string;
   error?: string;
 }
 
-export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResult> {
+export interface OrgCryptoSetup {
+  payload: {
+    leader_pubkey: string;
+    leader_x25519_pubkey: string;
+    leader_wallet: string;
+    org_name: string;
+    domain: string;
+    fee_model: FeeModel | null;
+    pk_mod: string;
+    umbral_pk: string;
+    signature: string;
+    enc_envelope: string;
+    search_envelope: string;
+    mod_envelope: string;
+  };
+  recoveryPhrase: string;
+  masterKeyHex: string;
+  modPrivkeyHex: string;
+}
+
+export async function buildOrgCryptoSetup(params: CreateOrgParams): Promise<OrgCryptoSetup> {
   await ensureCrypto();
 
   const identity = await loadIdentity();
   if (!identity) {
-    return { orgId: '', status: 'error', error: 'no identity in keychain' };
+    throw new Error('no identity in keychain');
   }
 
   const leaderPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
@@ -430,15 +474,20 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
   const leaderWallet = (params.leaderWallet ?? process.env.WEVIBE_LEADER_WALLET ?? '').trim();
 
   if (leaderWallet.length === 0) {
-    return {
-      orgId: '',
-      status: 'error',
-      error: 'leader wallet is required (set createOrg leaderWallet or WEVIBE_LEADER_WALLET)',
-    };
+    throw new Error('leader wallet is required (set createOrg leaderWallet or WEVIBE_LEADER_WALLET)');
   }
 
   const masterKey = generateDek();
   const epoch0Keys = deriveEpochKeys(masterKey, 0);
+
+  let epoch0UmbralPkHex: string;
+  try {
+    const epochSeed = epochUmbralSeed(masterKey, 0);
+    const { publicKeyHex } = await umbralDeriveEpochKeypair(epochSeed.toString('hex'));
+    epoch0UmbralPkHex = publicKeyHex;
+  } catch {
+    throw new Error('failed to derive epoch Umbral public key locally');
+  }
 
   const modIdentity = generateIdentity();
   const pkModHex = Buffer.from(modIdentity.xPubkey).toString('hex');
@@ -455,7 +504,7 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
   const modEnvelopeB64 = Buffer.from(sealedMod).toString('base64');
 
   if (!sealedMod || sealedMod.length === 0) {
-    return { orgId: '', status: 'error', error: 'mod_envelope generation failed — cannot create org without leader mod envelope' };
+    throw new Error('mod_envelope generation failed — cannot create org without leader mod envelope');
   }
 
   const feeModel = params.feeModel ?? null;
@@ -482,11 +531,61 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
     domain: params.domain,
     fee_model: feeModel,
     pk_mod: pkModHex,
+    umbral_pk: epoch0UmbralPkHex,
     signature: sigHex,
     enc_envelope: encEnvelopeB64,
     search_envelope: searchEnvelopeB64,
     mod_envelope: modEnvelopeB64,
   };
+
+  const recoveryPhrase = generateRecoveryPhrase(masterKey);
+
+  return {
+    payload,
+    recoveryPhrase,
+    masterKeyHex: Buffer.from(masterKey).toString('hex'),
+    modPrivkeyHex: Buffer.from(modIdentity.xPrivkey).toString('hex'),
+  };
+}
+
+export async function persistOrgKeys(
+  orgId: string,
+  masterKeyHex: string,
+  modPrivkeyHex: string,
+  orgName: string,
+): Promise<void> {
+  const masterKey = new Uint8Array(Buffer.from(masterKeyHex, 'hex'));
+  const modPrivkey = new Uint8Array(Buffer.from(modPrivkeyHex, 'hex'));
+
+  await storeKeyEnvelope(orgId, 'master', masterKey);
+  await storeKeyEnvelope(orgId, 'mod-privkey', modPrivkey);
+
+  if (isVaultUnlocked()) {
+    const entry: VaultEntry = {
+      org_id: orgId,
+      org_name: orgName,
+      k_master_hex: masterKeyHex,
+      recovery_phrase: generateRecoveryPhrase(masterKey),
+      sk_mod_hex: modPrivkeyHex,
+      current_epoch: 0,
+      created_at: new Date().toISOString(),
+      last_verified_at: null,
+    };
+    await addOrgToVault(entry).catch(() => {});
+  }
+}
+
+export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResult> {
+  let setup: OrgCryptoSetup;
+  try {
+    setup = await buildOrgCryptoSetup(params);
+  } catch (error) {
+    return {
+      orgId: '',
+      status: 'error',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 
   let response: Response;
   try {
@@ -494,7 +593,7 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
     response = await fetch(`${params.hubUrl}/v1/orgs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(setup.payload),
     });
   } catch (e) {
     return { orgId: '', status: 'error', error: `hub unavailable: ${e}` };
@@ -511,17 +610,9 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
     return { orgId: '', status: 'error', error: errMsg };
   }
 
-  let responseBody: {
-    org_id?: string;
-    epoch_sk?: string;
-    epoch_pk?: string;
-  };
+  let responseBody: { org_id?: string };
   try {
-    responseBody = await response.json() as {
-      org_id?: string;
-      epoch_sk?: string;
-      epoch_pk?: string;
-    };
+    responseBody = await response.json() as { org_id?: string };
   } catch {
     return { orgId: '', status: 'error', error: 'create-org response missing JSON body' };
   }
@@ -532,51 +623,60 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
 
   const createdOrgId = responseBody.org_id;
 
-  if (typeof responseBody.epoch_sk !== 'string' || responseBody.epoch_sk.length === 0) {
-    return { orgId: createdOrgId, status: 'error', error: 'create-org response missing epoch_sk' };
+  await persistOrgKeys(createdOrgId, setup.masterKeyHex, setup.modPrivkeyHex, params.orgName);
+
+  return { orgId: createdOrgId, status: 'created' };
+}
+
+export async function provisionRecall(orgId: string): Promise<void> {
+  await ensureCrypto();
+
+  const masterKey = await loadKeyEnvelope(orgId, 'master');
+  if (!masterKey) {
+    throw new Error(`no master key found for org ${orgId} — only the org leader can provision recall`);
   }
 
-  if (typeof responseBody.epoch_pk !== 'string' || responseBody.epoch_pk.length === 0) {
-    return { orgId: createdOrgId, status: 'error', error: 'create-org response missing epoch_pk' };
+  const currentEpoch = await fetchCurrentEpoch(HUB_URL, orgId);
+
+  let epochSkHex: string;
+  try {
+    const epochSeed = epochUmbralSeed(masterKey, currentEpoch);
+    ({ secretKeyHex: epochSkHex } = await umbralDeriveEpochKeypair(epochSeed.toString('hex')));
+  } catch {
+    throw new Error(`failed to derive epoch Umbral keypair locally for org ${orgId}`);
   }
 
-  const epochSkBytes = Buffer.from(responseBody.epoch_sk, 'hex');
-  if (epochSkBytes.length !== 32) {
-    return { orgId: createdOrgId, status: 'error', error: `create-org response epoch_sk invalid length: ${epochSkBytes.length}` };
+  await getOrCreatePreIdentity();
+  const prePubkeyHex = getPrePublicKeyHex();
+  const kfragHex = await umbralGenerateKfrag(epochSkHex, prePubkeyHex);
+
+  const identity = await loadIdentity();
+  if (!identity) {
+    throw new Error('no identity in keychain');
   }
 
-  const epochPkBytes = Buffer.from(responseBody.epoch_pk, 'hex');
-  if (epochPkBytes.length !== 33) {
-    return { orgId: createdOrgId, status: 'error', error: `create-org response epoch_pk invalid length: ${epochPkBytes.length}` };
+  const edPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
+
+  await registerPrePubkey(HUB_URL, orgId, edPubkeyHex, prePubkeyHex);
+
+  const { headers } = await buildWeVibeSignedAuth();
+  const response = await hubFetchVerified(
+    orgId,
+    `${HUB_URL}/v1/orgs/${orgId}/members/${edPubkeyHex}/kfrag`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({
+        epoch_id: currentEpoch,
+        pre_pubkey: prePubkeyHex,
+        kfrag: kfragHex,
+      }),
+    },
+  );
+
+  if (!response.res.ok) {
+    throw new Error(`failed to provision recall kfrag: HTTP ${response.res.status}${response.bodyText ? ` — ${response.bodyText}` : ''}`);
   }
-
-  await storeKeyEnvelope(createdOrgId, 'master', masterKey);
-  await storeKeyEnvelope(createdOrgId, 'mod-privkey', modIdentity.xPrivkey);
-  await storeKeyEnvelope(createdOrgId, 'epoch-sk', epochSkBytes);
-  await storeKeyEnvelope(createdOrgId, 'epoch-pk', epochPkBytes);
-
-  if (isVaultUnlocked()) {
-    const phrase = generateRecoveryPhrase(masterKey);
-    const skModHex = Buffer.from(modIdentity.xPrivkey).toString('hex');
-    const entry: VaultEntry = {
-      org_id: createdOrgId,
-      org_name: params.orgName,
-      k_master_hex: Buffer.from(masterKey).toString('hex'),
-      recovery_phrase: phrase,
-      sk_mod_hex: skModHex,
-      current_epoch: 0,
-      created_at: new Date().toISOString(),
-      last_verified_at: null,
-    };
-    await addOrgToVault(entry).catch(() => {});
-  }
-
-  return {
-    orgId: createdOrgId,
-    status: 'created',
-    epochSkHex: responseBody.epoch_sk,
-    epochPkHex: responseBody.epoch_pk,
-  };
 }
 
 export interface InviteMemberParams {

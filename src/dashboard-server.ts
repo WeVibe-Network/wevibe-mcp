@@ -21,9 +21,9 @@ import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
-import { initCrypto } from './crypto.js';
-import { loadIdentity } from './key-store.js';
-import { loadMemberships } from './org-client.js';
+import { initCrypto, openEnvelope } from './crypto.js';
+import { loadIdentity, hasStoredIdentitySeed } from './key-store.js';
+import { loadMemberships, getEpochUmbralPk } from './org-client.js';
 import {
   fetchPendingQueue,
   fetchModerationHistory,
@@ -44,6 +44,7 @@ import { extractKeywords, extractMemories, type ClassifiedKeyword, type Suggeste
 import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL, EMBEDDING_MODEL } from './config.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
+import { umbralEncrypt } from './sidecar.js';
 
 function resolvePort(): number {
   // CLI flag
@@ -178,6 +179,7 @@ function createMcpServer(): McpServer {
         id: z.string(),
         ciphertext_hex: z.string(),
         wrapped_dek_mod: z.string(),
+        epoch_id: z.number(),
         stack_hint: z.array(z.string()),
       })),
     },
@@ -191,6 +193,8 @@ function createMcpServer(): McpServer {
         vector: number[] | null;
         embedding_model_id: string;
         embedding_schema_version: string;
+        umbral_capsule: string | null;
+        umbral_ciphertext: string | null;
         error?: string;
       }> = [];
 
@@ -203,6 +207,20 @@ function createMcpServer(): McpServer {
           if (typeof decrypted.plaintext !== 'string') {
             throw new Error('decryption failed');
           }
+
+          if (!membership.modPrivkey) {
+            throw new Error('no moderation private key');
+          }
+
+          const dek = openEnvelope(
+            new Uint8Array(Buffer.from(item.wrapped_dek_mod, 'hex')),
+            membership.modPrivkey,
+          );
+          const epochUmbralPkHex = await getEpochUmbralPk(HUB_URL, membership.orgId, item.epoch_id);
+          const { capsule, ciphertext } = await umbralEncrypt(
+            epochUmbralPkHex,
+            Buffer.from(dek).toString('hex'),
+          );
 
           const parsed = parseMemoryText(decrypted.plaintext);
           const structured: StructuredMemory = {
@@ -219,6 +237,8 @@ function createMcpServer(): McpServer {
             vector,
             embedding_model_id: embeddingModelId,
             embedding_schema_version: 'retrieval-card-v1',
+            umbral_capsule: capsule,
+            umbral_ciphertext: ciphertext,
           });
         } catch (e) {
           results.push({
@@ -226,6 +246,8 @@ function createMcpServer(): McpServer {
             vector: null,
             embedding_model_id: EMBEDDING_MODEL,
             embedding_schema_version: 'retrieval-card-v1',
+            umbral_capsule: null,
+            umbral_ciphertext: null,
             error: (e as Error).message,
           });
         }
@@ -725,32 +747,17 @@ async function main(): Promise<void> {
 
   await initCrypto();
 
-  const identity = await loadIdentity();
-  if (!identity) {
-    console.error('wevibe-dashboard: FATAL — no identity found. Run wevibe-admin setup-identity first.');
-    process.exit(1);
-  }
-
-  const pubkeyHex = uint8ArrayToHex(identity.edPubkey);
-  console.warn(`wevibe-dashboard: identity: ${pubkeyHex.slice(0, 16)}...`);
-
-  const memberships = await loadMemberships(HUB_URL);
-  if (memberships.length === 0) {
-    console.error('wevibe-dashboard: FATAL — no org membership found. Create or join an org first.');
-    process.exit(1);
-  }
-
-  const m = memberships[0];
-  console.warn(`wevibe-dashboard: org: ${m.orgName} (${m.orgId.slice(0, 8)}...), role: ${m.role}, epoch: ${m.currentEpoch}`);
-
-  if (m.role !== 'leader' && !m.canModerate) {
-    console.error(`wevibe-dashboard: FATAL — role "${m.role}" cannot moderate. Dashboard requires leader or moderator role.`);
-    process.exit(1);
-  }
-
-  if (!m.modPrivkey) {
-    console.error('wevibe-dashboard: FATAL — moderation private key not available. Cannot decrypt submissions.');
-    process.exit(1);
+  // Lazy identity (spec §F — mirrors server.ts): do NOT loadIdentity() here. It
+  // triggers Touch ID at boot, and a member may legitimately have NO org membership
+  // for a long time before joining one (by design). Requiring identity+membership at
+  // boot made this launchd KeepAlive agent FATAL-exit on the no-membership state and
+  // crash-loop, re-prompting Touch ID every ~10-15s. Identity, membership, and the mod
+  // key now resolve lazily on first tool use; boot ALWAYS binds the port and idles.
+  // Do NOT reintroduce a boot-time loadIdentity()/membership requirement here.
+  if (!(await hasStoredIdentitySeed())) {
+    console.warn('wevibe-dashboard: no identity yet — deferring; tools resolve identity/membership on first use (no boot biometric).');
+  } else {
+    console.warn('wevibe-dashboard: identity present; membership + mod key deferred to first use (no boot biometric).');
   }
 
   app.listen(PORT, BIND_HOST, () => {

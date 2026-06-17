@@ -78,6 +78,15 @@ vi.mock('../src/hub-fetch.js', () => {
   };
 });
 
+vi.mock('../src/sidecar.js', () => ({
+  umbralDeriveEpochKeypair: vi.fn().mockResolvedValue({
+    secretKeyHex: '11'.repeat(32),
+    publicKeyHex: '02' + '22'.repeat(32),
+  }),
+  umbralGenerateKfrag: vi.fn().mockResolvedValue('ab'.repeat(40)),
+  umbralDecryptReencrypted: vi.fn().mockResolvedValue(new Uint8Array(0)),
+}));
+
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
   return {
@@ -383,6 +392,7 @@ describe('createOrg', () => {
     expect(body.leader_wallet).toBe(TEST_LEADER_WALLET);
     expect(body.enc_envelope).toBeTruthy();
     expect(body.search_envelope).toBeTruthy();
+    expect(body.umbral_pk).toBeTruthy();
     expect(body.signature).toBeTruthy();
     expect(body.fee_model).toBeNull();
     expect(body.mod_envelope).toBeTruthy();

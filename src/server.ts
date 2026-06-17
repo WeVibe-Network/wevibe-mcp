@@ -573,6 +573,9 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Contract: plugin-launched detached HTTP-only mode (stdio ignored => stdin=/dev/null)
+  // must set this to skip stdin/transport-close shutdown, or immediate EOF self-terminates.
+  const httpOnly = process.env.WEVIBE_MCP_HTTP_ONLY === '1';
 
   let shuttingDown = false;
   const shutdown = async (reason: string): Promise<void> => {
@@ -610,19 +613,21 @@ async function main() {
     exitNow();
   };
 
-  const priorTransportOnClose = transport.onclose;
-  transport.onclose = () => {
-    priorTransportOnClose?.();
-    void shutdown('transport-close');
-  };
+  if (!httpOnly) {
+    const priorTransportOnClose = transport.onclose;
+    transport.onclose = () => {
+      priorTransportOnClose?.();
+      void shutdown('transport-close');
+    };
 
-  process.stdin.on('end', () => {
-    void shutdown('stdin-end');
-  });
+    process.stdin.on('end', () => {
+      void shutdown('stdin-end');
+    });
 
-  process.stdin.on('close', () => {
-    void shutdown('stdin-close');
-  });
+    process.stdin.on('close', () => {
+      void shutdown('stdin-close');
+    });
+  }
 
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
     process.on(sig, () => {

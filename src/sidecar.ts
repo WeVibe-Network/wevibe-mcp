@@ -77,6 +77,31 @@ async function runSidecar(command: string, args: string[]): Promise<Record<strin
   return asRecord(parsed);
 }
 
+async function runSidecarText(command: string, args: string[]): Promise<string> {
+  const bin = getSidecarBin();
+  let stdout: string;
+  let stderr: string;
+
+  try {
+    const output = await execFileAsync(bin, [command, ...args], {
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024,
+    });
+    stdout = output.stdout;
+    stderr = output.stderr;
+  } catch (error) {
+    const execError = error as Error & { stderr?: string };
+    const stderrText = typeof execError.stderr === 'string' ? execError.stderr.trim() : '';
+    throw formatSidecarError(command, stderrText, execError.message);
+  }
+
+  if (stderr.trim()) {
+    throw formatSidecarError(command, stderr.trim(), 'sidecar wrote to stderr');
+  }
+
+  return stdout.trim();
+}
+
 export async function umbralEncrypt(epochPkHex: string, plaintextHex: string): Promise<EncryptResult> {
   const out = await runSidecar('encrypt', [
     '--epoch-pk', epochPkHex,
@@ -113,4 +138,31 @@ export async function umbralDecryptReencrypted(
   }
 
   return plaintext;
+}
+
+export async function umbralDeriveEpochKeypair(seedHex: string): Promise<{ secretKeyHex: string; publicKeyHex: string }> {
+  const out = await runSidecar('derive-epoch-keypair', [
+    '--seed', seedHex,
+  ]);
+
+  const secretKeyHex = out.secret_key;
+  const publicKeyHex = out.public_key;
+  if (typeof secretKeyHex !== 'string' || typeof publicKeyHex !== 'string') {
+    throw new Error('sidecar derive-epoch-keypair response missing secret_key/public_key');
+  }
+
+  return { secretKeyHex, publicKeyHex };
+}
+
+export async function umbralGenerateKfrag(delegatingSkHex: string, receivingPkHex: string): Promise<string> {
+  const kfragHex = await runSidecarText('generate-kfrags', [
+    '--delegating-sk', delegatingSkHex,
+    '--receiving-pk', receivingPkHex,
+  ]);
+
+  if (!kfragHex) {
+    throw new Error('sidecar generate-kfrags returned empty output');
+  }
+
+  return kfragHex;
 }

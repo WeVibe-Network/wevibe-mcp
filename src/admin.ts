@@ -18,6 +18,7 @@
  *   wevibe-admin orgs
  *   wevibe-admin invite --org <org_id> --pubkey <hex> --x25519 <hex> --pre-pubkey <hex> --role member|moderator
  *   wevibe-admin rotate --org <org_id>
+ *   wevibe-admin provision-recall --org <org_id>
  *   wevibe-admin moderate-queue [--org <org_id>]
  *   wevibe-admin moderate-approve --hash <submission_hash> [--org <org_id>]
  *   wevibe-admin moderate-deny --hash <submission_hash> --reason "..." [--org <org_id>]
@@ -39,7 +40,7 @@
 import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed, generateIdentityFromSeed } from './crypto.js';
 import { loadIdentity, loadIdentitySeed, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope, storeKeyEnvelope, hasStoredIdentitySeed } from './key-store.js';
 import { generateRecoveryPhrase, reconstructMasterKey, splitMasterKey, reconstructFromShares } from './recovery.js';
-import { loadMemberships, createOrg, inviteMember, rotateEpoch } from './org-client.js';
+import { loadMemberships, createOrg, inviteMember, rotateEpoch, provisionRecall } from './org-client.js';
 import { fetchPendingQueue, decryptPendingItem, approveSubmission, denySubmission, scanForSteganography } from './moderation.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
@@ -861,6 +862,17 @@ async function cmdRotate(flags: Record<string, string>) {
   }
 }
 
+async function cmdProvisionRecall(flags: Record<string, string>) {
+  const orgId = requireFlag(flags, 'org');
+  try {
+    await provisionRecall(orgId);
+  } catch (error) {
+    die(`Recall provisioning failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  console.log(`Recall provisioned for org ${orgId}.`);
+}
+
 async function cmdModerateQueue(flags: Record<string, string>) {
   const membership = await getMembership(flags['org']);
   if (membership.role !== 'leader' && !membership.canModerate) die(`Role "${membership.role}" cannot moderate.`);
@@ -1234,6 +1246,7 @@ Commands:
   orgs                            List org memberships
   invite --org --pubkey --x25519 --pre-pubkey [--role]   Invite a member
   rotate --org                    Rotate encryption epoch
+  provision-recall --org          Derive and upload leader kfrag for recall
   moderate-queue [--org]          View pending submissions
   moderate-approve --hash [--org] Approve submission
   moderate-deny --hash --reason [--org]     Deny submission
@@ -1284,6 +1297,7 @@ async function main() {
     case 'orgs': return cmdOrgs();
     case 'invite': return cmdInvite(flags);
     case 'rotate': return cmdRotate(flags);
+    case 'provision-recall': return cmdProvisionRecall(flags);
     case 'moderate-queue': return cmdModerateQueue(flags);
     case 'moderate-approve': return cmdModerateApprove(flags);
     case 'moderate-deny': return cmdModerateDeny(flags);

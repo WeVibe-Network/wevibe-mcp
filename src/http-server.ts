@@ -7,6 +7,7 @@ import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
+import { buildOrgCryptoSetup, persistOrgKeys, provisionRecall } from './org-client.js';
 import { EXTRACTION_MODEL, HTTP_HOST, HUB_URL, OLLAMA_URL } from './config.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 import { DEFAULT_EXTRACTION_NUM_CTX, extractMemories, getExtractionPrompt } from './extraction.js';
@@ -26,6 +27,25 @@ const HTTP_PORT = 4450;
 let extractionProvider: LlmProvider | null = null;
 let httpServerInstance: import('node:http').Server | null = null;
 let denialFlushTimer: NodeJS.Timeout | null = null;
+
+interface PendingOrgSetup {
+  masterKeyHex: string;
+  modPrivkeyHex: string;
+  orgName: string;
+  createdAt: number;
+}
+
+const pendingOrgSetups = new Map<string, PendingOrgSetup>();
+const PENDING_ORG_SETUP_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+function purgeExpiredOrgSetups(): void {
+  const now = Date.now();
+  for (const [id, entry] of pendingOrgSetups) {
+    if (now - entry.createdAt > PENDING_ORG_SETUP_TTL_MS) {
+      pendingOrgSetups.delete(id);
+    }
+  }
+}
 
 function getExtractionProvider(): LlmProvider {
   if (!extractionProvider) {
@@ -101,6 +121,21 @@ interface ExtractRequestBody {
     directory?: unknown;
     stack?: unknown;
   };
+}
+
+interface OrgSetupRequestBody {
+  org_name?: unknown;
+  domain?: unknown;
+  leader_wallet?: unknown;
+}
+
+interface OrgSetupFinalizeRequestBody {
+  setup_id?: unknown;
+  org_id?: unknown;
+}
+
+interface ProvisionRecallRequestBody {
+  org_id?: unknown;
 }
 
 interface MemoryStats {
@@ -358,6 +393,143 @@ async function handleExtractDefaults(req: IncomingMessage, res: ServerResponse):
       system_prompt: p.system_prompt,
     })),
   });
+}
+
+async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const bodyStr = await readBody(req);
+  let body: OrgSetupRequestBody;
+  try {
+    body = JSON.parse(bodyStr) as OrgSetupRequestBody;
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    return;
+  }
+
+  const orgName = typeof body.org_name === 'string' ? body.org_name.trim() : '';
+  if (orgName.length === 0) {
+    jsonResponse(res, 400, { status: 'error', error: 'org_name is required and must be a non-empty string' });
+    return;
+  }
+
+  const domain = typeof body.domain === 'string' ? body.domain.trim() : '';
+  if (domain.length === 0) {
+    jsonResponse(res, 400, { status: 'error', error: 'domain is required and must be a non-empty string' });
+    return;
+  }
+
+  const leaderWallet = typeof body.leader_wallet === 'string' && body.leader_wallet.trim().length > 0
+    ? body.leader_wallet.trim()
+    : undefined;
+
+  let setup: Awaited<ReturnType<typeof buildOrgCryptoSetup>>;
+  try {
+    setup = await buildOrgCryptoSetup({
+      orgName,
+      domain,
+      hubUrl: HUB_URL,
+      leaderWallet,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jsonResponse(res, 500, { status: 'error', error: message });
+    return;
+  }
+
+  purgeExpiredOrgSetups();
+  const setupId = randomBytes(16).toString('hex');
+  pendingOrgSetups.set(setupId, {
+    masterKeyHex: setup.masterKeyHex,
+    modPrivkeyHex: setup.modPrivkeyHex,
+    orgName,
+    createdAt: Date.now(),
+  });
+
+  jsonResponse(res, 200, {
+    status: 'ok',
+    setup_id: setupId,
+    payload: setup.payload,
+    recovery_phrase: setup.recoveryPhrase,
+  });
+}
+
+async function handleOrgSetupFinalize(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const bodyStr = await readBody(req);
+  let body: OrgSetupFinalizeRequestBody;
+  try {
+    body = JSON.parse(bodyStr) as OrgSetupFinalizeRequestBody;
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    return;
+  }
+
+  const setupId = typeof body.setup_id === 'string' ? body.setup_id.trim() : '';
+  if (setupId.length === 0) {
+    jsonResponse(res, 400, { status: 'error', error: 'setup_id is required and must be a non-empty string' });
+    return;
+  }
+
+  const orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
+  if (orgId.length === 0) {
+    jsonResponse(res, 400, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+    return;
+  }
+
+  purgeExpiredOrgSetups();
+  const pending = pendingOrgSetups.get(setupId);
+  if (!pending) {
+    jsonResponse(res, 404, { status: 'error', error: 'unknown or expired setup_id' });
+    return;
+  }
+
+  try {
+    await persistOrgKeys(orgId, pending.masterKeyHex, pending.modPrivkeyHex, pending.orgName);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jsonResponse(res, 500, { status: 'error', error: message });
+    return;
+  }
+
+  pendingOrgSetups.delete(setupId);
+  jsonResponse(res, 200, { status: 'ok' });
+}
+
+async function handleProvisionRecall(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const bodyStr = await readBody(req);
+  let body: ProvisionRecallRequestBody;
+  try {
+    body = JSON.parse(bodyStr) as ProvisionRecallRequestBody;
+  } catch {
+    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    return;
+  }
+
+  const orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
+  if (orgId.length === 0) {
+    jsonResponse(res, 400, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+    return;
+  }
+
+  try {
+    await provisionRecall(orgId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jsonResponse(res, 500, { status: 'error', error: message });
+    return;
+  }
+
+  jsonResponse(res, 200, { status: 'ok' });
 }
 
 interface ServeRequestBody {
@@ -688,6 +860,21 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
   if (method === 'GET' && url === '/v1/extract/defaults') {
     await handleExtractDefaults(req, res);
+    return;
+  }
+
+  if (method === 'POST' && url === '/v1/org-setup') {
+    await handleOrgSetup(req, res);
+    return;
+  }
+
+  if (method === 'POST' && url === '/v1/org-setup/finalize') {
+    await handleOrgSetupFinalize(req, res);
+    return;
+  }
+
+  if (method === 'POST' && url === '/v1/provision-recall') {
+    await handleProvisionRecall(req, res);
     return;
   }
 
