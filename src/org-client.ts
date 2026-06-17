@@ -485,8 +485,8 @@ export async function buildOrgCryptoSetup(params: CreateOrgParams): Promise<OrgC
     const epochSeed = epochUmbralSeed(masterKey, 0);
     const { publicKeyHex } = await umbralDeriveEpochKeypair(epochSeed.toString('hex'));
     epoch0UmbralPkHex = publicKeyHex;
-  } catch {
-    throw new Error('failed to derive epoch Umbral public key locally');
+  } catch (error) {
+    throw new Error(`failed to derive epoch Umbral public key locally: ${(error as Error).message}`);
   }
 
   const modIdentity = generateIdentity();
