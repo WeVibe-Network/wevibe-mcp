@@ -46,12 +46,12 @@ import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } fro
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
 import { setLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
-import { base32Decode, base32Encode, pairingIdFromSecret, decryptPairedIdentitySeed, encryptIdentitySeedForPairing } from './pair-crypto.js';
+import { base32Decode, pairingIdFromSecret, decryptPairedIdentitySeed } from './pair-crypto.js';
 import { HUB_URL, CHAIN_REST_URL, DASHBOARD_URL, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
 import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js';
 import { isBiometricAvailable } from './biometric.js';
 import { resolveAllOrgsOnce } from './hub-resolver.js';
-import { randomBytes } from 'node:crypto';
+import { exportIdentityPairing } from './pairing-export.js';
 import { spawnSync } from 'node:child_process';
 import { access, copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
@@ -694,48 +694,11 @@ async function cmdExportPairing(flags: Record<string, string>) {
     die('No identity. Run setup-identity first.');
   }
 
-  let secret: Buffer | null = null;
-  let seed: Uint8Array | null = null;
   let error: unknown = null;
 
   try {
-    seed = await loadIdentitySeed();
-    if (!seed) {
-      throw new PairingCommandError('No identity. Run setup-identity first.');
-    }
-
-    secret = randomBytes(16);
-    const { hkdfSalt, iv, ciphertextWithTag } = encryptIdentitySeedForPairing(seed, secret);
-
-    const pairingId = pairingIdFromSecret(secret);
-    const token = base32Encode(secret);
+    const { token, pairingId } = await exportIdentityPairing();
     const adoptUrl = `${DASHBOARD_URL}/adopt#code=${token}`;
-
-    const { headers } = await buildWeVibeSignedAuth();
-    const resp = await fetch(`${HUB_URL}/v1/pair`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...headers,
-      },
-      body: JSON.stringify({
-        pairing_id: pairingId,
-        hkdf_salt: hkdfSalt.toString('base64'),
-        iv: iv.toString('base64'),
-        ciphertext: ciphertextWithTag.toString('base64'),
-      }),
-    });
-
-    if (!resp.ok) {
-      throw new PairingCommandError(`Hub upload failed: ${resp.status}`);
-    }
-
-    // Record the pairing id so the plugin/dashboard flow can poll consumption.
-    try {
-      writeIdentitySidecar({ lastPairingId: pairingId });
-    } catch {
-      // best-effort
-    }
 
     // Open the browser unless explicitly suppressed. Default is to open.
     const shouldOpen = !hasFlag(flags, 'no-open');
@@ -757,9 +720,6 @@ async function cmdExportPairing(flags: Record<string, string>) {
     }
   } catch (e) {
     error = e;
-  } finally {
-    if (secret) secret.fill(0);
-    if (seed) seed.fill(0);
   }
 
   if (!error) {

@@ -164,7 +164,7 @@ export async function registerPrePubkey(
   orgId: string,
   memberPubkey: string,
   prePubkeyHex: string,
-): Promise<void> {
+): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
     const { headers } = await buildWeVibeSignedAuth();
     const response = await hubFetchVerified(
@@ -179,7 +179,7 @@ export async function registerPrePubkey(
 
     if (response.res.status === 404) {
       console.warn(`wevibe-mcp: PRE pubkey registration skipped for org ${orgId} — member not found`);
-      return;
+      return { ok: false, status: 404, error: 'member not found' };
     }
 
     if (!response.res.ok) {
@@ -187,12 +187,19 @@ export async function registerPrePubkey(
       console.warn(
         `wevibe-mcp: PRE pubkey registration failed for org ${orgId}: HTTP ${response.res.status}${errBody ? ` — ${errBody}` : ''}`,
       );
-      return;
+      return {
+        ok: false,
+        status: response.res.status,
+        error: errBody || `HTTP ${response.res.status}`,
+      };
     }
 
-    console.warn(`wevibe-mcp: Registered PRE pubkey with hub for org ${orgId}`);
+    console.info(`wevibe-mcp: PRE pubkey registration succeeded for org ${orgId}`);
+    return { ok: true };
   } catch (error) {
-    console.warn(`wevibe-mcp: PRE pubkey registration failed for org ${orgId}: ${error}`);
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`wevibe-mcp: PRE pubkey registration failed for org ${orgId}: ${message}`);
+    return { ok: false, error: message };
   }
 }
 
@@ -657,7 +664,10 @@ export async function provisionRecall(orgId: string): Promise<void> {
 
   const edPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
 
-  await registerPrePubkey(HUB_URL, orgId, edPubkeyHex, prePubkeyHex);
+  const registerPrePubkeyResult = await registerPrePubkey(HUB_URL, orgId, edPubkeyHex, prePubkeyHex);
+  if (!registerPrePubkeyResult.ok) {
+    throw new Error(`failed to register PRE pubkey for recall provisioning: ${registerPrePubkeyResult.error ?? 'unknown'}`);
+  }
 
   const { headers } = await buildWeVibeSignedAuth();
   const response = await hubFetchVerified(

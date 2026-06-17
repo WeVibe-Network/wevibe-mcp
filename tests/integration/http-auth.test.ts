@@ -100,7 +100,11 @@ describe('HTTP auth on all endpoints', () => {
     await handleRequest(req, res);
     const parsed = parseResponse(res);
     expect(parsed.status).toBe(200);
-    expect(parsed.body).toEqual({ status: 'ok', version: '0.2.0' });
+    expect(parsed.body).toEqual({
+      status: 'ok',
+      version: '0.2.0',
+      build_stamp: expect.any(Number),
+    });
   });
 
   it('POST /v1/recall with no token → 401', async () => {

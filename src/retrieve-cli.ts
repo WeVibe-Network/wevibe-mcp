@@ -57,6 +57,8 @@ export interface RetrieveOutput {
   status: 'ok';
   memories: MemoryOutput[];
   org_allowed_providers: string[];
+  reason_code?: 'no_memories' | 'decrypt_failed' | 'filtered_out';
+  reason?: string;
 }
 
 export interface ErrorOutput {
@@ -339,6 +341,12 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   }
 
   const memories: MemoryOutput[] = [];
+  let firstDecryptFailureReason: string | null = null;
+  const captureDecryptFailureReason = (reason: string): void => {
+    if (firstDecryptFailureReason === null) {
+      firstDecryptFailureReason = sanitizeRecallLogValue(reason);
+    }
+  };
   const { headers: authHeaders } = await buildWeVibeSignedAuth();
 
   for (const m of rawMemories) {
@@ -355,10 +363,23 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       );
 
       activeHubUrl = ciphertextResult.hubUrl;
-      if (!ciphertextResult.result.res.ok) continue;
+      if (!ciphertextResult.result.res.ok) {
+        console.error('[recall] decrypt skip cid=%s reason=ciphertext_fetch_not_ok status=%d', m.cid, ciphertextResult.result.res.status);
+        captureDecryptFailureReason(`ciphertext fetch returned HTTP ${ciphertextResult.result.res.status}`);
+        continue;
+      }
 
-      const ctData = ciphertextResult.result.json<{ ciphertext_hex: string }>();
-      const ciphertextBytes = new Uint8Array(Buffer.from(ctData.ciphertext_hex, 'hex'));
+      // GetMemory is chain-first: committed memories return the chain shape
+      // (`encrypted_blob`, source:"chain"); only the hub-cache fallback returns
+      // `ciphertext_hex`. Both hold the same AES ciphertext hex — accept either.
+      const ctData = ciphertextResult.result.json<{ ciphertext_hex?: string; encrypted_blob?: string }>();
+      const ciphertextHexStr = ctData.ciphertext_hex ?? ctData.encrypted_blob;
+      if (!ciphertextHexStr) {
+        console.error('[recall] decrypt skip cid=%s reason=ciphertext_missing (no ciphertext_hex/encrypted_blob in GetMemory response)', m.cid);
+        captureDecryptFailureReason('ciphertext missing in GetMemory response');
+        continue;
+      }
+      const ciphertextBytes = new Uint8Array(Buffer.from(ciphertextHexStr, 'hex'));
 
       const plaintextResult = await runWithHubSignatureFailover(
         membership.orgId,
@@ -426,14 +447,19 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         contributor_stats: contributorStats,
         trust_panel: trustPanelText,
       });
-    } catch {
+    } catch (e) {
+      const reasonDetail = sanitizeRecallLogValue(e instanceof Error ? (e.stack ?? e.message) : String(e));
+      console.error('[recall] decrypt FAILED cid=%s reason=%s', m.cid, reasonDetail);
+      captureDecryptFailureReason(reasonDetail);
       continue;
     }
   }
 
+  const rawCount = rawMemories.length;
+  const decryptedCount = memories.length;
   console.error('[recall] decrypt complete decrypted_count=%d', memories.length);
 
-  const preFilterCount = memories.length;
+  const preFilterCount = decryptedCount;
   const filteredMemories = memories.filter(m => {
     const packId = (m as { pack_id?: string }).pack_id;
     return !packId || !is_blacklisted(packId);
@@ -443,6 +469,35 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   }
 
   console.error('[recall] final memories returned count=%d', filteredMemories.length);
+
+  if (filteredMemories.length === 0) {
+    if (rawCount === 0) {
+      return {
+        status: 'ok',
+        memories: filteredMemories,
+        org_allowed_providers: membership.allowedProviders,
+      };
+    }
+
+    if (decryptedCount === 0) {
+      const failureDetail = firstDecryptFailureReason ?? 'unknown decrypt failure';
+      return {
+        status: 'ok',
+        memories: filteredMemories,
+        org_allowed_providers: membership.allowedProviders,
+        reason_code: 'decrypt_failed',
+        reason: `${rawCount} matched but all failed to decrypt: ${failureDetail}`,
+      };
+    }
+
+    return {
+      status: 'ok',
+      memories: filteredMemories,
+      org_allowed_providers: membership.allowedProviders,
+      reason_code: 'filtered_out',
+      reason: `${decryptedCount} decrypted memories were filtered out`,
+    };
+  }
 
   return { status: 'ok', memories: filteredMemories, org_allowed_providers: membership.allowedProviders };
 }

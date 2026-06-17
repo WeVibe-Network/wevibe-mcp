@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { retrieve, type RetrieveInput } from './retrieve-cli.js';
 import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
@@ -14,6 +16,7 @@ import { DEFAULT_EXTRACTION_NUM_CTX, extractMemories, getExtractionPrompt } from
 import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.js';
 import { createOllamaProvider } from './llm-ollama.js';
 import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
+import { exportIdentityPairing } from './pairing-export.js';
 import type { LlmProvider } from './llm.js';
 import {
   buildCanonicalServeBodyBytes,
@@ -23,6 +26,14 @@ import {
 } from './serve-signing.js';
 
 const HTTP_PORT = 4450;
+
+const BUILD_STAMP = (() => {
+  try {
+    return statSync(fileURLToPath(import.meta.url)).mtimeMs;
+  } catch {
+    return 0;
+  }
+})();
 
 let extractionProvider: LlmProvider | null = null;
 let httpServerInstance: import('node:http').Server | null = null;
@@ -72,7 +83,22 @@ async function handleHealth(req: IncomingMessage, res: ServerResponse): Promise<
   if (!authorize(req, res)) {
     return;
   }
-  jsonResponse(res, 200, { status: 'ok', version: '0.2.0' });
+  jsonResponse(res, 200, { status: 'ok', version: '0.2.0', build_stamp: BUILD_STAMP });
+}
+
+async function handleShutdown(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  jsonResponse(res, 200, { status: 'ok' });
+  setTimeout(() => {
+    try {
+      process.kill(process.pid, 'SIGTERM');
+    } catch {
+      // no-op
+    }
+  }, 50);
 }
 
 function authorize(req: IncomingMessage, res: ServerResponse): boolean {
@@ -216,13 +242,17 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
     input = rawInput as unknown as RetrieveInput;
   } catch {
     console.error('[recall] /v1/recall error=invalid JSON');
-    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
 
   if (!input.query || typeof input.query !== 'string') {
     console.error('[recall] /v1/recall error=query missing or invalid');
-    jsonResponse(res, 400, { status: 'error', error: 'query is required and must be a string' });
+    jsonResponse(res, 400, {
+      status: 'error',
+      code: 'query_required',
+      error: 'query is required and must be a string',
+    });
     return;
   }
 
@@ -234,15 +264,17 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   try {
     result = await retrieve(input);
   } catch (error) {
-    const detail = sanitizeRecallLogValue(error instanceof Error ? (error.stack ?? error.message) : String(error));
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    const detail = sanitizeRecallLogValue(message);
     console.error('[recall] /v1/recall error=%s', detail);
-    jsonResponse(res, 500, { status: 'error', error: 'internal error' });
+    jsonResponse(res, 500, { status: 'error', code: 'internal_error', error: 'internal error', detail: message });
     return;
   }
 
   if (result.status === 'error') {
     console.error('[recall] /v1/recall error=%s', sanitizeRecallLogValue(result.error));
-    jsonResponse(res, 500, { status: 'error', error: result.error });
+    const code = result.error === 'no identity found in keychain' ? 'no_identity' : 'recall_failed';
+    jsonResponse(res, 500, { status: 'error', code, error: result.error });
     return;
   }
 
@@ -281,8 +313,25 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   }
 
   if (memoriesWithGuard.length === 0) {
-    console.error('[recall] /v1/recall result_count=0 reason_code=no_memories');
-    jsonResponse(res, 200, { status: 'ok', memories: memoriesWithGuard, reason_code: 'no_memories' });
+    const reasonCode = result.reason_code ?? 'no_memories';
+    console.error('[recall] /v1/recall result_count=0 reason_code=%s', reasonCode);
+
+    const responseBody: {
+      status: 'ok';
+      memories: MemoryWithGuard[];
+      reason_code: 'no_memories' | 'decrypt_failed' | 'filtered_out';
+      reason?: string;
+    } = {
+      status: 'ok',
+      memories: memoriesWithGuard,
+      reason_code: reasonCode,
+    };
+
+    if (result.reason) {
+      responseBody.reason = result.reason;
+    }
+
+    jsonResponse(res, 200, responseBody);
     return;
   }
 
@@ -395,6 +444,25 @@ async function handleExtractDefaults(req: IncomingMessage, res: ServerResponse):
   });
 }
 
+async function handleIdentityExportPairing(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  try {
+    const { token, pairingId } = await exportIdentityPairing();
+    jsonResponse(res, 200, { code: token, pairing_id: pairingId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'No identity. Run setup-identity first.') {
+      jsonResponse(res, 404, { status: 'error', code: 'no_identity', error: 'no_identity' });
+      return;
+    }
+
+    jsonResponse(res, 500, { status: 'error', code: 'internal_error', error: message, detail: message });
+  }
+}
+
 async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!authorize(req, res)) {
     return;
@@ -405,19 +473,27 @@ async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promis
   try {
     body = JSON.parse(bodyStr) as OrgSetupRequestBody;
   } catch {
-    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
 
   const orgName = typeof body.org_name === 'string' ? body.org_name.trim() : '';
   if (orgName.length === 0) {
-    jsonResponse(res, 400, { status: 'error', error: 'org_name is required and must be a non-empty string' });
+    jsonResponse(res, 400, {
+      status: 'error',
+      code: 'org_name_required',
+      error: 'org_name is required and must be a non-empty string',
+    });
     return;
   }
 
   const domain = typeof body.domain === 'string' ? body.domain.trim() : '';
   if (domain.length === 0) {
-    jsonResponse(res, 400, { status: 'error', error: 'domain is required and must be a non-empty string' });
+    jsonResponse(res, 400, {
+      status: 'error',
+      code: 'domain_required',
+      error: 'domain is required and must be a non-empty string',
+    });
     return;
   }
 
@@ -435,7 +511,7 @@ async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promis
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    jsonResponse(res, 500, { status: 'error', error: message });
+    jsonResponse(res, 500, { status: 'error', code: 'internal_error', error: message, detail: message });
     return;
   }
 
@@ -466,26 +542,34 @@ async function handleOrgSetupFinalize(req: IncomingMessage, res: ServerResponse)
   try {
     body = JSON.parse(bodyStr) as OrgSetupFinalizeRequestBody;
   } catch {
-    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
 
   const setupId = typeof body.setup_id === 'string' ? body.setup_id.trim() : '';
   if (setupId.length === 0) {
-    jsonResponse(res, 400, { status: 'error', error: 'setup_id is required and must be a non-empty string' });
+    jsonResponse(res, 400, {
+      status: 'error',
+      code: 'setup_id_required',
+      error: 'setup_id is required and must be a non-empty string',
+    });
     return;
   }
 
   const orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
   if (orgId.length === 0) {
-    jsonResponse(res, 400, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+    jsonResponse(res, 400, {
+      status: 'error',
+      code: 'org_id_required',
+      error: 'org_id is required and must be a non-empty string',
+    });
     return;
   }
 
   purgeExpiredOrgSetups();
   const pending = pendingOrgSetups.get(setupId);
   if (!pending) {
-    jsonResponse(res, 404, { status: 'error', error: 'unknown or expired setup_id' });
+    jsonResponse(res, 404, { status: 'error', code: 'setup_not_found', error: 'unknown or expired setup_id' });
     return;
   }
 
@@ -493,7 +577,7 @@ async function handleOrgSetupFinalize(req: IncomingMessage, res: ServerResponse)
     await persistOrgKeys(orgId, pending.masterKeyHex, pending.modPrivkeyHex, pending.orgName);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    jsonResponse(res, 500, { status: 'error', error: message });
+    jsonResponse(res, 500, { status: 'error', code: 'internal_error', error: message, detail: message });
     return;
   }
 
@@ -511,13 +595,17 @@ async function handleProvisionRecall(req: IncomingMessage, res: ServerResponse):
   try {
     body = JSON.parse(bodyStr) as ProvisionRecallRequestBody;
   } catch {
-    jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
+    jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
 
   const orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
   if (orgId.length === 0) {
-    jsonResponse(res, 400, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+    jsonResponse(res, 400, {
+      status: 'error',
+      code: 'org_id_required',
+      error: 'org_id is required and must be a non-empty string',
+    });
     return;
   }
 
@@ -525,7 +613,7 @@ async function handleProvisionRecall(req: IncomingMessage, res: ServerResponse):
     await provisionRecall(orgId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    jsonResponse(res, 500, { status: 'error', error: message });
+    jsonResponse(res, 500, { status: 'error', code: 'provision_failed', error: message, detail: message });
     return;
   }
 
@@ -860,6 +948,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
   if (method === 'GET' && url === '/v1/extract/defaults') {
     await handleExtractDefaults(req, res);
+    return;
+  }
+
+  if (method === 'POST' && url === '/v1/identity/export-pairing') {
+    await handleIdentityExportPairing(req, res);
+    return;
+  }
+
+  if (method === 'POST' && url === '/v1/shutdown') {
+    await handleShutdown(req, res);
     return;
   }
 
