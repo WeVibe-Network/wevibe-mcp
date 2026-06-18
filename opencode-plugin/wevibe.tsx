@@ -210,7 +210,17 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
     }
   };
 
-  const stateRoot = api?.state?.path?.worktree ?? api?.state?.path?.directory ?? process.cwd();
+  const isUsableDir = (p: unknown): p is string =>
+    typeof p === "string" && p.length > 1 && p !== "/" && fs.existsSync(p);
+  const wtWorktree = api?.state?.path?.worktree;
+  const wtDirectory = api?.state?.path?.directory;
+  const wtCwd = process.cwd();
+  const writableFallback = path.join(os.homedir(), ".wevibe");
+  const stateRoot =
+    (isUsableDir(wtWorktree) ? wtWorktree : undefined) ??
+    (isUsableDir(wtDirectory) ? wtDirectory : undefined) ??
+    (isUsableDir(wtCwd) ? wtCwd : undefined) ??
+    writableFallback;
   const stateDir = path.join(stateRoot, ".opencode");
   const queuePath = path.join(stateDir, "wevibe-plugin-queue.json");
   const decisionsPath = path.join(stateDir, "wevibe-plugin-decisions.json");
