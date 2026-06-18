@@ -60,6 +60,7 @@ export interface QueryMemoryRequest {
   hubUrl: string;
   orgId: string;
   agentPubkey: string;
+  sessionId?: string;
   keywordWeights: Array<{ keyword: string; weight: number }>;
   vector: number[];
   embeddingModelId: string;
@@ -123,6 +124,7 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
   const requestBody = {
     org_id: params.orgId,
     agent_pubkey: params.agentPubkey,
+    session_id: params.sessionId ?? '',
     keyword_weights: params.keywordWeights,
     vector: params.vector,
     embedding_model_id: params.embeddingModelId,

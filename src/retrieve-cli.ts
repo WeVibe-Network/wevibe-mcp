@@ -22,6 +22,7 @@ export interface RetrieveInput {
   query: string;
   limit?: number;
   org_id?: string;
+  session_id?: string;
   intent?: string;
   task?: string;
   description?: string;
@@ -318,6 +319,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         hubUrl,
         orgId: membership.orgId,
         agentPubkey: uint8ArrayToHex(identity.edPubkey),
+        sessionId: input.session_id,
         keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
         vector: queryVector,
         embeddingModelId,

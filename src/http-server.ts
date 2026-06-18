@@ -622,6 +622,7 @@ async function handleProvisionRecall(req: IncomingMessage, res: ServerResponse):
 
 interface ServeRequestBody {
   org_id: string;
+  session_id?: string;
   memory_hash: string;
   model_id?: string;
   turn_count?: number;
@@ -716,6 +717,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
 
   const hubBody = {
     org_id: body.org_id,
+    session_id: body.session_id ?? '',
     epoch_id: epochId,
     memory_content_hash: memoryContentHashHex,
     serve_key_pubkey: orgServeKey.pubHex,
