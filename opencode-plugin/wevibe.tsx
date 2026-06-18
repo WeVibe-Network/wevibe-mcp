@@ -112,6 +112,39 @@ function parseLastJson(s: string): any {
 const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown) => {
   const loc = await locateAdmin(api, options);
   let wevibeDialogActive = false;
+  // True while a CORE opencode dialog (the `question` popup, a permission
+  // prompt, the command palette, etc.) owns the shared dialog stack. We must
+  // NEVER replace/clear that stack while a core dialog is up: doing so destroys
+  // the core dialog's submit handler, which is what froze the question popup
+  // (the answer never round-tripped → no `question.replied` → stuck "asking").
+  let coreDialogOpen = false;
+
+  // Is a core (non-WeVibe) dialog currently in control of the shared stack?
+  // Three independent signals, any of which means "hands off":
+  //   1. an event-tracked open flag (question.asked / permission.asked),
+  //   2. a live probe of the dialog stack that isn't one of OUR dialogs,
+  //   3. pending question/permission requests for the active session.
+  const coreDialogBusy = (): boolean => {
+    if (coreDialogOpen) return true;
+    try {
+      if (api?.ui?.dialog?.open && !wevibeDialogActive) return true;
+    } catch {
+      /* ignore */
+    }
+    try {
+      const cur: any = api?.route?.current;
+      const sid: string | undefined = cur?.params?.sessionID;
+      if (sid && api?.state?.session) {
+        const q = api.state.session.question?.(sid);
+        if (Array.isArray(q) && q.length > 0) return true;
+        const p = api.state.session.permission?.(sid);
+        if (Array.isArray(p) && p.length > 0) return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  };
 
   const toast = (variant: string, message: string, duration?: number) => {
     try {
@@ -409,6 +442,16 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   };
 
   const processQueue = (force = false) => {
+    // NEVER touch the dialog stack while a core dialog is up — even on an
+    // explicit /wevibe-review. Replacing the stack here is exactly what froze
+    // the question popup.
+    if (coreDialogBusy()) {
+      if (force) {
+        toast("info", "Finish the current prompt first, then run /wevibe-review.");
+      }
+      return;
+    }
+
     const queue = readQueue();
     if (queue.length === 0) {
       activeMemoryId = null;
@@ -442,7 +485,36 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
 
   writeHeartbeat();
   const heartbeatInterval = setInterval(() => writeHeartbeat(), 10000);
-  const queueInterval = setInterval(() => processQueue(), 1500);
+  // Gentle, fully-guarded safety poll (was 1500ms, which churned the shared
+  // dialog stack). processQueue() now bails instantly when the queue is empty
+  // OR a core dialog is busy, so this can never clobber a question/permission
+  // popup. It exists only to surface memories queued while the session is idle.
+  const queueInterval = setInterval(() => processQueue(), 5000);
+
+  // Track the core-dialog lifecycle so we (a) stay off the stack while one is
+  // up and (b) re-check the queue the moment it closes.
+  const coreDialogUnsubs: Array<() => void> = [];
+  const onCore = (type: string, handler: () => void) => {
+    try {
+      const unsub = api.event.on(type, handler);
+      if (typeof unsub === "function") coreDialogUnsubs.push(unsub);
+    } catch {
+      /* ignore */
+    }
+  };
+  onCore("question.asked", () => {
+    coreDialogOpen = true;
+  });
+  onCore("permission.asked", () => {
+    coreDialogOpen = true;
+  });
+  const onCoreClosed = () => {
+    coreDialogOpen = false;
+    setTimeout(() => processQueue(), 0);
+  };
+  onCore("question.replied", onCoreClosed);
+  onCore("question.rejected", onCoreClosed);
+  onCore("permission.replied", onCoreClosed);
 
   let unsubscribeMessageUpdated: (() => void) | null = null;
   try {
@@ -462,6 +534,13 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
         unsubscribeMessageUpdated?.();
       } catch {
         /* ignore */
+      }
+      for (const unsub of coreDialogUnsubs) {
+        try {
+          unsub();
+        } catch {
+          /* ignore */
+        }
       }
       try {
         fs.unlinkSync(heartbeatPath);
@@ -574,6 +653,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
 
   const maybeNudge = () => {
     if (!identityPresent || extracted) return;
+    if (coreDialogBusy()) return;
     const n = counted.size;
     if (n < THRESHOLD) return;
     const now = Date.now();
