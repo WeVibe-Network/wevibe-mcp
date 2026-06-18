@@ -241,6 +241,35 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
     return `${value.slice(0, max - 1)}…`;
   };
 
+  const RISK_CONFIG_PATH = path.join(os.homedir(), ".wevibe", "plugin-config.json");
+
+  const getRiskAppetite = (): "lowest" | "neutral" => {
+    try {
+      const raw = fs.readFileSync(RISK_CONFIG_PATH, "utf8");
+      const parsed = JSON.parse(raw);
+      return parsed?.risk_appetite === "lowest" ? "lowest" : "neutral";
+    } catch {
+      return "neutral";
+    }
+  };
+
+  const setRiskAppetite = (value: "lowest" | "neutral"): void => {
+    try {
+      const dir = path.join(os.homedir(), ".wevibe");
+      fs.mkdirSync(dir, { recursive: true });
+      let current: Record<string, unknown> = {};
+      try {
+        current = JSON.parse(fs.readFileSync(RISK_CONFIG_PATH, "utf8"));
+      } catch {
+        current = {};
+      }
+      const next = { ...current, risk_appetite: value };
+      fs.writeFileSync(RISK_CONFIG_PATH, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+    } catch {
+      /* ignore */
+    }
+  };
+
   const readJsonArray = <T,>(filePath: string): T[] => {
     try {
       const raw = fs.readFileSync(filePath, "utf8");
@@ -335,6 +364,48 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
     { title: "Other", value: "other", description: "Another issue not listed above" },
   ];
 
+  const showRiskDialog = () => {
+    if (coreDialogBusy()) {
+      toast("info", "Finish the current prompt first, then run /wevibe-risk.");
+      return;
+    }
+
+    const current = getRiskAppetite();
+    wevibeDialogActive = true;
+    try {
+      api.ui.dialog.replace(
+        () =>
+          api.ui.DialogSelect({
+            title: "WeVibe — Risk appetite",
+            placeholder: `Current: ${current}. 'lowest' = only negative-signal (avoid) memories are recalled; 'neutral' = default recall.`,
+            options: [
+              { title: "Neutral — default recall", value: "neutral" as const },
+              { title: "Lowest — strictest filter (negative-signal only)", value: "lowest" as const },
+            ],
+            onSelect: (option: { value: "lowest" | "neutral" }) => {
+              const value = option?.value;
+              if (value === "lowest" || value === "neutral") {
+                setRiskAppetite(value);
+                toast("info", `Risk appetite set to ${value}`);
+              }
+              wevibeDialogActive = false;
+              try {
+                api.ui.dialog.clear();
+              } catch {
+                /* ignore */
+              }
+            },
+          }),
+        () => {
+          wevibeDialogActive = false;
+        },
+      );
+    } catch {
+      wevibeDialogActive = false;
+      /* ignore */
+    }
+  };
+
   const showReviewDialog = (entry: QueueEntry) => {
     openReviewDialog(
       () =>
@@ -345,8 +416,9 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
             { title: "Accept — inject into session", value: "accept" as const },
             { title: "Deny — discard", value: "deny" as const },
             { title: "Report — flag & discard", value: "report" as const },
+            { title: "⚙ Risk appetite…", value: "risk" as const },
           ],
-          onSelect: (option: { value: "accept" | "deny" | "report" }) => {
+          onSelect: (option: { value: "accept" | "deny" | "report" | "risk" }) => {
             const action = option?.value;
             if (action === "accept") {
               recordDecision({ memoryID: entry.id, action: "accept", timestamp: Date.now() });
@@ -361,6 +433,13 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
               showDenyConfirm(entry);
             } else if (action === "report") {
               showReportReasonDialog(entry);
+            } else if (action === "risk") {
+              try {
+                api.ui.dialog.clear();
+              } catch {
+                /* ignore */
+              }
+              setTimeout(() => showRiskDialog(), 0);
             }
           },
         }),
@@ -772,6 +851,16 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
               return;
             }
             void processQueue(true);
+          },
+        },
+        {
+          name: "wevibe.risk",
+          title: "WeVibe: Set recall risk appetite",
+          category: "WeVibe",
+          namespace: "palette",
+          slashName: "wevibe-risk",
+          run: () => {
+            showRiskDialog();
           },
         },
       ],
