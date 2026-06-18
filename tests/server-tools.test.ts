@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 process.env.WEVIBE_AUTO_CONTRIBUTE = '0';
 
@@ -181,6 +184,27 @@ describe('wevibe_recall integration flow', () => {
 });
 
 describe('wevibe_reject integration flow', () => {
+  const originalHome = process.env.HOME;
+  let isolatedHomeDir: string | undefined;
+
+  beforeEach(() => {
+    isolatedHomeDir = mkdtempSync(join(tmpdir(), 'wevibe-mcp-test-home-'));
+    process.env.HOME = isolatedHomeDir;
+  });
+
+  afterEach(() => {
+    if (isolatedHomeDir) {
+      rmSync(isolatedHomeDir, { recursive: true, force: true });
+      isolatedHomeDir = undefined;
+    }
+
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+  });
+
   it('add_to_blacklist persists and is_blacklisted returns true', async () => {
     const { add_to_blacklist, is_blacklisted } = await import('../src/blacklist.js');
     const testCid = `theater-fix-${Date.now()}`;
