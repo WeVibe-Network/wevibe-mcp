@@ -257,6 +257,19 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
       (entry: any): entry is QueueEntry => entry && typeof entry.id === "string" && entry.id.length > 0,
     );
 
+  const readQueueAsync = async (): Promise<QueueEntry[]> => {
+    try {
+      const raw = await fs.promises.readFile(queuePath, "utf8");
+      const parsed = JSON.parse(raw);
+      const queue = Array.isArray(parsed) ? parsed : [];
+      return queue.filter(
+        (entry: any): entry is QueueEntry => entry && typeof entry.id === "string" && entry.id.length > 0,
+      );
+    } catch {
+      return [];
+    }
+  };
+
   const removeFromQueue = (id: string) => {
     try {
       const nextQueue = readQueue().filter((entry) => entry.id !== id);
@@ -301,7 +314,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   const queueAdvance = () => {
     activeMemoryId = null;
     wevibeDialogActive = false;
-    setTimeout(() => processQueue(), 0);
+    setTimeout(() => void processQueue(), 0);
   };
 
   const reportReasonOptions: Array<{ title: string; value: ReportReason; description: string }> = [
@@ -441,7 +454,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
     );
   };
 
-  const processQueue = (force = false) => {
+  const processQueue = async (force = false) => {
     // NEVER touch the dialog stack while a core dialog is up — even on an
     // explicit /wevibe-review. Replacing the stack here is exactly what froze
     // the question popup.
@@ -452,7 +465,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
       return;
     }
 
-    const queue = readQueue();
+    const queue = await readQueueAsync();
     if (queue.length === 0) {
       activeMemoryId = null;
       if (force) {
@@ -477,7 +490,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   const writeHeartbeat = () => {
     try {
       ensureStateDir();
-      fs.writeFileSync(heartbeatPath, `${JSON.stringify({ ts: Date.now() })}\n`, "utf8");
+      void fs.promises.writeFile(heartbeatPath, `${JSON.stringify({ ts: Date.now() })}\n`, "utf8").catch(() => {});
     } catch {
       /* ignore */
     }
@@ -489,7 +502,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   // dialog stack). processQueue() now bails instantly when the queue is empty
   // OR a core dialog is busy, so this can never clobber a question/permission
   // popup. It exists only to surface memories queued while the session is idle.
-  const queueInterval = setInterval(() => processQueue(), 5000);
+  const queueInterval = setInterval(() => void processQueue(), 5000);
 
   // Track the core-dialog lifecycle so we (a) stay off the stack while one is
   // up and (b) re-check the queue the moment it closes.
@@ -510,7 +523,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
   });
   const onCoreClosed = () => {
     coreDialogOpen = false;
-    setTimeout(() => processQueue(), 0);
+    setTimeout(() => void processQueue(), 0);
   };
   onCore("question.replied", onCoreClosed);
   onCore("question.rejected", onCoreClosed);
@@ -518,7 +531,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
 
   let unsubscribeMessageUpdated: (() => void) | null = null;
   try {
-    const unsubscribe = api.event.on("message.updated", () => processQueue());
+    const unsubscribe = api.event.on("message.updated", () => void processQueue());
     if (typeof unsubscribe === "function") {
       unsubscribeMessageUpdated = unsubscribe;
     }
@@ -748,7 +761,7 @@ const tui = async (api: any, options: PluginOptions | undefined, _meta: unknown)
               toast("info", "No pending memories");
               return;
             }
-            processQueue(true);
+            void processQueue(true);
           },
         },
       ],
