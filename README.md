@@ -77,7 +77,8 @@ node dist/server.js
 Optional OpenCode onboarding helper:
 
 ```bash
-node dist/admin.js install-opencode
+cd ../wevibe-opencode-plugin && npm run install-opencode
+# or: npx tsx bin/install-opencode.ts install-opencode
 ```
 
 Docker support is available via the repository `Dockerfile`.
