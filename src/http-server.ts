@@ -240,6 +240,12 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   try {
     rawInput = JSON.parse(body) as Record<string, unknown>;
     input = rawInput as unknown as RetrieveInput;
+    if (typeof rawInput.relevance_floor === 'number' && Number.isFinite(rawInput.relevance_floor)) {
+      input.relevance_floor = rawInput.relevance_floor;
+    }
+    if (typeof rawInput.surface_budget === 'number' && Number.isFinite(rawInput.surface_budget)) {
+      input.surface_budget = rawInput.surface_budget;
+    }
   } catch {
     console.error('[recall] /v1/recall error=invalid JSON');
     jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });

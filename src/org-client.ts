@@ -65,6 +65,8 @@ export interface QueryMemoryRequest {
   vector: number[];
   embeddingModelId: string;
   limit: number;
+  relevanceFloor?: number;
+  surfaceBudget?: number;
   agentSig: string;
 }
 
@@ -129,6 +131,8 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
     vector: params.vector,
     embedding_model_id: params.embeddingModelId,
     limit: params.limit,
+    relevance_floor: params.relevanceFloor,
+    surface_budget: params.surfaceBudget,
     agent_sig: params.agentSig,
     pre_pubkey: prePubkey,
   };

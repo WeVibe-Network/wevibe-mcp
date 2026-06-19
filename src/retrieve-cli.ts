@@ -10,7 +10,6 @@ import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';
 import { formatTrustPanel, type MemoryStats, type ContributorStats } from './trust-panel.js';
-import { is_blacklisted } from './blacklist.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { HUB_URL } from './config.js';
 import { getActiveHubUrlForOrg, pickActiveEndpoint } from './hub-resolver.js';
@@ -36,6 +35,8 @@ export interface RetrieveInput {
   files?: string[];
   directory?: string;
   projectName?: string;
+  relevance_floor?: number;
+  surface_budget?: number;
 }
 
 export interface MemoryOutput {
@@ -324,6 +325,8 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         vector: queryVector,
         embeddingModelId,
         limit: input.limit ?? 5,
+        relevanceFloor: input.relevance_floor,
+        surfaceBudget: input.surface_budget,
         agentSig: 'stub',
       }),
     );
@@ -461,22 +464,13 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   const decryptedCount = memories.length;
   console.error('[recall] decrypt complete decrypted_count=%d', memories.length);
 
-  const preFilterCount = decryptedCount;
-  const filteredMemories = memories.filter(m => {
-    const packId = (m as { pack_id?: string }).pack_id;
-    return !packId || !is_blacklisted(packId);
-  });
-  if (preFilterCount > filteredMemories.length) {
-    console.error(`[wevibe-blacklist] Filtered ${preFilterCount - filteredMemories.length} blacklisted memories`);
-  }
+  console.error('[recall] final memories returned count=%d', memories.length);
 
-  console.error('[recall] final memories returned count=%d', filteredMemories.length);
-
-  if (filteredMemories.length === 0) {
+  if (memories.length === 0) {
     if (rawCount === 0) {
       return {
         status: 'ok',
-        memories: filteredMemories,
+        memories,
         org_allowed_providers: membership.allowedProviders,
       };
     }
@@ -485,7 +479,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       const failureDetail = firstDecryptFailureReason ?? 'unknown decrypt failure';
       return {
         status: 'ok',
-        memories: filteredMemories,
+        memories,
         org_allowed_providers: membership.allowedProviders,
         reason_code: 'decrypt_failed',
         reason: `${rawCount} matched but all failed to decrypt: ${failureDetail}`,
@@ -494,12 +488,12 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
     return {
       status: 'ok',
-      memories: filteredMemories,
+      memories,
       org_allowed_providers: membership.allowedProviders,
       reason_code: 'filtered_out',
       reason: `${decryptedCount} decrypted memories were filtered out`,
     };
   }
 
-  return { status: 'ok', memories: filteredMemories, org_allowed_providers: membership.allowedProviders };
+  return { status: 'ok', memories, org_allowed_providers: membership.allowedProviders };
 }
