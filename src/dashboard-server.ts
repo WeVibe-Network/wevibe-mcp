@@ -13,8 +13,7 @@
  * Environment:
  *   WEVIBE_HUB_URL           Hub URL (default from config)
  *   WEVIBE_DASHBOARD_PORT    Server port (default: 4451)
- *   WEVIBE_OLLAMA_URL        Ollama URL (default from config)
- *   WEVIBE_EXTRACTION_MODEL  LLM model for keyword extraction (default: qwen3:4b)
+ *   LLM provider/model are loaded from ~/.config/wevibe/dashboard.json
  */
 
 import express from 'express';
@@ -37,11 +36,13 @@ import {
 } from './moderation.js';
 import { setLlmProvider, getLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
+import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
 import { vaultExists, isVaultUnlocked, unlockVault, retrievePassphraseFromKeychain } from './vault.js';
 import { submitMemory } from './contribution.js';
 import { getOrgKeywords } from './org-client.js';
 import { extractKeywords, extractMemories, type ClassifiedKeyword, type SuggestedKeyword } from './extraction.js';
-import { HUB_URL, DASHBOARD_PORT, OLLAMA_URL, EXTRACTION_MODEL, EMBEDDING_MODEL } from './config.js';
+import { HUB_URL, DASHBOARD_PORT, EMBEDDING_MODEL } from './config.js';
+import { loadLlmConfig } from './embedding-config.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
 import { umbralEncrypt } from './sidecar.js';
@@ -732,8 +733,24 @@ app.get('/health', (_req, res) => {
 });
 
 async function main(): Promise<void> {
-  setLlmProvider(createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL));
-  console.warn(`wevibe-dashboard: LLM provider: Ollama (${OLLAMA_URL}, model: ${EXTRACTION_MODEL})`);
+  const llmConfig = (() => {
+    try {
+      return loadLlmConfig();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`wevibe-dashboard: FATAL config — invalid LLM provider settings in dashboard.json: ${message}`);
+      console.error('wevibe-dashboard: FATAL config — set llm_provider + provider model in Dashboard settings before restart');
+      throw error;
+    }
+  })();
+
+  if (llmConfig.provider === 'ollama') {
+    setLlmProvider(createOllamaProvider(llmConfig.baseUrl, llmConfig.model));
+  } else {
+    setLlmProvider(createOpenAICompatibleProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.apiKey));
+  }
+
+  console.warn(`wevibe-dashboard: LLM provider: ${llmConfig.provider} (${llmConfig.baseUrl}, model: ${llmConfig.model})`);
 
   const storedPassphrase = await retrievePassphraseFromKeychain();
   if (storedPassphrase) {
