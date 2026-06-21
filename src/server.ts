@@ -11,7 +11,6 @@ import { dissect_to_keywords, detect_session } from './session.js';
 import { computeEmbedding } from './extraction.js';
 import { submitMemory } from './contribution.js';
 import { runWeVibeGuard } from './guard.js';
-import { ocrSanitize } from './ocr-sanitize.js';
 import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';

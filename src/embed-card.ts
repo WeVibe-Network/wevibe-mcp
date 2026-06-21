@@ -3,7 +3,6 @@ import { loadEmbeddingConfig } from './embedding-config.js';
 import {
   buildAnticipatedNeed,
   buildRetrievalCard,
-  sanitizeForEmbedding,
   type StructuredMemory,
 } from './retrieval-card.js';
 
@@ -31,7 +30,7 @@ export async function embedRetrievalCard(
     : cardBase;
 
   const vector = await computeLocalEmbedding(
-    sanitizeForEmbedding(cardText),
+    cardText,
     { role: 'document', prefix: true },
     embeddingConfig,
   );

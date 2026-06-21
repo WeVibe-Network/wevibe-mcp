@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { retrieve, type RetrieveInput } from './retrieve-cli.js';
+import { getRecallMode, getRecallModeGovernor, retrieve, type RetrieveInput } from './retrieve-cli.js';
 import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
 import { loadIdentity } from './key-store.js';
@@ -38,6 +38,7 @@ const BUILD_STAMP = (() => {
 let extractionProvider: LlmProvider | null = null;
 let httpServerInstance: import('node:http').Server | null = null;
 let denialFlushTimer: NodeJS.Timeout | null = null;
+let recallModeWarningEmitted = false;
 
 interface PendingOrgSetup {
   masterKeyHex: string;
@@ -235,17 +236,24 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   flushDenials().catch(err => console.error('denial flush on recall failed:', err));
 
   const body = await readBody(req);
+  const recallGovernor = getRecallModeGovernor();
   let input: RetrieveInput;
   let rawInput: Record<string, unknown>;
   try {
     rawInput = JSON.parse(body) as Record<string, unknown>;
     input = rawInput as unknown as RetrieveInput;
-    if (typeof rawInput.relevance_floor === 'number' && Number.isFinite(rawInput.relevance_floor)) {
-      input.relevance_floor = rawInput.relevance_floor;
-    }
-    if (typeof rawInput.surface_budget === 'number' && Number.isFinite(rawInput.surface_budget)) {
-      input.surface_budget = rawInput.surface_budget;
-    }
+
+    input.limit = typeof rawInput.limit === 'number' && Number.isFinite(rawInput.limit)
+      ? rawInput.limit
+      : recallGovernor.recall_limit;
+
+    input.relevance_floor = typeof rawInput.relevance_floor === 'number' && Number.isFinite(rawInput.relevance_floor)
+      ? rawInput.relevance_floor
+      : recallGovernor.relevance_floor;
+
+    input.surface_budget = typeof rawInput.surface_budget === 'number' && Number.isFinite(rawInput.surface_budget)
+      ? rawInput.surface_budget
+      : recallGovernor.surface_budget;
   } catch {
     console.error('[recall] /v1/recall error=invalid JSON');
     jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
@@ -263,7 +271,9 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   }
 
   const queryPreview = sanitizeRecallLogValue(input.query.slice(0, 80));
-  const requestedLimit = typeof input.limit === 'number' && Number.isFinite(input.limit) ? input.limit : 5;
+  const requestedLimit = typeof input.limit === 'number' && Number.isFinite(input.limit)
+    ? input.limit
+    : recallGovernor.recall_limit;
   console.error('[recall] /v1/recall received query="%s" limit=%d', queryPreview, requestedLimit);
 
   let result: Awaited<ReturnType<typeof retrieve>>;
@@ -1004,6 +1014,18 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
 export function startHttpServer(): Promise<boolean> {
   return new Promise(resolve => {
+    const recallMode = getRecallMode();
+    if (recallMode === 'test' && !recallModeWarningEmitted) {
+      const governor = getRecallModeGovernor(recallMode);
+      console.error(
+        '[recall] WARNING: WEVIBE_RECALL_MODE=test — governor bypassed (floor=%s budget=%d limit=%d)',
+        governor.relevance_floor,
+        governor.surface_budget,
+        governor.recall_limit,
+      );
+      recallModeWarningEmitted = true;
+    }
+
     const server = createServer((req, res) => {
       handleRequest(req, res).catch(err => {
         console.error(`wevibe-mcp: HTTP request error: ${err}`);

@@ -213,10 +213,6 @@ describe('retrieve failover on hub signature mismatch', () => {
       deserializeMemoryResult: vi.fn(),
     }));
 
-    vi.doMock('../src/ocr-sanitize.js', () => ({
-      ocrSanitize: vi.fn((text: string) => text),
-    }));
-
     vi.doMock('../src/artifact-extract.js', () => ({
       extractArtifacts: vi.fn(),
     }));

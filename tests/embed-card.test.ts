@@ -3,7 +3,6 @@ import { embedRetrievalCard } from '../src/embed-card.js';
 import { computeLocalEmbedding } from '../src/embedding.js';
 import { loadEmbeddingConfig } from '../src/embedding-config.js';
 import type { ResolvedEmbeddingConfig } from '../src/embedding-config.js';
-import { sanitizeForEmbedding } from '../src/retrieval-card.js';
 import type { StructuredMemory } from '../src/retrieval-card.js';
 
 vi.mock('../src/embedding.js', () => ({
@@ -61,7 +60,7 @@ describe('embedRetrievalCard', () => {
     expect(result.embeddingModelId).toBe('openai/text-embedding-3-large');
     expect(computeLocalEmbedding).toHaveBeenCalledTimes(1);
     expect(computeLocalEmbedding).toHaveBeenCalledWith(
-      sanitizeForEmbedding(expectedCardText),
+      expectedCardText,
       { role: 'document', prefix: true },
       openRouterConfig,
     );

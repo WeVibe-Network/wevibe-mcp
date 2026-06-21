@@ -5,7 +5,6 @@ import { computeLocalEmbedding } from './embedding.js';
 import { loadEmbeddingConfig } from './embedding-config.js';
 import { buildNeedCard, type NeedHarvest } from './retrieval-card.js';
 import { deserializeMemoryResult } from './deserialize.js';
-import { ocrSanitize } from './ocr-sanitize.js';
 import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';
@@ -69,6 +68,35 @@ export interface ErrorOutput {
 }
 
 export type Output = RetrieveOutput | ErrorOutput;
+
+export type RecallMode = 'prod' | 'test';
+
+export interface RecallGovernor {
+  relevance_floor: number;
+  surface_budget: number;
+  recall_limit: number;
+}
+
+const RECALL_MODE_GOVERNORS: Record<RecallMode, RecallGovernor> = {
+  prod: {
+    relevance_floor: 0.55,
+    surface_budget: 3,
+    recall_limit: 3,
+  },
+  test: {
+    relevance_floor: 0,
+    surface_budget: 1000,
+    recall_limit: 1000,
+  },
+};
+
+export function getRecallMode(): RecallMode {
+  return process.env.WEVIBE_RECALL_MODE === 'test' ? 'test' : 'prod';
+}
+
+export function getRecallModeGovernor(mode: RecallMode = getRecallMode()): RecallGovernor {
+  return RECALL_MODE_GOVERNORS[mode];
+}
 
 function uint8ArrayToHex(arr: Uint8Array): string {
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -269,6 +297,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   console.error('[recall] membership resolved org_id=%s', membership.orgId);
 
   let activeHubUrl = getActiveHubUrlForOrg(membership.orgId) ?? HUB_URL;
+  const recallGovernor = getRecallModeGovernor();
 
   const harvest = buildQueryHarvest(input);
   const needCardText = buildNeedCard(harvest);
@@ -324,9 +353,9 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
         vector: queryVector,
         embeddingModelId,
-        limit: input.limit ?? 5,
-        relevanceFloor: input.relevance_floor,
-        surfaceBudget: input.surface_budget,
+        limit: input.limit ?? recallGovernor.recall_limit,
+        relevanceFloor: input.relevance_floor ?? recallGovernor.relevance_floor,
+        surfaceBudget: input.surface_budget ?? recallGovernor.surface_budget,
         agentSig: 'stub',
       }),
     );
@@ -405,20 +434,13 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       activeHubUrl = plaintextResult.hubUrl;
       const plaintext = Buffer.from(plaintextResult.result).toString('utf-8');
 
-      let sanitizedPlaintext: string;
-      try {
-        sanitizedPlaintext = ocrSanitize(plaintext);
-      } catch {
-        sanitizedPlaintext = plaintext;
-      }
-
-      const extraction = extractArtifacts(sanitizedPlaintext);
+      const extraction = extractArtifacts(plaintext);
       const policyResults = checkArtifactPolicy(
         extraction.artifacts,
         membership.egressMode,
         membership.allowedProviders,
       );
-      const transformed = transformMemoryContent(sanitizedPlaintext, policyResults);
+      const transformed = transformMemoryContent(plaintext, policyResults);
 
       const memoryStats: MemoryStats = {
         retrieval_count: m.retrievalCount ?? 0,

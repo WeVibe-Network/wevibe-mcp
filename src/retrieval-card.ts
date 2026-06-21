@@ -1,5 +1,3 @@
-import { ocrSanitize } from './ocr-sanitize.js';
-
 const CONTEXT_MARKER = '\n\nContext: ';
 const DND_MARKER = "\n\nDon't: ";
 
@@ -124,12 +122,4 @@ export async function buildAnticipatedNeed(
     .find((entry) => entry.length > 0);
 
   return (line ?? raw.trim()).replace(/\s+/g, ' ').trim();
-}
-
-export function sanitizeForEmbedding(text: string): string {
-  try {
-    return ocrSanitize(text);
-  } catch {
-    return text;
-  }
 }

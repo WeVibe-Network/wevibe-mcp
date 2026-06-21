@@ -2,7 +2,6 @@ import * as crypto from 'node:crypto';
 import { generateDek, encryptSymmetric, sealToPubkey, sign } from './crypto.js';
 import { loadIdentity } from './key-store.js';
 import { storePendingDek } from './pending-vault.js';
-import { ocrSanitize } from './ocr-sanitize.js';
 import { runWeVibeGuard } from './guard.js';
 import { ensureCrypto } from './crypto-utils.js';
 import { runAttestationHook, computeSessionHash } from './attestation.js';
@@ -68,14 +67,12 @@ export async function submitMemory(
     console.warn('wevibe-mcp: wevibe-guard unavailable — proceeding without local scan');
   }
 
-  const sanitizedNotes = ocrSanitize(rawNotes);
-
   if (!membership.modPubkey) {
     return { status: 'error', error: 'no mod_pubkey in membership' };
   }
 
   const dek = generateDek();
-  const plaintextBytes = Buffer.from(sanitizedNotes, 'utf-8');
+  const plaintextBytes = Buffer.from(rawNotes, 'utf-8');
   const salt = crypto.randomBytes(32);
   const plaintextHash = crypto
     .createHash('sha256')
@@ -147,7 +144,7 @@ export async function submitMemory(
     orgId,
     membership.currentEpoch,
     dek,
-    sanitizedNotes.slice(0, 100),
+    rawNotes.slice(0, 100),
   );
 
   return { status: 'pending', submissionHash, attestation };
