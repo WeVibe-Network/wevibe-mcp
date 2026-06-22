@@ -8,7 +8,7 @@ import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership } from './types.js';
 import type { MemoryType } from './types.js';
 import { umbralDecryptReencrypted, umbralDeriveEpochKeypair, umbralGenerateKfrag } from './sidecar.js';
-import { hubFetchVerified } from './hub-fetch.js';
+import { HubSignatureError, hubFetchVerified, hubFetchVerifiedWithKey } from './hub-fetch.js';
 import { HUB_URL } from './config.js';
 import { hkdfSync } from 'node:crypto';
 
@@ -37,11 +37,16 @@ interface HubKeyEnvelopeResponse {
   mod_envelope: string | null;
 }
 
+interface HubServingAddressResponse {
+  response_pubkey?: string;
+}
+
 interface EpochManifestResponse {
   umbral_pk?: string;
 }
 
 const epochUmbralPkCache = new Map<string, string>();
+const hubResponsePubkeyCache = new Map<string, Promise<string>>();
 const UMBRAL_EPOCH_SEED_LEN_BYTES = 32;
 
 function epochUmbralSeed(masterKey: Uint8Array, epoch: number): Buffer {
@@ -67,7 +72,6 @@ export interface QueryMemoryRequest {
   limit: number;
   relevanceFloor?: number;
   surfaceBudget?: number;
-  agentSig: string;
 }
 
 export interface QueryMemoryResponse {
@@ -133,9 +137,16 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
     limit: params.limit,
     relevance_floor: params.relevanceFloor,
     surface_budget: params.surfaceBudget,
-    agent_sig: params.agentSig,
     pre_pubkey: prePubkey,
   };
+  const bodyText = JSON.stringify(requestBody);
+
+  const identity = await loadIdentity();
+  if (!identity) {
+    throw new Error('no identity in keychain');
+  }
+  const bodySignatureBytes = sign(identity.edPrivkey, new TextEncoder().encode(bodyText));
+  const bodySignatureHex = Buffer.from(bodySignatureBytes).toString('hex');
 
   console.error(
     '[recall] hub query request org=%s hubUrl=%s vector_len=%d keyword_count=%d embedding_model_id=%s limit=%d pre_pubkey_present=%s',
@@ -150,8 +161,8 @@ export async function queryOrgMemories(params: QueryMemoryRequest): Promise<Quer
 
   const response = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/query`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body: JSON.stringify(requestBody),
+    headers: { 'Content-Type': 'application/json', ...headers, 'X-Agent-Signature': bodySignatureHex },
+    body: bodyText,
   });
 
   console.error('[recall] hub query response org=%s hubUrl=%s status=%d', params.orgId, params.hubUrl, response.res.status);
@@ -229,6 +240,43 @@ async function fetchKeyEnvelope(
   }
 }
 
+async function getHubResponsePubkey(hubUrl: string): Promise<string> {
+  const cached = hubResponsePubkeyCache.get(hubUrl);
+  if (cached) {
+    return cached;
+  }
+
+  const fetchPromise = (async (): Promise<string> => {
+    // This bootstrap endpoint self-reports the key used for response signatures, so this first fetch cannot itself be signature-verified.
+    const response = await fetch(`${hubUrl}/v1/hub/serving-address`);
+    if (!response.ok) {
+      throw new Error(`hub returned ${response.status} for serving address`);
+    }
+
+    let data: HubServingAddressResponse;
+    try {
+      data = await response.json() as HubServingAddressResponse;
+    } catch {
+      throw new Error('malformed hub serving-address response');
+    }
+
+    const responsePubkey = data.response_pubkey?.trim() ?? '';
+    if (!responsePubkey) {
+      throw new Error('hub response_pubkey missing from /v1/hub/serving-address response');
+    }
+
+    return responsePubkey;
+  })();
+
+  hubResponsePubkeyCache.set(hubUrl, fetchPromise);
+  try {
+    return await fetchPromise;
+  } catch (error) {
+    hubResponsePubkeyCache.delete(hubUrl);
+    throw error;
+  }
+}
+
 function packEpochKeyPair(epoch: number, key: Uint8Array): Uint8Array {
   const buf = new Uint8Array(36);
   const view = new DataView(buf.buffer);
@@ -247,24 +295,31 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
 
   const { pubkeyHex, headers } = await buildWeVibeSignedAuth();
 
-  let response: Response;
+  let response: Awaited<ReturnType<typeof hubFetchVerifiedWithKey>>;
   try {
-    // Non-org-scoped route: no single org hub_response_pubkey applies.
-    response = await fetch(
+    const hubResponsePubkey = await getHubResponsePubkey(hubUrl);
+    response = await hubFetchVerifiedWithKey(
+      hubResponsePubkey,
       `${hubUrl}/v1/members/${pubkeyHex}/orgs`,
       { headers },
     );
   } catch (e) {
+    if (e instanceof HubSignatureError) {
+      throw e;
+    }
+    if (!(e instanceof TypeError)) {
+      throw e;
+    }
     throw new Error(`hub unavailable (${hubUrl}): ${e}`);
   }
 
-  if (!response.ok) {
-    throw new Error(`hub returned ${response.status} for member orgs list`);
+  if (!response.res.ok) {
+    throw new Error(`hub returned ${response.res.status} for member orgs list`);
   }
 
   let data: HubMemberOrgsResponse;
   try {
-    data = await response.json() as HubMemberOrgsResponse;
+    data = response.json<HubMemberOrgsResponse>();
   } catch {
     throw new Error('malformed hub response');
   }

@@ -2,11 +2,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 
-export type RiskAppetite = 'lowest' | 'neutral';
 export type ProviderPolicy = 'unrestricted' | 'local_only' | 'allowlist';
 
 const CONFIG_PATH = join(homedir(), '.wevibe', 'plugin-config.json');
-const RISK_APPETITES: readonly RiskAppetite[] = ['lowest', 'neutral'];
 const PROVIDER_POLICIES: readonly ProviderPolicy[] = ['unrestricted', 'local_only', 'allowlist'];
 
 function ensureDir(filePath: string): void {
@@ -66,19 +64,6 @@ function assertAllowedValue<K extends string>(
 function setConfigValue<K extends string>(key: string, value: K): void {
   const updated = { ...readConfig(), [key]: value };
   writeConfig(updated);
-}
-
-export function getRiskAppetite(): RiskAppetite {
-  return getStringValue('risk_appetite', RISK_APPETITES, 'neutral');
-}
-
-export function setRiskAppetite(value: RiskAppetite): void {
-  assertAllowedValue(
-    `invalid risk_appetite: ${value}; must be "lowest" or "neutral"`,
-    value,
-    RISK_APPETITES,
-  );
-  setConfigValue('risk_appetite', value);
 }
 
 export function getProviderPolicy(): ProviderPolicy {

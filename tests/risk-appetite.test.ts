@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { getRiskAppetite, setRiskAppetite, type RiskAppetite } from '../src/risk-appetite.js';
+import { getProviderPolicy, setProviderPolicy } from '../src/risk-appetite.js';
 
 const TEST_DIR = join(homedir(), '.wevibe-test-co242');
 const TEST_CONFIG = join(TEST_DIR, 'plugin-config.json');
 
 const ORIG_CONFIG = join(homedir(), '.wevibe', 'plugin-config.json');
 
-describe('risk-appetite', () => {
+describe('provider-policy', () => {
   beforeEach(() => {
     mkdirSync(TEST_DIR, { recursive: true });
   });
@@ -19,47 +19,47 @@ describe('risk-appetite', () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it('returns neutral when file does not exist', () => {
+  it('returns unrestricted when file does not exist', () => {
     const backup = existsSync(ORIG_CONFIG) ? readFileSync(ORIG_CONFIG, 'utf-8') : null;
     try {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
-      expect(getRiskAppetite()).toBe('neutral');
+      expect(getProviderPolicy()).toBe('unrestricted');
     } finally {
       if (backup !== null) writeFileSync(ORIG_CONFIG, backup);
     }
   });
 
-  it('returns neutral when file has unrelated content', () => {
+  it('returns unrestricted when file has unrelated content', () => {
     writeFileSync(TEST_CONFIG, JSON.stringify({ unrelated: true }));
     const backup = existsSync(ORIG_CONFIG) ? readFileSync(ORIG_CONFIG, 'utf-8') : null;
     try {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
       writeFileSync(ORIG_CONFIG, JSON.stringify({ unrelated: true }));
-      expect(getRiskAppetite()).toBe('neutral');
+      expect(getProviderPolicy()).toBe('unrestricted');
     } finally {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
       if (backup !== null) writeFileSync(ORIG_CONFIG, backup);
     }
   });
 
-  it('returns lowest when explicitly set', () => {
+  it('returns local_only when explicitly set', () => {
     const backup = existsSync(ORIG_CONFIG) ? readFileSync(ORIG_CONFIG, 'utf-8') : null;
     try {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
-      setRiskAppetite('lowest');
-      expect(getRiskAppetite()).toBe('lowest');
+      setProviderPolicy('local_only');
+      expect(getProviderPolicy()).toBe('local_only');
     } finally {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
       if (backup !== null) writeFileSync(ORIG_CONFIG, backup);
     }
   });
 
-  it('returns neutral when explicitly set', () => {
+  it('returns allowlist when explicitly set', () => {
     const backup = existsSync(ORIG_CONFIG) ? readFileSync(ORIG_CONFIG, 'utf-8') : null;
     try {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
-      setRiskAppetite('neutral');
-      expect(getRiskAppetite()).toBe('neutral');
+      setProviderPolicy('allowlist');
+      expect(getProviderPolicy()).toBe('allowlist');
     } finally {
       if (existsSync(ORIG_CONFIG)) unlinkSync(ORIG_CONFIG);
       if (backup !== null) writeFileSync(ORIG_CONFIG, backup);
@@ -67,7 +67,7 @@ describe('risk-appetite', () => {
   });
 
   it('rejects invalid value', () => {
-    expect(() => (setRiskAppetite as (v: string) => void)('invalid')).toThrow();
-    expect(() => (setRiskAppetite as (v: string) => void)('')).toThrow();
+    expect(() => (setProviderPolicy as (v: string) => void)('invalid')).toThrow();
+    expect(() => (setProviderPolicy as (v: string) => void)('')).toThrow();
   });
 });

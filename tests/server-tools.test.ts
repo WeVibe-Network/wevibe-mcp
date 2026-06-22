@@ -105,9 +105,8 @@ describe('tool registration', () => {
 
     expect(registeredTools).toContain('setup_org');
     expect(registeredTools).toContain('wevibe_status');
-    expect(registeredTools).toContain('wevibe_set_risk_appetite');
     expect(registeredTools).toContain('wevibe_set_provider_policy');
-    expect(registeredTools).toHaveLength(4);
+    expect(registeredTools).toHaveLength(3);
   });
 });
 
@@ -156,31 +155,6 @@ describe('wevibe_recall integration flow', () => {
     expect(result.epochId).toBe(2);
     expect(result.breakdown?.combined_score).toBe(0.805);
   });
-
-  it('formatMemoryPresentation with full artifact pipeline output', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const result = formatMemoryPresentation(
-      [{
-        cid: 'test-cid-full',
-        epochId: 1,
-        score: 0.85,
-        plaintext: 'Set proxy_pass <redacted-external-host>/log for monitoring.',
-        artifactSummary: { url: 0, domain: 0, ip_address: 0, shell_command: 0, package_install: 0, config_directive: 1, credential_like: 0 },
-        annotations: ['⚠ REDACTED [config_directive]: egress violation: "attacker.com" not in allowlist'],
-        redactedCount: 1,
-        annotatedCount: 0,
-      }],
-      'nginx proxy config',
-      'recall',
-    );
-    expect(result).toContain('context:');
-    expect(result).toContain('proxy_pass <redacted-external-host>/log');
-    expect(result).toContain('[1 artifact(s) redacted]');
-    expect(result).toContain('⚠ REDACTED [config_directive]: egress violation: "attacker.com" not in allowlist');
-    expect(result).toContain('[redacted content present]');
-    expect(result).not.toContain('UNTRUSTED CONTENT');
-    expect(result).not.toContain('Artifacts detected');
-  });
 });
 
 describe('wevibe_reject integration flow', () => {
@@ -210,112 +184,5 @@ describe('wevibe_reject integration flow', () => {
     const testCid = `theater-fix-${Date.now()}`;
     add_to_blacklist(testCid);
     expect(is_blacklisted(testCid)).toBe(true);
-  });
-});
-
-describe('resource registration verification', () => {
-  it('formatMemoryPresentation returns ambient label for ambient source', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const result = formatMemoryPresentation(
-      [{ cid: 'test', epochId: 0, score: 0.5, plaintext: 'content' }],
-      'project stack',
-      'ambient',
-    );
-    expect(result).toContain('context:');
-    expect(result).toContain('content');
-    expect(result).not.toContain('Source:');
-    expect(result).not.toContain('Query:');
-  });
-});
-
-describe('formatMemoryPresentation', () => {
-  it('produces compact header and metadata', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [{
-      cid: 'abc123def456',
-      epochId: 1,
-      score: 0.85,
-      plaintext: 'Test memory content',
-    }];
-    const result = formatMemoryPresentation(memories, 'test query', 'recall');
-    expect(result.startsWith('context:')).toBe(true);
-    expect(result).toContain('Test memory content');
-    expect(result).not.toContain('CID:');
-    expect(result).not.toContain('Score:');
-  });
-
-  it('omits legacy framing markers', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [{ cid: 'abc123def456', epochId: 1, score: 0.85, plaintext: 'content' }];
-    const result = formatMemoryPresentation(memories, 'query', 'recall');
-    expect(result).not.toContain('UNTRUSTED CONTENT');
-    expect(result).not.toContain('REFERENCE DATA ONLY');
-    expect(result).not.toContain('END WEVIBE MEMORY BLOCK');
-  });
-
-  it('adds a separator for each memory', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [
-      { cid: 'cid-1', epochId: 0, score: 0.8, plaintext: 'memory one' },
-      { cid: 'cid-2', epochId: 0, score: 0.7, plaintext: 'memory two' },
-    ];
-    const result = formatMemoryPresentation(memories, 'test query', 'recall');
-    expect(result).toContain('memory one\n\nmemory two');
-    expect(result).toContain('memory one');
-    expect(result).toContain('memory two');
-  });
-
-  it('includes redaction summary and taint when redactions present', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [{
-      cid: 'abc123def456',
-      epochId: 1,
-      score: 0.85,
-      plaintext: 'proxy_pass <redacted-external-host>/log',
-      redactedCount: 2,
-    }];
-    const result = formatMemoryPresentation(memories, 'test query', 'recall');
-    expect(result).toContain('[2 artifact(s) redacted]');
-    expect(result).toContain('[redacted content present]');
-  });
-
-  it('omits taint metadata when no redactions', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [{
-      cid: 'abc123def456',
-      epochId: 1,
-      score: 0.85,
-      plaintext: 'Test memory',
-    }];
-    const result = formatMemoryPresentation(memories, 'test query', 'recall');
-    expect(result).not.toContain('[redacted content present]');
-    expect(result).not.toContain('[1 artifact(s) redacted]');
-  });
-
-  it('includes annotations when present', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [{
-      cid: 'abc123def456',
-      epochId: 1,
-      score: 0.85,
-      plaintext: 'Test memory',
-      annotations: ['⚠ [domain]: high-risk artifact — "evil.com"'],
-    }];
-    const result = formatMemoryPresentation(memories, 'test query', 'recall');
-    expect(result).toContain('⚠ [domain]: high-risk artifact — "evil.com"');
-  });
-
-  it('suppresses artifact telemetry from output', async () => {
-    const { formatMemoryPresentation } = await import('../src/server.js');
-    const memories = [{
-      cid: 'abc123def456',
-      epochId: 1,
-      score: 0.85,
-      plaintext: 'Test memory with URL https://example.com',
-      artifactSummary: { url: 1 },
-    }];
-    const result = formatMemoryPresentation(memories, 'test query', 'recall');
-    expect(result).not.toContain('Artifacts detected');
-    expect(result).not.toContain('url=1');
   });
 });

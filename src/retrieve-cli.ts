@@ -356,7 +356,6 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         limit: input.limit ?? recallGovernor.recall_limit,
         relevanceFloor: input.relevance_floor ?? recallGovernor.relevance_floor,
         surfaceBudget: input.surface_budget ?? recallGovernor.surface_budget,
-        agentSig: 'stub',
       }),
     );
 

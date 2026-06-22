@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { extractArtifacts } from '../../src/artifact-extract.js';
 import { checkArtifactPolicy } from '../../src/artifact-policy.js';
 import { transformMemoryContent } from '../../src/artifact-transform.js';
-import { formatMemoryPresentation } from '../../src/server.js';
 
 describe('Full recall sanitization pipeline', () => {
 
@@ -13,20 +12,10 @@ describe('Full recall sanitization pipeline', () => {
     const extraction = extractArtifacts(sanitized);
     const policyResults = checkArtifactPolicy(extraction.artifacts, 'local_only', []);
     const transformed = transformMemoryContent(sanitized, policyResults);
-    
-    const output = formatMemoryPresentation(
-      [{ cid: 'test-cid', epochId: 1, score: 0.85, plaintext: transformed.text,
-         artifactSummary: extraction.summary, annotations: transformed.annotations,
-         redactedCount: transformed.redactedCount }],
-      'nginx config', 'recall'
-    );
-    
-    expect(output).toContain('context:');
-    expect(output.toLowerCase()).toContain('client_max_body_size');
-    expect(output.toLowerCase()).toContain('proxy_request_buffering');
-    expect(output).not.toContain('UNTRUSTED CONTENT');
-    expect(output).not.toContain('Artifacts detected');
-    expect(output).not.toContain('[redacted content present]');
+
+    expect(extraction.summary.url).toBe(0);
+    expect(transformed.text.toLowerCase()).toContain('client_max_body_size');
+    expect(transformed.text.toLowerCase()).toContain('proxy_request_buffering');
     expect(transformed.redactedCount).toBe(0);
   });
 
@@ -37,20 +26,12 @@ describe('Full recall sanitization pipeline', () => {
     const extraction = extractArtifacts(sanitized);
     const policyResults = checkArtifactPolicy(extraction.artifacts, 'local_only', []);
     const transformed = transformMemoryContent(sanitized, policyResults);
-    
-    const output = formatMemoryPresentation(
-      [{ cid: 'test-cid-mal', epochId: 1, score: 0.8, plaintext: transformed.text,
-         artifactSummary: extraction.summary, annotations: transformed.annotations,
-         redactedCount: transformed.redactedCount }],
-      'nginx proxy', 'recall'
-    );
-    
-    expect(output).not.toContain('attacker.com');
-    expect(output).toContain('<redacted');
+
+    expect(extraction.summary.url).toBeGreaterThan(0);
+    expect(transformed.text).not.toContain('attacker.com');
+    expect(transformed.text).toContain('<redacted');
     expect(transformed.redactedCount).toBeGreaterThan(0);
-    expect(output).toContain('artifact(s) redacted');
-    expect(output).toContain('[redacted content present]');
-    expect(output.toLowerCase()).toContain('proxy_pass');
+    expect(transformed.text.toLowerCase()).toContain('proxy_pass');
   });
 
   it('pipeline: malicious URL passes through under unrestricted mode (annotated only)', () => {
