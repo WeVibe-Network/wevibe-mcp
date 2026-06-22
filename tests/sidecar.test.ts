@@ -49,9 +49,9 @@ describeSidecar(
     }, 15_000);
 
     it('derives deterministic keypairs for same seed and distinct keypairs for different seeds', async () => {
-      const first = await umbralDeriveEpochKeypair(SEED_ZERO);
-      const second = await umbralDeriveEpochKeypair(SEED_ZERO);
-      const different = await umbralDeriveEpochKeypair(SEED_ONE);
+      const first = await umbralDeriveEpochKeypair(SEED_ONE);
+      const second = await umbralDeriveEpochKeypair(SEED_ONE);
+      const different = await umbralDeriveEpochKeypair(SEED_TWO);
 
       expect(first).toEqual(second);
       expect(different).not.toEqual(first);
@@ -68,6 +68,10 @@ describeSidecar(
       expect(first.publicKeyHex.length % 2).toBe(0);
       expect(second.publicKeyHex.length).toBe(first.publicKeyHex.length);
       expect(different.publicKeyHex.length).toBe(first.publicKeyHex.length);
+    }, 15_000);
+
+    it('rejects all-zero seed because canonical scalar derivation requires a valid secp256k1 secret key', async () => {
+      await expect(umbralDeriveEpochKeypair(SEED_ZERO)).rejects.toThrow(/^sidecar derive-epoch-keypair failed:/);
     }, 15_000);
 
     it('rejects invalid seed input for non-hex, odd-length, and wrong-length values', async () => {
@@ -102,7 +106,7 @@ describeSidecar(
     }, 15_000);
 
     it('encrypts plaintext hex and returns capsule/ciphertext hex strings', async () => {
-      const epoch = await umbralDeriveEpochKeypair(SEED_ZERO);
+      const epoch = await umbralDeriveEpochKeypair(SEED_ONE);
       const plaintextHex = Buffer.from('wevibe-sidecar-edge-case', 'utf-8').toString('hex');
 
       const out = await umbralEncrypt(epoch.publicKeyHex, plaintextHex);
