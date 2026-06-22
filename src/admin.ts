@@ -44,8 +44,10 @@ import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } fro
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
 import { setLlmProvider } from './llm.js';
 import { createOllamaProvider } from './llm-ollama.js';
+import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
+import { loadLlmConfig } from './embedding-config.js';
 import { base32Decode, pairingIdFromSecret, decryptPairedIdentitySeed } from './pair-crypto.js';
-import { HUB_URL, CHAIN_REST_URL, DASHBOARD_URL, OLLAMA_URL, EXTRACTION_MODEL } from './config.js';
+import { HUB_URL, CHAIN_REST_URL, DASHBOARD_URL } from './config.js';
 import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js';
 import { isBiometricAvailable } from './biometric.js';
 import { resolveAllOrgsOnce } from './hub-resolver.js';
@@ -166,6 +168,23 @@ async function getMembership(orgId?: string) {
     return m;
   }
   return memberships[0];
+}
+
+function configureModerationLlmProvider(): void {
+  const llmConfig = (() => {
+    try {
+      return loadLlmConfig();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      die(`LLM provider not configured in dashboard settings: ${message}`);
+    }
+  })();
+
+  if (llmConfig.provider === 'ollama') {
+    setLlmProvider(createOllamaProvider(llmConfig.baseUrl, llmConfig.model));
+  } else {
+    setLlmProvider(createOpenAICompatibleProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.apiKey));
+  }
 }
 
 async function cmdSetupIdentity(flags: Record<string, string> = {}) {
@@ -572,6 +591,8 @@ async function cmdModerateApprove(flags: Record<string, string>) {
   const membership = await getMembership(flags['org']);
   if (membership.role !== 'leader' && !membership.canModerate) die(`Role "${membership.role}" cannot approve.`);
 
+  configureModerationLlmProvider();
+
   const items = await fetchPendingQueue(HUB_URL, membership.orgId);
   const item = items.find(i => i.submission_hash === hash);
   if (!item) die(`Submission ${hash} not found in queue.`);
@@ -796,8 +817,6 @@ async function main() {
   if (command === 'resolve-endpoints') {
     return cmdResolveEndpoints(flags);
   }
-
-  setLlmProvider(createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL));
 
   const storedPassphrase = await retrievePassphraseFromKeychain();
   if (storedPassphrase) {

@@ -10,14 +10,13 @@ import { buildWeVibeSignedAuth } from './auth.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
 import { buildOrgCryptoSetup, persistOrgKeys, provisionRecall } from './org-client.js';
-import { EXTRACTION_MODEL, HTTP_HOST, HUB_URL, OLLAMA_URL } from './config.js';
+import { HTTP_HOST, HUB_URL, OLLAMA_URL } from './config.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 import { DEFAULT_EXTRACTION_NUM_CTX, extractMemories, getExtractionPrompt } from './extraction.js';
 import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.js';
 import { createOllamaProvider } from './llm-ollama.js';
 import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
 import { exportIdentityPairing } from './pairing-export.js';
-import type { LlmProvider } from './llm.js';
 import {
   buildCanonicalServeBodyBytes,
   deriveOrgServeKeyFromIdentitySeed,
@@ -35,7 +34,6 @@ const BUILD_STAMP = (() => {
   }
 })();
 
-let extractionProvider: LlmProvider | null = null;
 let httpServerInstance: import('node:http').Server | null = null;
 let denialFlushTimer: NodeJS.Timeout | null = null;
 let recallModeWarningEmitted = false;
@@ -57,13 +55,6 @@ function purgeExpiredOrgSetups(): void {
       pendingOrgSetups.delete(id);
     }
   }
-}
-
-function getExtractionProvider(): LlmProvider {
-  if (!extractionProvider) {
-    extractionProvider = createOllamaProvider(OLLAMA_URL, EXTRACTION_MODEL);
-  }
-  return extractionProvider;
 }
 
 export async function readBody(req: IncomingMessage): Promise<string> {
@@ -380,9 +371,17 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     ? body.project_context.stack.filter((item): item is string => typeof item === 'string')
     : [];
 
-  const modelOverride = typeof body.model === 'string' && body.model.trim()
+  const extractionModel = typeof body.model === 'string'
     ? body.model.trim()
-    : undefined;
+    : '';
+  if (extractionModel.length === 0) {
+    jsonResponse(res, 400, {
+      error: 'extraction model not configured — set it in Settings',
+      code: 'extraction_model_not_configured',
+    });
+    return;
+  }
+
   const ollamaUrlOverride = typeof body.ollama_url === 'string' && body.ollama_url.trim()
     ? body.ollama_url.trim()
     : undefined;
@@ -408,12 +407,10 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   const provider = providerOverride && providerOverride !== 'ollama'
     ? createOpenAICompatibleProvider(
       baseUrlOverride ?? 'https://openrouter.ai/api/v1',
-      modelOverride ?? EXTRACTION_MODEL,
+      extractionModel,
       apiKeyOverride ?? '',
     )
-    : (modelOverride
-      ? createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, modelOverride)
-      : getExtractionProvider());
+    : createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, extractionModel);
 
   try {
     const result = await extractMemories(
@@ -448,7 +445,6 @@ async function handleExtractDefaults(req: IncomingMessage, res: ServerResponse):
   jsonResponse(res, 200, {
     prompt: getExtractionPrompt(),
     num_ctx: DEFAULT_EXTRACTION_NUM_CTX,
-    model: EXTRACTION_MODEL,
     recommended_id: RECOMMENDED_PRESET_ID,
     presets: EXTRACTION_PRESETS.map(p => ({
       id: p.id,

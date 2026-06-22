@@ -98,7 +98,7 @@ Common environment variables:
 - `WEVIBE_CHAIN_REST_URL` — chain REST endpoint used for resolver workflows.
 - `WEVIBE_DASHBOARD_URL` — dashboard base URL used by pairing/adoption flows.
 - `WEVIBE_OLLAMA_URL` / `OLLAMA_HOST` — local model + embedding endpoints.
-- `WEVIBE_EXTRACTION_MODEL` — extraction model ID.
+- Extraction model — configured in Dashboard Settings UI (required, no default).
 - `WEVIBE_EMBEDDING_MODEL` — embedding model ID.
 - `WEVIBE_HTTP_HOST` — bind host for local HTTP API (default loopback).
 - `WEVIBE_DASHBOARD_PORT` — local dashboard server port.

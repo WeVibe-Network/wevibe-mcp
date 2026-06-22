@@ -10,7 +10,6 @@ export const DASHBOARD_URL = process.env.WEVIBE_DASHBOARD_URL ?? 'https://app.we
 export const OLLAMA_URL = process.env.WEVIBE_OLLAMA_URL ?? 'http://localhost:11434';
 export const HTTP_HOST = process.env.WEVIBE_HTTP_HOST ?? '127.0.0.1';
 export const DASHBOARD_PORT = process.env.WEVIBE_DASHBOARD_PORT ? Number(process.env.WEVIBE_DASHBOARD_PORT) : 4451;
-export const EXTRACTION_MODEL = process.env.WEVIBE_EXTRACTION_MODEL ?? 'qwen3:4b';
 export const EMBEDDING_BASE_URL = process.env.WEVIBE_EMBEDDING_BASE_URL ?? 'http://127.0.0.1:1234/v1';
 export const EMBEDDING_API_KEY = process.env.WEVIBE_EMBEDDING_API_KEY ?? 'lm-studio';
 export const EMBEDDING_MODEL = process.env.WEVIBE_EMBEDDING_MODEL ?? 'nomic-embed-text:v1.5';
