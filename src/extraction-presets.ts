@@ -20,14 +20,17 @@ const STRATEGY_GUARDRAIL_MAX = readPrompt('memory-extraction/strategy-guardrail-
 
 const STRATEGY_BALANCED_RELIABLE = readPrompt('memory-extraction/strategy-balanced-reliable.md');
 
+const STRATEGY_E2_EVIDENCE_BOUNDED = readPrompt('memory-extraction/strategy-e2-evidence-bounded.md');
+
 export interface ExtractionPreset { id: string; label: string; goal: string; recommended: boolean; system_prompt: string; }
 
 export const EXTRACTION_PRESETS: ExtractionPreset[] = [
   { id: 'factual-strict',    label: 'Factual-Strict',    goal: 'Minimize preference, maximize specificity (fewer, sharper memories).', recommended: false, system_prompt: STRATEGY_FACTUAL_STRICT + '\n\n' + GATES + '\n\n' + EXEMPLAR + '\n\n' + CONTRACT },
   { id: 'guardrail-max',     label: 'Guardrail-Max',     goal: 'Maximize high-quality negative signals (DND footguns + fixes).',      recommended: false, system_prompt: STRATEGY_GUARDRAIL_MAX + '\n\n' + GATES + '\n\n' + EXEMPLAR + '\n\n' + CONTRACT },
-  { id: 'balanced-reliable', label: 'Balanced-Reliable', goal: 'Balanced, schema-stable, reliable + continuity (recommended).',       recommended: true,  system_prompt: STRATEGY_BALANCED_RELIABLE + '\n\n' + GATES + '\n\n' + EXEMPLAR + '\n\n' + CONTRACT },
+  { id: 'balanced-reliable', label: 'Balanced-Reliable', goal: 'Balanced, schema-stable, reliable + continuity (recommended).',       recommended: false, system_prompt: STRATEGY_BALANCED_RELIABLE + '\n\n' + GATES + '\n\n' + EXEMPLAR + '\n\n' + CONTRACT },
+  { id: 'sxe-e2-evidence-bounded', label: 'E2 — Evidence-Bounded (§5.2)', goal: 'Keep only memories grounded in explicit transcript evidence; reject unsupported (E2/§5.2). Output reconciled to the live memory contract.', recommended: true, system_prompt: STRATEGY_E2_EVIDENCE_BOUNDED + '\n\n' + GATES + '\n\n' + EXEMPLAR + '\n\n' + CONTRACT },
 ];
 
-export const RECOMMENDED_PRESET_ID = 'balanced-reliable';
+export const RECOMMENDED_PRESET_ID = 'sxe-e2-evidence-bounded';
 
 export function getRecommendedPreset(): ExtractionPreset { return EXTRACTION_PRESETS.find(p => p.recommended) ?? EXTRACTION_PRESETS[EXTRACTION_PRESETS.length - 1]; }

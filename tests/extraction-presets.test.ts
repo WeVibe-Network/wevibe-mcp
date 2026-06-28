@@ -8,11 +8,12 @@ import {
 
 describe('extraction presets', () => {
   it('exports the expected preset ids and a single recommended preset', () => {
-    expect(EXTRACTION_PRESETS).toHaveLength(3);
+    expect(EXTRACTION_PRESETS).toHaveLength(4);
     expect(EXTRACTION_PRESETS.map(p => p.id)).toEqual([
       'factual-strict',
       'guardrail-max',
       'balanced-reliable',
+      'sxe-e2-evidence-bounded',
     ]);
 
     const recommendedPresets = EXTRACTION_PRESETS.filter(p => p.recommended);

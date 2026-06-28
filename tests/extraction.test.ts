@@ -111,6 +111,34 @@ describe('extractMemories', () => {
     expect(result.memories[0].implement).toContain('keepAliveTimeout');
   });
 
+  it('accepts fused E2 contract-shaped output and routes keywords', async () => {
+    const provider = createMockLlmProvider(() => JSON.stringify([
+      {
+        implement: 'Set X because Y; applies when Z.',
+        context: 'node 20 mcp daemon',
+        dnd: 'Do not set WEVIBE_MCP_HTTP_ONLY unset or the daemon respawn-loops.',
+        stack: ['node', 'mcp'],
+        memory_type: 'memory',
+        preference_confidence: 0.1,
+        keywords: [{ keyword: 'mcp' }, { keyword: 'daemon' }],
+      },
+    ]));
+
+    const result = await extractMemories(
+      'MCP daemon session transcript',
+      { name: 'test-project', stack: ['node', 'mcp'], directory: '/Users/test' },
+      { provider },
+    );
+
+    expect(result.memories).toHaveLength(1);
+    const [memory] = result.memories;
+    expect(memory.implement.length).toBeGreaterThan(0);
+    expect(memory.memory_type).toBe('memory');
+    expect(memory.keywords.suggestions.map(keyword => keyword.keyword)).toEqual(
+      expect.arrayContaining(['mcp', 'daemon']),
+    );
+  });
+
   it('parses a wrapped {memories:[...]} response', async () => {
     const provider = createMockLlmProvider(() => JSON.stringify({
       memories: [
