@@ -88,7 +88,7 @@ interface PendingDenial {
 2. **On POST /v1/denials** — `flushDenials()` called fire-and-forget after queuing
 3. **60-second timer** — periodic flush at server startup
 
-**Hub flush:** `flushDenials()` POSTs to `${HUB_URL}/v1/orgs/${orgId}/denials` with WeVibe-Signed auth. Body: `{ memory_hash, nullifier: denialId, reason }`. Success (2xx) and 4xx remove from queue; 5xx and network failures leave in queue for retry.
+**Hub flush:** `flushDenials()` POSTs to `${HUB_URL}/v1/orgs/${orgId}/denials` with WeVibe-Signed auth. Body: `{ org_id: denial.org_id, epoch_id: denial.epoch_id, memory_hash: memoryHashHex, serve_key_pubkey: serveKey.pubHex, serve_sig: serveSigHex, nonce: nonceHex, serve_fingerprint: serveFingerprintHex, reason: denial.reason ?? '' }`. Success (2xx) and 4xx remove from queue; 5xx and network failures leave in queue for retry.
 
 ### Dashboard Quorum Voting Bridge (CO-265)
 
