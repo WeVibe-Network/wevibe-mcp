@@ -121,7 +121,10 @@ describe('POST /v1/serves', () => {
   });
 
   it('POST /v1/serves with valid token + valid body → hub returns 200 → 200', async () => {
-    const mockHubResponse = { status: 'recorded', nullifier: 'test-nullifier-123' };
+    const mockHubResponse = {
+      status: 'recorded',
+      serve_fingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    };
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,

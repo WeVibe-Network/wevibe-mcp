@@ -138,7 +138,7 @@ describe('HTTP auth on all endpoints', () => {
       const reqBody = body ?? (url === '/v1/recall'
         ? JSON.stringify({ query: 'test' })
         : url === '/v1/serves'
-          ? JSON.stringify({ org_id: 'org-123', memory_hash: 'QmHash', nullifier: 'null' })
+          ? JSON.stringify({ org_id: 'org-123', memory_hash: 'QmHash', serve_key_pubkey: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' })
           : JSON.stringify({ org_id: 'org-123', memory_hash: 'QmHash', reason: 'incorrect' }));
 
       const req = createMockRequest(method, url, {
