@@ -60,7 +60,7 @@ Environment overrides:
 
 - No built-in escalation path when moderator queue is saturated.
 - Guard gRPC endpoint currently unauthenticated (relies on localhost).
-- Serve attestation batching is in-memory; add durable queue for crash recovery.
+- Serve receipt batching is in-memory; add durable queue for crash recovery.
 
 ## Sprint 28 Updates (CO-211)
 

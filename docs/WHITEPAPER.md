@@ -4,7 +4,7 @@ Version: 1.0 · Sprint 24
 
 ## Abstract
 
-`wevibe-mcp` implements the Model Context Protocol server that connects coding agents to WeVibe’s encrypted memory. It mediates contribution, recall, and rejection flows while orchestrating guard scans, SDK encryption, and serve attestation batching.
+`wevibe-mcp` implements the Model Context Protocol server that connects coding agents to WeVibe’s encrypted memory. It mediates contribution, recall, and rejection flows while orchestrating guard scans, SDK encryption, and serve receipt batching.
 
 ## Key Objectives
 
@@ -16,7 +16,7 @@ Version: 1.0 · Sprint 24
 
 | Tool | Description |
 |------|-------------|
-| `wevibe_recall` | Retrieves candidate memories, runs guard scans, renders approval cards, queues serve attestations. |
+| `wevibe_recall` | Retrieves candidate memories, runs guard scans, renders approval cards, queues serve receipts. |
 | `wevibe_contribute` | Streams session buffers, triggers guard scans, encrypts via wevibe-sdk, and submits commitments. |
 | `wevibe_reject` | Records negative feedback and updates local blacklist/quarantine hints. |
 
@@ -24,7 +24,7 @@ Version: 1.0 · Sprint 24
 
 - Agent ↔ MCP communication occurs over stdio pipes (MCP spec) with optional TLS when using socket transport.
 - All secret material (DEKs, epoch keys) stays within wevibe-sdk; MCP only handles ciphertext envelopes.
-- Serve attestations are signed by the org member key stored locally.
+- Serve receipts are signed by the org member key stored locally.
 
 ## Workflow Hooks
 

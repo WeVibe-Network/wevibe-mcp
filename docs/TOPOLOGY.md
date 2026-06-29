@@ -267,7 +267,7 @@ This is separate from the Ed25519 identity flow (which uses `wevibe-network` ser
 
 - Multiple agents can connect to a single wevibe-mcp daemon; concurrency handled via async streams.
 - Guard gRPC connections pooled to avoid per-request process spawn overhead.
-- Serve attestation queue flushes in batches (configurable `attestationBatchSize`).
+- Serve receipt queue flushes in batches (configurable `attestationBatchSize`).
 
 ## Signed Canonical Body — Contribution Path (CO-029)
 
