@@ -39,20 +39,13 @@ describe('embedRetrievalCard', () => {
   });
 
   it('returns vector/card/model and calls computeLocalEmbedding as document embedding', async () => {
-    const chat = vi.fn(async () => 'When writing SQL updates safely in API handlers.');
-
-    const result = await embedRetrievalCard(
-      structuredMemory,
-      chat,
-      { strictAnticipated: true },
-    );
+    const result = await embedRetrievalCard(structuredMemory);
 
     const expectedCardText = [
       'Applies when: SQL mutation handlers',
       'Stack: TypeScript, PostgreSQL',
       'Implement: Use parameterized SQL queries.',
       'Avoid: Build SQL with string concatenation.',
-      'Anticipated need: When writing SQL updates safely in API handlers.',
     ].join('\n');
 
     expect(result.vector).toHaveLength(3072);
@@ -72,10 +65,8 @@ describe('embedRetrievalCard', () => {
       throw loadError;
     });
 
-    const chat = vi.fn(async () => 'Unused in this scenario');
-
     await expect(
-      embedRetrievalCard(structuredMemory, chat, { strictAnticipated: false }),
+      embedRetrievalCard(structuredMemory),
     ).rejects.toBe(loadError);
 
     expect(computeLocalEmbedding).not.toHaveBeenCalled();

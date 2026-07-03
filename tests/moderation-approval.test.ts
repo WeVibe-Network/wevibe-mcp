@@ -2,12 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { approveSubmission } from '../src/moderation.js';
 import { computeLocalEmbedding } from '../src/embedding.js';
 import { loadEmbeddingConfig } from '../src/embedding-config.js';
-import { getLlmProvider } from '../src/llm.js';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
-
-const mockChat = vi.fn();
 
 const mockEmbeddingConfig = {
   baseUrl: 'http://test.local/v1',
@@ -24,10 +21,6 @@ vi.mock('../src/embedding.js', () => ({
 
 vi.mock('../src/embedding-config.js', () => ({
   loadEmbeddingConfig: vi.fn(),
-}));
-
-vi.mock('../src/llm.js', () => ({
-  getLlmProvider: vi.fn(),
 }));
 
 vi.mock('../src/crypto.js', () => ({
@@ -105,9 +98,6 @@ describe('moderation approval flow', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockReset();
-    mockChat.mockReset();
-    mockChat.mockResolvedValue('When this memory is needed during moderation review.');
-    vi.mocked(getLlmProvider).mockReturnValue({ chat: mockChat } as ReturnType<typeof getLlmProvider>);
     mockEmbeddingVector = buildMockVector(19);
     vi.mocked(computeLocalEmbedding).mockResolvedValue(mockEmbeddingVector);
     vi.mocked(loadEmbeddingConfig).mockReturnValue(mockEmbeddingConfig);
@@ -136,10 +126,10 @@ describe('moderation approval flow', () => {
     expect(result.similarMemories).toEqual([]);
   });
 
-  it('uses pending item memory_type and ignores legacy override argument', async () => {
+  it('uses pending item memory_type', async () => {
     queueManifestAndApproveResponses();
 
-    await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership, 'negative_signal');
+    await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
 
     const body = findApproveCallBody();
     expect(body.memory_type).toBe('memory');

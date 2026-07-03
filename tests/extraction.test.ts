@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { extractMemories, computeEmbedding, extractKeywords } from '../src/extraction.js';
-import { setLlmProvider } from '../src/llm.js';
 import type { LlmChatOptions, LlmProvider } from '../src/llm.js';
 
 vi.mock('../src/embedding.js', () => ({
@@ -48,7 +47,7 @@ describe('extractMemories', () => {
   });
 
   it('returns structured memories from a session with learnings', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify([
         {
           implement: 'Use ioredis for Redis Cluster and persist slot metadata across reconnects to prevent timeout storms.',
@@ -58,11 +57,12 @@ describe('extractMemories', () => {
           memory_type: 'memory',
         },
       ])
-    ));
+    );
 
     const result = await extractMemories(
       'Working on Redis connection issues. Set up pool but getting timeouts...',
-      { name: 'test-project', stack: ['nodejs', 'redis'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['nodejs', 'redis'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(1);
@@ -163,7 +163,7 @@ describe('extractMemories', () => {
   });
 
   it('keeps memories classified as memory', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify([
         {
           implement: 'Keep TLS hostname validation enabled in staging to catch certificate chain regressions early.',
@@ -173,11 +173,12 @@ describe('extractMemories', () => {
           memory_type: 'memory',
         },
       ])
-    ));
+    );
 
     const result = await extractMemories(
       'TLS troubleshooting session',
-      { name: 'test-project', stack: ['nodejs', 'tls'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['nodejs', 'tls'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(1);
@@ -185,7 +186,7 @@ describe('extractMemories', () => {
   });
 
   it('keeps implementation-style memories classified as memory', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify([
         {
           implement: 'Pin Prisma query engine binaries to linux-musl for Alpine-based containers to avoid runtime binary mismatch failures.',
@@ -195,11 +196,12 @@ describe('extractMemories', () => {
           memory_type: 'memory',
         },
       ])
-    ));
+    );
 
     const result = await extractMemories(
       'Prisma deployment investigation',
-      { name: 'test-project', stack: ['prisma', 'docker'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['prisma', 'docker'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(1);
@@ -208,7 +210,7 @@ describe('extractMemories', () => {
 
   it('drops memories with invalid memory_type', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify([
         {
           implement: 'Some invalidly typed memory.',
@@ -218,11 +220,12 @@ describe('extractMemories', () => {
           memory_type: 'preference',
         },
       ])
-    ));
+    );
 
     const result = await extractMemories(
       'Session with invalid type',
-      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(0);
@@ -232,7 +235,7 @@ describe('extractMemories', () => {
 
   it('drops memories with missing memory_type', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify([
         {
           implement: 'Memory missing type should be dropped.',
@@ -241,11 +244,12 @@ describe('extractMemories', () => {
           stack: ['typescript'],
         },
       ])
-    ));
+    );
 
     const result = await extractMemories(
       'Session with missing type',
-      { name: 'test-project', stack: ['typescript'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['typescript'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(0);
@@ -254,7 +258,7 @@ describe('extractMemories', () => {
   });
 
   it('drops memories missing required implement', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify([
         {
           context: 'Node.js service with internal TLS cert rotation.',
@@ -263,11 +267,12 @@ describe('extractMemories', () => {
           memory_type: 'memory',
         },
       ])
-    ));
+    );
 
     const result = await extractMemories(
       'Session where implement was omitted',
       { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(0);
@@ -328,33 +333,34 @@ describe('extractMemories', () => {
   });
 
   it('returns empty array for routine session', async () => {
-    setLlmProvider(createMockLlmProvider(() => '[]'));
+    const provider = createMockLlmProvider(() => '[]');
 
     const result = await extractMemories(
       'Routine commit: updated package.json dependencies',
-      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(0);
   });
 
-  it('returns empty array when LLM provider throws', async () => {
-    setLlmProvider(createMockLlmProvider(() => { throw new Error('network error'); }));
+  it('throws when LLM provider throws', async () => {
+    const provider = createMockLlmProvider(() => { throw new Error('network error'); });
 
-    const result = await extractMemories(
+    await expect(extractMemories(
       'Some coding session content',
-      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' }
-    );
-
-    expect(result.memories).toHaveLength(0);
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      { provider },
+    )).rejects.toThrow('network error');
   });
 
   it('returns empty array on malformed LLM response', async () => {
-    setLlmProvider(createMockLlmProvider(() => 'not valid json'));
+    const provider = createMockLlmProvider(() => 'not valid json');
 
     const result = await extractMemories(
       'Some coding session content',
-      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' }
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      { provider },
     );
 
     expect(result.memories).toHaveLength(0);
@@ -362,14 +368,15 @@ describe('extractMemories', () => {
 
   it('passes user message with project context to LLM', async () => {
     let capturedUserMessage = '';
-    setLlmProvider(createMockLlmProvider((_, user) => {
+    const provider = createMockLlmProvider((_, user) => {
       capturedUserMessage = user;
       return '[]';
-    }));
+    });
 
     await extractMemories(
       'Session about a React performance issue',
-      { name: 'my-web-app', stack: ['react', 'next.js', 'typescript'], directory: '/Users/dev/project' }
+      { name: 'my-web-app', stack: ['react', 'next.js', 'typescript'], directory: '/Users/dev/project' },
+      { provider },
     );
 
     expect(capturedUserMessage).toContain('my-web-app');
@@ -400,7 +407,7 @@ describe('extractKeywords', () => {
   });
 
   it('returns classified keywords with normalized weights summing to 1.0', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify({
         classified: [
           { keyword: 'docker', weight: 0.9 },
@@ -408,12 +415,13 @@ describe('extractKeywords', () => {
         ],
         suggestions: [],
       })
-    ));
+    );
 
     const result = await extractKeywords(
       'Set up a Docker container running PostgreSQL with Kubernetes orchestration.',
       ['docker', 'kubernetes'],
       testVocab,
+      provider,
     );
 
     expect(result.classified).toHaveLength(2);
@@ -425,7 +433,7 @@ describe('extractKeywords', () => {
   });
 
   it('returns suggestions with normalized weights summing to 1.0', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify({
         classified: [],
         suggestions: [
@@ -433,12 +441,13 @@ describe('extractKeywords', () => {
           { keyword: 'reverse_proxy', weight: 0.6, rationale: 'Acts as intermediary for API servers' },
         ],
       })
-    ));
+    );
 
     const result = await extractKeywords(
       'Configured nginx as a load balancer in front of the API servers.',
       ['nginx'],
       testVocab,
+      provider,
     );
 
     expect(result.suggestions).toHaveLength(2);
@@ -449,19 +458,20 @@ describe('extractKeywords', () => {
   });
 
   it('returns classified and suggested keywords with normalized separate distributions', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify({
         classified: [{ keyword: 'nginx', weight: 0.6 }],
         suggestions: [
           { keyword: 'load_balancing', weight: 0.8, rationale: 'Describes the traffic distribution pattern used' },
         ],
       })
-    ));
+    );
 
     const result = await extractKeywords(
       'Configured nginx as a load balancer in front of the API servers.',
       ['nginx'],
       testVocab,
+      provider,
     );
 
     expect(result.classified).toHaveLength(1);
@@ -475,7 +485,7 @@ describe('extractKeywords', () => {
   });
 
   it('drops classified keywords not in vocabulary', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify({
         classified: [
           { keyword: 'docker', weight: 0.8 },
@@ -483,12 +493,13 @@ describe('extractKeywords', () => {
         ],
         suggestions: [],
       })
-    ));
+    );
 
     const result = await extractKeywords(
       'Docker deployment with custom orchestration.',
       ['docker'],
       testVocab,
+      provider,
     );
 
     expect(result.classified).toHaveLength(1);
@@ -496,26 +507,27 @@ describe('extractKeywords', () => {
   });
 
   it('drops suggestions already in vocabulary', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify({
         classified: [],
         suggestions: [
           { keyword: 'docker', weight: 0.9, rationale: 'Already in vocab' },
         ],
       })
-    ));
+    );
 
     const result = await extractKeywords(
       'Some memory about docker',
       [],
       testVocab,
+      provider,
     );
 
     expect(result.suggestions).toHaveLength(0);
   });
 
   it('drops suggestions with invalid keyword pattern', async () => {
-    setLlmProvider(createMockLlmProvider(() =>
+    const provider = createMockLlmProvider(() =>
       JSON.stringify({
         classified: [],
         suggestions: [
@@ -523,12 +535,13 @@ describe('extractKeywords', () => {
           { keyword: 'good_suggestion', weight: 0.7, rationale: 'Valid pattern' },
         ],
       })
-    ));
+    );
 
     const result = await extractKeywords(
       'Some memory',
       [],
       testVocab,
+      provider,
     );
 
     expect(result.suggestions).toHaveLength(1);

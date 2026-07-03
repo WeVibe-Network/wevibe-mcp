@@ -42,10 +42,6 @@ import { loadMemberships, createOrg, inviteMember, rotateEpoch, provisionRecall 
 import { fetchPendingQueue, decryptPendingItem, approveSubmission, denySubmission, scanForSteganography } from './moderation.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
-import { setLlmProvider } from './llm.js';
-import { createOllamaProvider } from './llm-ollama.js';
-import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
-import { loadLlmConfig } from './embedding-config.js';
 import { base32Decode, pairingIdFromSecret, decryptPairedIdentitySeed } from './pair-crypto.js';
 import { HUB_URL, CHAIN_REST_URL, DASHBOARD_URL } from './config.js';
 import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js';
@@ -168,23 +164,6 @@ async function getMembership(orgId?: string) {
     return m;
   }
   return memberships[0];
-}
-
-function configureModerationLlmProvider(): void {
-  const llmConfig = (() => {
-    try {
-      return loadLlmConfig();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      die(`LLM provider not configured in dashboard settings: ${message}`);
-    }
-  })();
-
-  if (llmConfig.provider === 'ollama') {
-    setLlmProvider(createOllamaProvider(llmConfig.baseUrl, llmConfig.model));
-  } else {
-    setLlmProvider(createOpenAICompatibleProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.apiKey));
-  }
 }
 
 async function cmdSetupIdentity(flags: Record<string, string> = {}) {
@@ -590,8 +569,6 @@ async function cmdModerateApprove(flags: Record<string, string>) {
   const hash = requireFlag(flags, 'hash');
   const membership = await getMembership(flags['org']);
   if (membership.role !== 'leader' && !membership.canModerate) die(`Role "${membership.role}" cannot approve.`);
-
-  configureModerationLlmProvider();
 
   const items = await fetchPendingQueue(HUB_URL, membership.orgId);
   const item = items.find(i => i.submission_hash === hash);

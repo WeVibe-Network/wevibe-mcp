@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { setLlmProvider } from '../../src/llm.js';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -43,7 +42,6 @@ describe('Hub error resilience', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockReset();
-    setLlmProvider({ chat: async () => '{"keywords": []}' });
   });
 
   it('hub returning 500 results in error message, not crash', async () => {

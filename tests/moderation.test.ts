@@ -147,7 +147,7 @@ describe('moderation crypto pipeline', () => {
     expect(Buffer.from(memberDecrypted).toString('utf-8')).toBe(plaintext);
   });
 
-  it('approveSubmission ignores legacy memory_type override argument', async () => {
+  it('approveSubmission uses pending item memory_type in approval payload', async () => {
     const modIdentity = generateIdentity();
 
     const plaintext = 'Moderation memory type override test payload';
@@ -191,7 +191,6 @@ describe('moderation crypto pipeline', () => {
       'test-org',
       item,
       membership,
-      'negative_signal',
     );
 
     expect(result.status).toBe('approved');

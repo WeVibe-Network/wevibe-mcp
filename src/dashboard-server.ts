@@ -13,7 +13,6 @@
  * Environment:
  *   WEVIBE_HUB_URL           Hub URL (default from config)
  *   WEVIBE_DASHBOARD_PORT    Server port (default: 4451)
- *   LLM provider/model are loaded from ~/.config/wevibe/dashboard.json
  */
 
 import express from 'express';
@@ -34,15 +33,8 @@ import {
   voteOnSubmission,
   voteOnKeyword,
 } from './moderation.js';
-import { setLlmProvider, getLlmProvider } from './llm.js';
-import { createOllamaProvider } from './llm-ollama.js';
-import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
-import { vaultExists, isVaultUnlocked, unlockVault, retrievePassphraseFromKeychain } from './vault.js';
-import { submitMemory } from './contribution.js';
-import { getOrgKeywords } from './org-client.js';
-import { extractKeywords, extractMemories, type ClassifiedKeyword, type SuggestedKeyword } from './extraction.js';
+import { unlockVault, retrievePassphraseFromKeychain } from './vault.js';
 import { HUB_URL, DASHBOARD_PORT, EMBEDDING_MODEL } from './config.js';
-import { loadLlmConfig } from './embedding-config.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
 import { umbralEncrypt } from './sidecar.js';
@@ -187,7 +179,6 @@ function createMcpServer(): McpServer {
     async (args) => {
       await initCrypto();
       const membership = await requireMembership(args.org_id);
-      const chatAdapter = async (system: string, user: string): Promise<string> => getLlmProvider().chat(system, user);
 
       const results: Array<{
         id: string;
@@ -231,7 +222,7 @@ function createMcpServer(): McpServer {
             stack: item.stack_hint,
           };
 
-          const { vector, embeddingModelId } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: true });
+          const { vector, embeddingModelId } = await embedRetrievalCard(structured);
 
           results.push({
             id: item.id,
@@ -284,7 +275,7 @@ function createMcpServer(): McpServer {
 
 srv.tool(
     'wevibe_mod_approve',
-    'Approve a pending submission. This performs the full approval pipeline: unseal DEK with mod key, decrypt content, re-wrap DEK with encryption key, extract keywords via LLM, compute embedding vector, sign canonical message, and POST approval to hub.',
+    'Approve a pending submission. This performs the full approval pipeline: unseal DEK with mod key, decrypt content, compute embedding vector, sign canonical message, and POST approval to hub.',
     {
       submission_hash: z.string().describe('The submission_hash from the moderation queue'),
       org_id: z.string().optional(),
@@ -522,161 +513,6 @@ srv.tool(
   }
 );
 
-srv.tool(
-  'wevibe_author_memory',
-  'Leader-only administrative tool; not a normal contributor path. Authors a new memory directly and immediately approves it through the full pipeline (encryption, keyword extraction, embedding, indexing).',
-	{
-		content: z.string().describe('The memory content — a specific technical insight'),
-		stack: z.array(z.string()).optional().describe('Technology tags (e.g. ["rust", "qdrant"])'),
-		org_id: z.string().optional(),
-		memory_type: z.enum(['memory']).optional(),
-	},
-  async (args) => {
-    await initCrypto();
-    const membership = await requireMembership(args.org_id);
-
-    if (membership.role !== 'leader') {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ status: 'error', error: `role "${membership.role}" cannot author memories` }) }],
-      };
-    }
-
-    const stackHint = args.stack ?? [];
-    let keywords: { classified: ClassifiedKeyword[]; suggestions: SuggestedKeyword[] } = {
-      classified: [],
-      suggestions: [],
-    };
-
-    try {
-      const orgVocabulary = await getOrgKeywords(HUB_URL, membership.orgId);
-      keywords = await extractKeywords(args.content, stackHint, orgVocabulary);
-    } catch (error) {
-      console.warn(`wevibe-dashboard: wevibe_author_memory keyword extraction failed for org ${membership.orgId}: ${error}`);
-    }
-
-    const submitResult = await submitMemory(
-      args.content,
-      membership.orgId,
-      HUB_URL,
-		membership,
-		args.memory_type ?? 'memory',
-		stackHint,
-		undefined,
-		keywords,
-	);
-
-    if (submitResult.status !== 'pending' || !submitResult.submissionHash) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ status: 'error', error: submitResult.error ?? 'submit failed' }),
-        }],
-      };
-    }
-
-    const items = await fetchPendingQueue(HUB_URL, membership.orgId);
-    const item = items.find(i => i.submission_hash === submitResult.submissionHash);
-    if (!item) {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ status: 'error', error: 'submitted but not found in queue — may need manual approval' }),
-        }],
-      };
-    }
-
-    const approveResult = await approveSubmission(HUB_URL, membership.orgId, item, membership);
-    if (approveResult.status !== 'approved') {
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({ status: 'error', error: `approval failed: ${approveResult.error ?? 'unknown error'}` }),
-        }],
-      };
-    }
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          status: 'authored',
-          cid: submitResult.submissionHash,
-          content_preview: args.content.slice(0, 120),
-        }),
-      }],
-    };
-  }
-);
-
-srv.tool(
-  'wevibe_extract_keywords_batch',
-  'Extract keywords from multiple memories in batch. For each memory, uses LLM to select from org vocabulary and suggest new keywords.',
-  {
-    org_id: z.string().optional(),
-    memories: z.array(z.object({
-      id: z.string(),
-      plaintext: z.string(),
-      stack_hint: z.array(z.string()),
-      memory_type: z.string(),
-    })),
-  },
-  async (args) => {
-    await initCrypto();
-    const membership = await requireMembership(args.org_id);
-
-    const orgVocabulary = await getOrgKeywords(HUB_URL, membership.orgId);
-
-    const results = await Promise.all(args.memories.map(async (mem) => {
-      const { classified, suggestions } = await extractKeywords(
-        mem.plaintext,
-        mem.stack_hint,
-        orgVocabulary,
-      );
-      return {
-        id: mem.id,
-        classified,
-        suggestions,
-      };
-    }));
-
-    return {
-      content: [{ type: 'text', text: JSON.stringify(results) }],
-    };
-  }
-);
-
-srv.tool(
-  'wevibe_extract_memories',
-  'Extract structured technical insights from a session transcript.',
-  {
-    transcript: z.string(),
-    project_context: z.object({
-      title: z.string(),
-      directory: z.string(),
-      stack: z.array(z.string()).optional(),
-    }),
-  },
-  async (args) => {
-    await initCrypto();
-    const membership = await requireMembership();
-
-    const result = await extractMemories(args.transcript, {
-      name: args.project_context.title,
-      stack: args.project_context.stack ?? [],
-      directory: args.project_context.directory,
-    }, {
-      orgContext: {
-        orgId: membership.orgId,
-        hubUrl: HUB_URL,
-      },
-    });
-
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result.memories) }],
-    };
-  }
-);
-
   return srv;
 }
 
@@ -733,25 +569,6 @@ app.get('/health', (_req, res) => {
 });
 
 async function main(): Promise<void> {
-  const llmConfig = (() => {
-    try {
-      return loadLlmConfig();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`wevibe-dashboard: FATAL config — invalid LLM provider settings in dashboard.json: ${message}`);
-      console.error('wevibe-dashboard: FATAL config — set llm_provider + provider model in Dashboard settings before restart');
-      throw error;
-    }
-  })();
-
-  if (llmConfig.provider === 'ollama') {
-    setLlmProvider(createOllamaProvider(llmConfig.baseUrl, llmConfig.model));
-  } else {
-    setLlmProvider(createOpenAICompatibleProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.apiKey));
-  }
-
-  console.warn(`wevibe-dashboard: LLM provider: ${llmConfig.provider} (${llmConfig.baseUrl}, model: ${llmConfig.model})`);
-
   const storedPassphrase = await retrievePassphraseFromKeychain();
   if (storedPassphrase) {
     try {

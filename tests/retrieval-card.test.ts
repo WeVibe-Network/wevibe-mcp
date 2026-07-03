@@ -1,10 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   serializeMemoryText,
   parseMemoryText,
   buildRetrievalCard,
   buildNeedCard,
-  buildAnticipatedNeed,
   type StructuredMemory,
 } from '../src/retrieval-card.js';
 
@@ -125,18 +124,5 @@ describe('retrieval-card formatting', () => {
       'Errors: unknown',
       'Files: unknown',
     ].join('\n'));
-  });
-
-  it('builds anticipated need from first non-empty chat line', async () => {
-    const fakeChat = vi.fn(async () => '  The situation.\nextra\n');
-    const memory: StructuredMemory = {
-      implement: 'Use optimistic locking.',
-      context: 'Concurrent writes to profile rows.',
-      dnd: 'Blind last-write-wins updates.',
-      stack: ['PostgreSQL'],
-    };
-
-    const anticipated = await buildAnticipatedNeed(memory, fakeChat);
-    expect(anticipated).toBe('The situation.');
   });
 });

@@ -5,7 +5,6 @@ import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership, MemoryType } from './types.js';
 import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonical.js';
 import { EMBEDDING_MODEL } from './config.js';
-import { getLlmProvider } from './llm.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
 import { spawnSync } from 'node:child_process';
@@ -249,19 +248,10 @@ export async function approveSubmission(
     stack: Array.isArray(item.stack_hint) ? item.stack_hint : [],
   };
 
-  const chatAdapter = async (system: string, user: string): Promise<string> => {
-    try {
-      return await getLlmProvider().chat(system, user);
-    } catch (e) {
-      console.warn(`approveSubmission: anticipated need generation failed: ${(e as Error).message}`);
-      throw e;
-    }
-  };
-
   let vector: number[] | undefined;
   let embeddingModelId: string | undefined;
   try {
-    ({ vector, embeddingModelId } = await embedRetrievalCard(structured, chatAdapter, { strictAnticipated: false }));
+    ({ vector, embeddingModelId } = await embedRetrievalCard(structured));
   } catch (e) {
     console.warn(`approveSubmission: embedding failed; continuing without vector: ${(e as Error).message}`);
   }

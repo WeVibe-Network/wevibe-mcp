@@ -101,25 +101,3 @@ export function buildNeedCard(h: NeedHarvest): string {
 
   return lines.join('\n');
 }
-
-const ANTICIPATED_NEED_SYSTEM_PROMPT = 'Write exactly one concise sentence describing the developer situation or question this memory answers. Return one plain line only.';
-
-export async function buildAnticipatedNeed(
-  m: StructuredMemory,
-  chat: (system: string, user: string) => Promise<string>,
-): Promise<string> {
-  const user = [
-    `Context: ${m?.context ?? ''}`,
-    `Stack: ${Array.isArray(m?.stack) ? m.stack.join(', ') : ''}`,
-    `Implement: ${m?.implement ?? ''}`,
-    `Avoid: ${m?.dnd ?? ''}`,
-  ].join('\n');
-
-  const raw = await chat(ANTICIPATED_NEED_SYSTEM_PROMPT, user);
-  const line = raw
-    .split(/\r?\n/)
-    .map((entry) => entry.trim())
-    .find((entry) => entry.length > 0);
-
-  return (line ?? raw.trim()).replace(/\s+/g, ' ').trim();
-}

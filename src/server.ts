@@ -15,9 +15,7 @@ import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';
 import { vaultExists, isVaultUnlocked, unlockVault, retrievePassphraseFromKeychain, lockVault } from './vault.js';
 import { read_project_manifest } from './manifest.js';
-import { setLlmProvider } from './llm.js';
 import { getProviderPolicy, setProviderPolicy } from './risk-appetite.js';
-import { createSamplingProvider } from './llm-sampling.js';
 import { generateRecoveryPhrase } from './recovery.js';
 import { getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { startHttpServer, stopHttpServer } from './http-server.js';
@@ -254,8 +252,6 @@ server.tool(
 );
 
 async function main() {
-  setLlmProvider(createSamplingProvider(server.server));
-
   const storedPassphrase = await retrievePassphraseFromKeychain();
   if (storedPassphrase) {
     try {

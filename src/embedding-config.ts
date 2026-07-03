@@ -11,13 +11,6 @@ export interface ResolvedEmbeddingConfig {
   usePrefix: boolean;
 }
 
-export interface ResolvedLlmConfig {
-  provider: DashboardProvider;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
-
 interface DashboardEmbeddingSettings {
   embedding_provider?: unknown;
   embedding_ollama_model?: unknown;
@@ -28,17 +21,7 @@ interface DashboardEmbeddingSettings {
   lmstudio_url?: unknown;
 }
 
-interface DashboardLlmSettings {
-  llm_provider?: unknown;
-  openrouter_model?: unknown;
-  ollama_model?: unknown;
-  lmstudio_model?: unknown;
-  extraction_api_key?: unknown;
-  ollama_url?: unknown;
-  lmstudio_url?: unknown;
-}
-
-type DashboardSettings = DashboardEmbeddingSettings & DashboardLlmSettings;
+type DashboardSettings = DashboardEmbeddingSettings;
 
 function getSettingsPath(): string {
   return join(homedir(), '.config', 'wevibe', 'dashboard.json');
@@ -136,42 +119,5 @@ export function loadEmbeddingConfig(): ResolvedEmbeddingConfig {
     apiKey,
     model,
     usePrefix: model.toLowerCase().includes('nomic'),
-  };
-}
-
-export function loadLlmConfig(): ResolvedLlmConfig {
-  const parsed = loadDashboardSettings();
-
-  const provider = normalizeProvider(asStringOrEmpty(parsed.llm_provider), 'llm_provider');
-
-  let baseUrl = '';
-  let apiKey = '';
-  let model = '';
-
-  if (provider === 'openrouter') {
-    baseUrl = 'https://openrouter.ai/api/v1';
-    apiKey = resolveOpenRouterApiKey(parsed.extraction_api_key, 'extraction_api_key');
-    model = asStringOrEmpty(parsed.openrouter_model);
-  } else if (provider === 'lm_studio') {
-    baseUrl = asStringOrEmpty(parsed.lmstudio_url) || 'http://127.0.0.1:1234/v1';
-    apiKey = 'lm-studio';
-    model = asStringOrEmpty(parsed.lmstudio_model);
-  } else {
-    baseUrl = asStringOrEmpty(parsed.ollama_url) || 'http://localhost:11434';
-    apiKey = 'ollama';
-    model = asStringOrEmpty(parsed.ollama_model);
-  }
-
-  if (model.length === 0) {
-    throw new Error(
-      `LLM model for provider "${provider}" is empty in dashboard.json; set the provider model value`,
-    );
-  }
-
-  return {
-    provider,
-    baseUrl,
-    apiKey,
-    model,
   };
 }

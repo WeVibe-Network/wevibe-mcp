@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getStore } from './key-store.js';
-import { getLlmProvider, type LlmProvider } from './llm.js';
+import type { LlmProvider } from './llm.js';
 import { computeLocalEmbedding } from './embedding.js';
 import { loadEmbeddingConfig } from './embedding-config.js';
 import { getRecommendedPreset } from './extraction-presets.js';
@@ -74,7 +74,7 @@ export interface ProjectContext {
 }
 
 export interface ExtractMemoriesOptions {
-  provider?: LlmProvider;
+  provider: LlmProvider;
   systemPrompt?: string;
   numCtx?: number;
   orgContext?: {
@@ -421,8 +421,12 @@ export async function extractKeywords(
   plaintext: string,
   stackHint: string[],
   orgVocabulary: string[],
-  provider?: LlmProvider,
+  provider: LlmProvider,
 ): Promise<KeywordExtractionResult> {
+  if (!provider) {
+    throw new Error('extractKeywords: provider is required');
+  }
+
   const systemPrompt = KEYWORD_EXTRACTION_PROMPT;
 
   const userMessage = `VOCABULARY:
@@ -433,8 +437,7 @@ STACK HINT: ${stackHint.join(', ')}
 MEMORY:
 ${plaintext}`;
 
-  const llm = provider ?? getLlmProvider();
-  const response = await llm.chat(systemPrompt, userMessage, {
+  const response = await provider.chat(systemPrompt, userMessage, {
     temperature: 0.2,
     jsonFormat: true,
     jsonSchema: { name: 'wevibe_keyword_extraction', schema: KEYWORD_EXTRACTION_SCHEMA },
@@ -539,8 +542,12 @@ const MEMORY_EXTRACTION_SCHEMA: Record<string, unknown> = {
 export async function extractMemories(
   rawBuffer: string,
   projectContext: ProjectContext,
-  options: ExtractMemoriesOptions = {},
+  options: ExtractMemoriesOptions,
 ): Promise<ExtractionResult> {
+  if (!options.provider) {
+    throw new Error('extractMemories: options.provider is required');
+  }
+
   const systemPrompt = typeof options.systemPrompt === 'string' && options.systemPrompt.trim().length > 0
     ? options.systemPrompt
     : getExtractionPrompt();
@@ -639,7 +646,7 @@ ${rawBuffer}
 ===WEVIBE_TRANSCRIPT_END===`;
 
   try {
-    const llm = options.provider ?? getLlmProvider();
+    const llm = options.provider;
     const model = typeof (llm as { model?: unknown }).model === 'string'
       ? (llm as { model?: string }).model
       : undefined;
@@ -741,10 +748,7 @@ ${rawBuffer}
     } catch {
       // best-effort debug logging only
     }
-    if (options.provider) {
-      throw e;
-    }
-    return { memories: [] };
+    throw e;
   }
 }
 
