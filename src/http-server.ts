@@ -131,6 +131,7 @@ interface ExtractRequestBody {
   prompt?: unknown;
   num_ctx?: unknown;
   org_id?: unknown;
+  session_id?: unknown;
   provider?: string;
   api_key?: string;
   base_url?: string;
@@ -394,6 +395,9 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   const orgId = typeof body.org_id === 'string' && body.org_id.trim().length > 0
     ? body.org_id.trim()
     : undefined;
+  const sessionId = typeof body.session_id === 'string' && body.session_id.trim().length > 0
+    ? body.session_id.trim()
+    : undefined;
   const providerOverride = typeof body.provider === 'string' && body.provider.trim().length > 0
     ? body.provider.trim().toLowerCase()
     : undefined;
@@ -424,6 +428,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
         provider,
         systemPrompt: systemPromptOverride,
         numCtx: numCtxOverride,
+        sessionId,
         orgContext: orgId
           ? { orgId, hubUrl: HUB_URL }
           : undefined,
