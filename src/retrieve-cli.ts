@@ -8,6 +8,7 @@ import { deserializeMemoryResult } from './deserialize.js';
 import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';
+import { scrubQueryHarvestInput } from './query-scrub.js';
 import { formatTrustPanel, type MemoryStats, type ContributorStats } from './trust-panel.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { HUB_URL } from './config.js';
@@ -298,28 +299,30 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   let activeHubUrl = getActiveHubUrlForOrg(membership.orgId) ?? HUB_URL;
   const recallGovernor = getRecallModeGovernor();
+  const scrubbedInput = scrubQueryHarvestInput(input, membership.egressMode, membership.allowedProviders);
+  console.error('[recall] query-scrub applied');
 
-  const harvest = buildQueryHarvest(input);
+  const harvest = buildQueryHarvest(scrubbedInput);
   const needCardText = buildNeedCard(harvest);
   console.error('[recall] need-card built length=%d', needCardText.length);
   const stackSignals = harvest.stack ?? [];
   const recentActivitySignals = harvest.errorStrings ?? [];
-  const keywordDescription = buildKeywordDescription(input, stackSignals);
+  const keywordDescription = buildKeywordDescription(scrubbedInput, stackSignals);
 
   const keywords = dissect_to_keywords({
     description: keywordDescription,
     technologies: stackSignals,
     recentActivity: recentActivitySignals,
-    directory: nonEmptyString(input.directory) ?? '',
-    projectName: nonEmptyString(input.projectName) ?? '',
+    directory: nonEmptyString(scrubbedInput.directory) ?? '',
+    projectName: nonEmptyString(scrubbedInput.projectName) ?? '',
   });
 
   const keywordTerms = keywords.map(kw => sanitizeRecallLogValue(kw.term));
   console.error('[recall] keywords extracted count=%d terms=%s', keywords.length, keywordTerms.join(','));
 
   if (keywords.length === 0) {
-    console.error('[recall] retrieve error=no keywords extracted query=%s', sanitizeRecallLogValue(input.query));
-    return { status: 'error', error: `no keywords extracted for "${input.query}"` };
+    console.error('[recall] retrieve error=no keywords extracted query=%s', sanitizeRecallLogValue(scrubbedInput.query));
+    return { status: 'error', error: `no keywords extracted for "${scrubbedInput.query}"` };
   }
 
   let queryVector: number[];
@@ -349,13 +352,13 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         hubUrl,
         orgId: membership.orgId,
         agentPubkey: uint8ArrayToHex(identity.edPubkey),
-        sessionId: input.session_id,
+        sessionId: scrubbedInput.session_id,
         keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
         vector: queryVector,
         embeddingModelId,
-        limit: input.limit ?? recallGovernor.recall_limit,
-        relevanceFloor: input.relevance_floor ?? recallGovernor.relevance_floor,
-        surfaceBudget: input.surface_budget ?? recallGovernor.surface_budget,
+        limit: scrubbedInput.limit ?? recallGovernor.recall_limit,
+        relevanceFloor: scrubbedInput.relevance_floor ?? recallGovernor.relevance_floor,
+        surfaceBudget: scrubbedInput.surface_budget ?? recallGovernor.surface_budget,
       }),
     );
 

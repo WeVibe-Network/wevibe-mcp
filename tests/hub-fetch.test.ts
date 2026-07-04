@@ -214,15 +214,31 @@ describe('retrieve failover on hub signature mismatch', () => {
     }));
 
     vi.doMock('../src/artifact-extract.js', () => ({
-      extractArtifacts: vi.fn(),
+      extractArtifacts: vi.fn().mockReturnValue({
+        artifacts: [],
+        summary: {
+          url: 0,
+          domain: 0,
+          ip_address: 0,
+          shell_command: 0,
+          package_install: 0,
+          config_directive: 0,
+          credential_like: 0,
+        },
+      }),
     }));
 
     vi.doMock('../src/artifact-policy.js', () => ({
-      checkArtifactPolicy: vi.fn(),
+      checkArtifactPolicy: vi.fn().mockReturnValue([]),
     }));
 
     vi.doMock('../src/artifact-transform.js', () => ({
-      transformMemoryContent: vi.fn(),
+      transformMemoryContent: vi.fn().mockImplementation((text: string) => ({
+        text,
+        annotations: [],
+        redactedCount: 0,
+        annotatedCount: 0,
+      })),
     }));
 
     vi.doMock('../src/trust-panel.js', () => ({
