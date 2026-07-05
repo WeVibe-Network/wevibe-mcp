@@ -563,7 +563,6 @@ describe('inviteMember', () => {
       orgId: 'org-abc',
       inviteePubkeyHex: 'invitee_pub',
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
-      epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
       canContribute: false,
       canModerate: false,
@@ -581,7 +580,7 @@ describe('inviteMember', () => {
     expect(body.pubkey).toBe('invitee_pub');
     expect(body.x25519_pubkey).toBe(INVITEE_X25519_HEX);
     expect(body.pre_pubkey).toBe(PRE_PUBKEY_HEX);
-    expect(body.epoch_sk).toBe(EPOCH_SK_HEX);
+    expect(body.epoch_sk).toBeUndefined();
     expect(body.role).toBe('member');
     expect(body.enc_envelope).toBeTruthy();
     expect(body.search_envelope).toBeTruthy();
@@ -596,7 +595,6 @@ describe('inviteMember', () => {
       orgId: 'org-unknown',
       inviteePubkeyHex: 'pub',
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
-      epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
       canContribute: false,
       canModerate: false,
@@ -624,7 +622,6 @@ describe('inviteMember', () => {
       orgId: 'org-abc',
       inviteePubkeyHex: 'pub',
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
-      epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
       canContribute: false,
       canModerate: false,
@@ -655,7 +652,6 @@ describe('inviteMember', () => {
       orgId: 'org-abc',
       inviteePubkeyHex: 'invitee_pub',
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
-      epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
       canContribute: false,
       canModerate: true,
@@ -692,7 +688,6 @@ describe('inviteMember', () => {
       orgId: 'org-abc',
       inviteePubkeyHex: 'invitee_pub',
       inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
-      epochSkHex: EPOCH_SK_HEX,
       prePubkeyHex: PRE_PUBKEY_HEX,
       canContribute: false,
       canModerate: false,

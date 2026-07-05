@@ -885,7 +885,6 @@ export interface InviteMemberParams {
   orgId: string;
   inviteePubkeyHex: string;
   inviteeX25519PubkeyHex: string;
-  epochSkHex: string;
   prePubkeyHex: string;
   canContribute: boolean;
   canModerate: boolean;
@@ -899,10 +898,6 @@ export interface InviteMemberResult {
 
 export async function inviteMember(params: InviteMemberParams): Promise<InviteMemberResult> {
   await ensureCrypto();
-
-  if (!params.epochSkHex || Buffer.from(params.epochSkHex, 'hex').length !== 32) {
-    return { status: 'error', error: 'epoch_sk must be a 32-byte hex string' };
-  }
 
   if (!params.prePubkeyHex || Buffer.from(params.prePubkeyHex, 'hex').length !== 33) {
     return { status: 'error', error: 'pre_pubkey must be a 33-byte compressed secp256k1 hex string' };
@@ -966,7 +961,6 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
     pubkey: params.inviteePubkeyHex,
     x25519_pubkey: params.inviteeX25519PubkeyHex,
     pre_pubkey: params.prePubkeyHex,
-    epoch_sk: params.epochSkHex,
     role: 'member',
     can_contribute: params.canContribute,
     can_moderate: params.canModerate,

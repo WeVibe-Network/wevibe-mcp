@@ -511,11 +511,6 @@ async function cmdInvite(flags: Record<string, string>) {
   const canContribute = flags['can-contribute'] === 'true' || flags['can-contribute'] === '1';
   const canModerate = flags['can-moderate'] === 'true' || flags['can-moderate'] === '1';
 
-  const epochSk = await loadKeyEnvelope(orgId, 'epoch-sk');
-  if (!epochSk) {
-    die(`No epoch_sk found for org ${orgId}. Create or rotate the org first to refresh local epoch key material.`);
-  }
-
   let inviteePrePubkeyHex = prePubkeyFlag ?? '';
   if (!inviteePrePubkeyHex) {
     const identity = await loadIdentity();
@@ -533,7 +528,6 @@ async function cmdInvite(flags: Record<string, string>) {
     inviteePubkeyHex: pubkey,
     inviteeX25519PubkeyHex: x25519,
     prePubkeyHex: inviteePrePubkeyHex,
-    epochSkHex: Buffer.from(epochSk).toString('hex'),
     canContribute,
     canModerate,
     hubUrl: HUB_URL,
