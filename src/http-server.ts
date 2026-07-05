@@ -313,6 +313,20 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  if (result.reason_code === 'no_keywords') {
+    console.error('[recall] /v1/recall result_count=0 reason_code=no_keywords (query produced no extractable keywords)');
+    const body: { status: 'ok'; memories: []; reason_code: 'no_keywords'; reason?: string } = {
+      status: 'ok',
+      memories: [],
+      reason_code: 'no_keywords',
+    };
+    if (result.reason) {
+      body.reason = result.reason;
+    }
+    jsonResponse(res, 200, body);
+    return;
+  }
+
   const memoriesWithGuard: MemoryWithGuard[] = [];
 
   for (const memory of result.memories) {

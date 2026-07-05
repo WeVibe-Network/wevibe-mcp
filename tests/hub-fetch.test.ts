@@ -385,6 +385,45 @@ describe('retrieve no-membership lifecycle handling', () => {
     });
   });
 
+  it('returns graceful empty no_keywords when query yields zero extractable keywords', async () => {
+    const loadMembershipsMock = vi.fn().mockResolvedValue([
+      {
+        orgId: 'org-1',
+        allowedProviders: ['openai'],
+        egressMode: 'unrestricted',
+      },
+    ]);
+    mockRetrieveDeps(loadMembershipsMock);
+
+    const dissectToKeywordsMock = vi.fn().mockReturnValue([]);
+    vi.doMock('../src/session.js', () => ({
+      dissect_to_keywords: dissectToKeywordsMock,
+    }));
+
+    const { retrieve } = await import('../src/retrieve-cli.js');
+    const result = await retrieve({
+      query: 'now fix it.',
+      org_id: 'org-1',
+      technologies: ['redis', 'typescript'],
+      recentActivity: ['ECONNREFUSED'],
+    });
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') {
+      throw new Error('expected retrieve to return status=ok');
+    }
+
+    expect(dissectToKeywordsMock).toHaveBeenCalledTimes(1);
+    expect(result.reason_code).toBe('no_keywords');
+    expect(result).toMatchObject({
+      status: 'ok',
+      memories: [],
+      org_allowed_providers: [],
+      reason_code: 'no_keywords',
+      reason: 'query produced no extractable keywords',
+    });
+  });
+
   it('keeps loadMemberships transport failures loud as status=error', async () => {
     const loadMembershipsMock = vi.fn().mockRejectedValue(new Error('hub unreachable'));
     mockRetrieveDeps(loadMembershipsMock);

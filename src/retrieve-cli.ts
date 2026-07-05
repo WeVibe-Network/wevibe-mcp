@@ -61,7 +61,7 @@ export interface RetrieveOutput {
   status: 'ok';
   memories: MemoryOutput[];
   org_allowed_providers: string[];
-  reason_code?: 'no_memories' | 'decrypt_failed' | 'filtered_out' | 'no_membership';
+  reason_code?: 'no_memories' | 'decrypt_failed' | 'filtered_out' | 'no_membership' | 'no_keywords';
   reason?: string;
 }
 
@@ -335,8 +335,14 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   console.error('[recall] keywords extracted count=%d terms=%s trace=%s', keywords.length, keywordTerms.join(','), trace);
 
   if (keywords.length === 0) {
-    console.error('[recall] retrieve error=no keywords extracted query=%s trace=%s', sanitizeRecallLogValue(scrubbedInput.query), trace);
-    return { status: 'error', error: `no keywords extracted for "${scrubbedInput.query}"` };
+    console.error('[recall] retrieve no extractable keywords — graceful empty reason_code=no_keywords trace=' + trace);
+    return {
+      status: 'ok',
+      memories: [],
+      org_allowed_providers: [],
+      reason_code: 'no_keywords',
+      reason: 'query produced no extractable keywords',
+    };
   }
 
   let queryVector: number[];
