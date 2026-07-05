@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { logOp, fp } from './logger.js';
 
 export interface ServedMemoryRecord {
   cid: string;
@@ -25,12 +26,31 @@ export function servedMemoriesPath(): string {
 }
 
 export function readUsedMemoryTexts(sessionId: string): string[] {
+  const t0 = Date.now();
+  const sessionFp = fp(sessionId);
+
   if (!sessionId) {
+    logOp('served_store.read', 'info', {
+      session_fp: sessionFp,
+      status: 'ok',
+      reason: 'empty_session',
+      matched: 0,
+      dur_ms: Date.now() - t0,
+    });
     return [];
   }
 
   const filePath = servedMemoriesPath();
   if (!existsSync(filePath)) {
+    logOp('served_store.read', 'info', {
+      session_fp: sessionFp,
+      status: 'ok',
+      reason: 'no_file',
+      path: servedMemoriesPath(),
+      exists: false,
+      matched: 0,
+      dur_ms: Date.now() - t0,
+    });
     return [];
   }
 
@@ -38,6 +58,14 @@ export function readUsedMemoryTexts(sessionId: string): string[] {
   try {
     parsed = JSON.parse(readFileSync(filePath, 'utf-8'));
   } catch {
+    logOp('served_store.read', 'error', {
+      session_fp: sessionFp,
+      status: 'err',
+      reason: 'parse_failed',
+      path: servedMemoriesPath(),
+      matched: 0,
+      dur_ms: Date.now() - t0,
+    });
     return [];
   }
 
@@ -102,6 +130,13 @@ export function readUsedMemoryTexts(sessionId: string): string[] {
     seenTexts.add(record.text);
     result.push(record.text);
   }
+
+  logOp('served_store.read', 'info', {
+    session_fp: sessionFp,
+    status: 'ok',
+    matched: result.length,
+    dur_ms: Date.now() - t0,
+  });
 
   return result;
 }

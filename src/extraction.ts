@@ -17,6 +17,7 @@ import {
   fitsSinglePass,
   resolveContextWindow,
 } from './model-context.js';
+import { logOp } from './logger.js';
 import { readUsedMemoryTexts } from './served-memory-store.js';
 import type { MemoryType } from './types.js';
 
@@ -97,6 +98,7 @@ export interface ExtractMemoriesOptions {
   systemPrompt?: string;
   numCtx?: number;
   sessionId?: string;
+  traceId?: string;
   orgContext?: {
     orgId: string;
     hubUrl: string;
@@ -682,6 +684,7 @@ export async function extractMemories(
   if (!options.provider) {
     throw new Error('extractMemories: options.provider is required');
   }
+  const t0 = Date.now();
 
   const systemPrompt = typeof options.systemPrompt === 'string' && options.systemPrompt.trim().length > 0
     ? options.systemPrompt
@@ -799,14 +802,27 @@ ${TRANSCRIPT_END_MARKER}`;
   const bufferChars = systemPrompt.length + scaffold.length + outputReserveChars;
   const usedMemChars = blockA.length;
 
+  logOp('extract', 'info', {
+    trace: options.traceId,
+    phase: 'entry',
+    org: options.orgContext?.orgId,
+    model: modelSlug,
+    budget_chars: budget,
+    transcript_chars: rawBuffer.length,
+    used_mem_bytes: usedMemChars,
+    session_present: Boolean(options.sessionId),
+  });
+
   try {
     const llm = options.provider;
     const extractionResponses: string[] = [];
     let jsonCandidateCount = 0;
     let parsedCandidateCount = 0;
     let arr: unknown[] = [];
+    const singlePass = fitsSinglePass(rawBuffer.length, usedMemChars, bufferChars, budget);
+    const tier: 'single-pass' | 'tier-2' = singlePass ? 'single-pass' : 'tier-2';
 
-    if (fitsSinglePass(rawBuffer.length, usedMemChars, bufferChars, budget)) {
+    if (singlePass) {
       const userMessage = buildUserMessage(scaffold, blockA, '', rawBuffer);
       const tierOneContent = await llm.chat(systemPrompt, userMessage, {
         temperature: 0.1,
@@ -907,6 +923,18 @@ ${buildNumberedList(priorChunkTexts)}
       })
       .filter((memory): memory is MemoryCandidate => memory !== null);
 
+    logOp('extract', 'info', {
+      trace: options.traceId,
+      phase: 'outcome',
+      org: options.orgContext?.orgId,
+      model: modelSlug,
+      tier,
+      chunk_count: extractionResponses.length,
+      coverage: `0-${rawBuffer.length}`,
+      kept: memories.length,
+      dur_ms: Date.now() - t0,
+    });
+
     const emptyReason = memories.length === 0
       ? (jsonCandidateCount === 0 || parsedCandidateCount === 0 ? 'unparseable_output' : 'off_task_output')
       : undefined;
@@ -937,6 +965,15 @@ ${buildNumberedList(priorChunkTexts)}
 
     return { memories, ...(memories.length === 0 ? { meta: { emptyReason } } : {}) };
   } catch (e) {
+    logOp('extract', 'error', {
+      trace: options.traceId,
+      phase: 'outcome',
+      org: options.orgContext?.orgId,
+      model: modelSlug,
+      status: 'err',
+      dur_ms: Date.now() - t0,
+      err: e instanceof Error ? e.message : String(e),
+    });
     console.warn(`wevibe-mcp: extraction failed — ${e}`);
     try {
       const debugDir = `${homedir()}/.wevibe`;

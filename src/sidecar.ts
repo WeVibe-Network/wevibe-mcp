@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { logOp, fp, appendRaw } from './logger.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,8 +46,13 @@ function formatSidecarError(command: string, stderrText: string, fallback: strin
   return new Error(`sidecar ${command} failed: ${stderrText}`);
 }
 
-async function runSidecar(command: string, args: string[]): Promise<Record<string, unknown>> {
+async function runSidecar(
+  command: string,
+  args: string[],
+  logMeta?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const bin = getSidecarBin();
+  const t0 = Date.now();
   let stdout: string;
   let stderr: string;
 
@@ -57,13 +63,43 @@ async function runSidecar(command: string, args: string[]): Promise<Record<strin
     });
     stdout = output.stdout;
     stderr = output.stderr;
+    appendRaw(
+      'umbral-sidecar.log',
+      `${new Date().toISOString()} [${command}] status=ok\n--- stdout ---\n${output.stdout ?? ''}\n--- stderr ---\n${output.stderr ?? ''}\n`,
+    );
+    logOp('sidecar', 'info', {
+      ...logMeta,
+      command,
+      status: 'ok',
+      dur_ms: Date.now() - t0,
+    });
   } catch (error) {
+    const anyErr = error as { stdout?: string; stderr?: string; message?: string };
+    appendRaw(
+      'umbral-sidecar.log',
+      `${new Date().toISOString()} [${command}] status=err\n--- stdout ---\n${anyErr.stdout ?? ''}\n--- stderr ---\n${anyErr.stderr ?? ''}\n`,
+    );
+    logOp('sidecar', 'error', {
+      ...logMeta,
+      command,
+      status: 'err',
+      dur_ms: Date.now() - t0,
+      err: anyErr.message ?? String(error),
+    });
+
     const execError = error as Error & { stderr?: string };
     const stderrText = typeof execError.stderr === 'string' ? execError.stderr.trim() : '';
     throw formatSidecarError(command, stderrText, execError.message);
   }
 
   if (stderr.trim()) {
+    logOp('sidecar', 'error', {
+      ...logMeta,
+      command,
+      status: 'err',
+      dur_ms: Date.now() - t0,
+      err: 'sidecar wrote to stderr',
+    });
     throw formatSidecarError(command, stderr.trim(), 'sidecar wrote to stderr');
   }
 
@@ -77,8 +113,13 @@ async function runSidecar(command: string, args: string[]): Promise<Record<strin
   return asRecord(parsed);
 }
 
-async function runSidecarText(command: string, args: string[]): Promise<string> {
+async function runSidecarText(
+  command: string,
+  args: string[],
+  logMeta?: Record<string, unknown>,
+): Promise<string> {
   const bin = getSidecarBin();
+  const t0 = Date.now();
   let stdout: string;
   let stderr: string;
 
@@ -89,13 +130,43 @@ async function runSidecarText(command: string, args: string[]): Promise<string> 
     });
     stdout = output.stdout;
     stderr = output.stderr;
+    appendRaw(
+      'umbral-sidecar.log',
+      `${new Date().toISOString()} [${command}] status=ok\n--- stdout ---\n${output.stdout ?? ''}\n--- stderr ---\n${output.stderr ?? ''}\n`,
+    );
+    logOp('sidecar', 'info', {
+      ...logMeta,
+      command,
+      status: 'ok',
+      dur_ms: Date.now() - t0,
+    });
   } catch (error) {
+    const anyErr = error as { stdout?: string; stderr?: string; message?: string };
+    appendRaw(
+      'umbral-sidecar.log',
+      `${new Date().toISOString()} [${command}] status=err\n--- stdout ---\n${anyErr.stdout ?? ''}\n--- stderr ---\n${anyErr.stderr ?? ''}\n`,
+    );
+    logOp('sidecar', 'error', {
+      ...logMeta,
+      command,
+      status: 'err',
+      dur_ms: Date.now() - t0,
+      err: anyErr.message ?? String(error),
+    });
+
     const execError = error as Error & { stderr?: string };
     const stderrText = typeof execError.stderr === 'string' ? execError.stderr.trim() : '';
     throw formatSidecarError(command, stderrText, execError.message);
   }
 
   if (stderr.trim()) {
+    logOp('sidecar', 'error', {
+      ...logMeta,
+      command,
+      status: 'err',
+      dur_ms: Date.now() - t0,
+      err: 'sidecar wrote to stderr',
+    });
     throw formatSidecarError(command, stderr.trim(), 'sidecar wrote to stderr');
   }
 
@@ -106,7 +177,10 @@ export async function umbralEncrypt(epochPkHex: string, plaintextHex: string): P
   const out = await runSidecar('encrypt', [
     '--epoch-pk', epochPkHex,
     '--plaintext', plaintextHex,
-  ]);
+  ], {
+    epoch_pk_fp: fp(epochPkHex),
+    plaintext_len: Math.floor(plaintextHex.length / 2),
+  });
 
   const capsule = out.capsule;
   const ciphertext = out.ciphertext;
@@ -130,7 +204,13 @@ export async function umbralDecryptReencrypted(
     '--ciphertext', ciphertextHex,
     '--receiving-sk', receivingSkHex,
     '--delegating-pk', delegatingPkHex,
-  ]);
+  ], {
+    capsule_fp: fp(capsuleHex),
+    delegating_pk_fp: fp(delegatingPkHex),
+    receiving_pk_fp: fp(receivingSkHex),
+    cfrags_len: Math.floor(cfragsHex.length / 2),
+    ciphertext_len: Math.floor(ciphertextHex.length / 2),
+  });
 
   const plaintext = out.plaintext;
   if (typeof plaintext !== 'string') {
@@ -143,7 +223,9 @@ export async function umbralDecryptReencrypted(
 export async function umbralDeriveEpochKeypair(seedHex: string): Promise<{ secretKeyHex: string; publicKeyHex: string }> {
   const out = await runSidecar('derive-epoch-keypair', [
     '--seed', seedHex,
-  ]);
+  ], {
+    seed_len: Math.floor(seedHex.length / 2),
+  });
 
   const secretKeyHex = out.secret_key;
   const publicKeyHex = out.public_key;
@@ -158,7 +240,10 @@ export async function umbralGenerateKfrag(delegatingSkHex: string, receivingPkHe
   const kfragHex = await runSidecarText('generate-kfrags', [
     '--delegating-sk', delegatingSkHex,
     '--receiving-pk', receivingPkHex,
-  ]);
+  ], {
+    receiving_pk_fp: fp(receivingPkHex),
+    delegating_sk_len: Math.floor(delegatingSkHex.length / 2),
+  });
 
   if (!kfragHex) {
     throw new Error('sidecar generate-kfrags returned empty output');

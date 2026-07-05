@@ -10,6 +10,7 @@ import type { MemoryType } from './types.js';
 import { umbralDecryptReencrypted, umbralDeriveEpochKeypair, umbralGenerateKfrag } from './sidecar.js';
 import { HubSignatureError, hubFetchVerified, hubFetchVerifiedWithKey } from './hub-fetch.js';
 import { HUB_URL } from './config.js';
+import { logOp, fp } from './logger.js';
 import { hkdfSync } from 'node:crypto';
 
 interface HubMemberOrgEntry {
@@ -195,26 +196,54 @@ export async function registerPrePubkey(
     );
 
     if (response.res.status === 404) {
+      logOp('org.register_pre_pubkey', 'warn', {
+        org: orgId,
+        status: 'err',
+        member_pk_fp: fp(memberPubkey),
+        pre_pubkey_fp: fp(prePubkeyHex),
+        err: 'member not found',
+      });
       console.warn(`wevibe-mcp: PRE pubkey registration skipped for org ${orgId} — member not found`);
       return { ok: false, status: 404, error: 'member not found' };
     }
 
     if (!response.res.ok) {
       const errBody = response.bodyText;
+      const errMessage = errBody || `HTTP ${response.res.status}`;
+      logOp('org.register_pre_pubkey', 'warn', {
+        org: orgId,
+        status: 'err',
+        member_pk_fp: fp(memberPubkey),
+        pre_pubkey_fp: fp(prePubkeyHex),
+        err: errMessage,
+      });
       console.warn(
         `wevibe-mcp: PRE pubkey registration failed for org ${orgId}: HTTP ${response.res.status}${errBody ? ` — ${errBody}` : ''}`,
       );
       return {
         ok: false,
         status: response.res.status,
-        error: errBody || `HTTP ${response.res.status}`,
+        error: errMessage,
       };
     }
 
     console.info(`wevibe-mcp: PRE pubkey registration succeeded for org ${orgId}`);
+    logOp('org.register_pre_pubkey', 'info', {
+      org: orgId,
+      status: 'ok',
+      member_pk_fp: fp(memberPubkey),
+      pre_pubkey_fp: fp(prePubkeyHex),
+    });
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    logOp('org.register_pre_pubkey', 'error', {
+      org: orgId,
+      status: 'err',
+      member_pk_fp: fp(memberPubkey),
+      pre_pubkey_fp: fp(prePubkeyHex),
+      err: message,
+    });
     console.warn(`wevibe-mcp: PRE pubkey registration failed for org ${orgId}: ${message}`);
     return { ok: false, error: message };
   }
@@ -443,13 +472,32 @@ export async function getEpochUmbralPk(
   const cacheKey = `${orgId}:${epochId}`;
   const cached = epochUmbralPkCache.get(cacheKey);
   if (cached) {
+    logOp('org.get_epoch_umbral_pk', 'info', {
+      org: orgId,
+      epoch: epochId,
+      umbral_pk_fp: fp(cached),
+      cache_hit: true,
+    });
     return cached;
   }
 
   const manifest = await fetchEpochManifest(hubUrl, orgId, epochId);
   if (!manifest.umbral_pk) {
+    logOp('org.get_epoch_umbral_pk', 'error', {
+      org: orgId,
+      epoch: epochId,
+      status: 'err',
+      err: 'manifest missing umbral_pk',
+    });
     throw new Error(`epoch manifest missing umbral_pk for epoch ${epochId}`);
   }
+
+  logOp('org.get_epoch_umbral_pk', 'info', {
+    org: orgId,
+    epoch: epochId,
+    umbral_pk_fp: fp(manifest.umbral_pk),
+    cache_hit: false,
+  });
 
   epochUmbralPkCache.set(cacheKey, manifest.umbral_pk);
   return manifest.umbral_pk;
@@ -464,29 +512,56 @@ export async function decryptMemoryBlob(
   membership: OrgMembership,
   epochId: number,
   hubUrl: string,
+  traceId?: string,
 ): Promise<Uint8Array> {
   if (!capsuleHex || !cfragHex || !umbralCiphertextHex) {
     throw new Error('memory result missing required PRE fields (capsule, cfrag, umbral_ciphertext)');
   }
 
-  await getOrCreatePreIdentity();
-  const receivingSkHex = getPreSecretKeyHex();
-  const delegatingPkHex = await getEpochUmbralPk(hubUrl, membership.orgId, epochId);
+  let delegatingPkHex: string | undefined;
+  let receivingSkHex: string | undefined;
 
-  const dekHex = await umbralDecryptReencrypted(
-    capsuleHex,
-    cfragHex,
-    umbralCiphertextHex,
-    receivingSkHex,
-    delegatingPkHex,
-  );
+  try {
+    await getOrCreatePreIdentity();
+    receivingSkHex = getPreSecretKeyHex();
+    delegatingPkHex = await getEpochUmbralPk(hubUrl, membership.orgId, epochId);
 
-  const dek = new Uint8Array(Buffer.from(dekHex, 'hex'));
-  if (dek.length !== 32) {
-    throw new Error(`invalid DEK length from sidecar: expected 32 bytes, got ${dek.length}`);
+    const dekHex = await umbralDecryptReencrypted(
+      capsuleHex,
+      cfragHex,
+      umbralCiphertextHex,
+      receivingSkHex,
+      delegatingPkHex,
+    );
+
+    const dek = new Uint8Array(Buffer.from(dekHex, 'hex'));
+    if (dek.length !== 32) {
+      throw new Error(`invalid DEK length from sidecar: expected 32 bytes, got ${dek.length}`);
+    }
+
+    logOp('recall.decrypt', 'info', {
+      trace: traceId,
+      status: 'ok',
+      cid: _cid,
+      delegating_pk_fp: fp(delegatingPkHex),
+      receiving_pk_fp: fp(receivingSkHex),
+      capsule_fp: fp(capsuleHex),
+      dek_len: dek.length,
+    });
+
+    return decryptSymmetric(ciphertext, dek);
+  } catch (error) {
+    logOp('recall.decrypt', 'error', {
+      trace: traceId,
+      status: 'err',
+      cid: _cid,
+      delegating_pk_fp: fp(delegatingPkHex),
+      receiving_pk_fp: fp(receivingSkHex),
+      capsule_fp: fp(capsuleHex),
+      err: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-
-  return decryptSymmetric(ciphertext, dek);
 }
 
 export function checkEgressPolicy(membership: OrgMembership, provider: string | null): boolean {
@@ -530,6 +605,10 @@ export interface OrgCryptoSetup {
 }
 
 export async function buildOrgCryptoSetup(params: CreateOrgParams): Promise<OrgCryptoSetup> {
+  logOp('org.setup', 'info', {
+    phase: 'entry',
+    org: params.orgName ?? undefined,
+  });
   await ensureCrypto();
 
   const identity = await loadIdentity();
@@ -607,6 +686,14 @@ export async function buildOrgCryptoSetup(params: CreateOrgParams): Promise<OrgC
   };
 
   const recoveryPhrase = generateRecoveryPhrase(masterKey);
+
+  logOp('org.setup', 'info', {
+    phase: 'outcome',
+    status: 'ok',
+    epoch: 0,
+    umbral_pk_fp: fp(epoch0UmbralPkHex),
+    member_pk_fp: fp(leaderPubkeyHex),
+  });
 
   return {
     payload,
@@ -697,20 +784,38 @@ export async function createOrg(params: CreateOrgParams): Promise<CreateOrgResul
 }
 
 export async function provisionRecall(orgId: string): Promise<void> {
+  logOp('org.provision_recall', 'info', {
+    org: orgId,
+    phase: 'entry',
+  });
   await ensureCrypto();
 
   const masterKey = await loadKeyEnvelope(orgId, 'master');
   if (!masterKey) {
-    throw new Error(`no master key found for org ${orgId} — only the org leader can provision recall`);
+    const errMessage = `no master key found for org ${orgId} — only the org leader can provision recall`;
+    logOp('org.provision_recall', 'error', {
+      org: orgId,
+      status: 'err',
+      step: 'no_master_key',
+      err: errMessage,
+    });
+    throw new Error(errMessage);
   }
 
   const currentEpoch = await fetchCurrentEpoch(HUB_URL, orgId);
 
   let epochSkHex: string;
+  let epochPkHex: string;
   try {
     const epochSeed = epochUmbralSeed(masterKey, currentEpoch);
-    ({ secretKeyHex: epochSkHex } = await umbralDeriveEpochKeypair(epochSeed.toString('hex')));
-  } catch {
+    ({ secretKeyHex: epochSkHex, publicKeyHex: epochPkHex } = await umbralDeriveEpochKeypair(epochSeed.toString('hex')));
+  } catch (error) {
+    logOp('org.provision_recall', 'error', {
+      org: orgId,
+      status: 'err',
+      step: 'derive_epoch_keypair',
+      err: error instanceof Error ? error.message : String(error),
+    });
     throw new Error(`failed to derive epoch Umbral keypair locally for org ${orgId}`);
   }
 
@@ -727,7 +832,14 @@ export async function provisionRecall(orgId: string): Promise<void> {
 
   const registerPrePubkeyResult = await registerPrePubkey(HUB_URL, orgId, edPubkeyHex, prePubkeyHex);
   if (!registerPrePubkeyResult.ok) {
-    throw new Error(`failed to register PRE pubkey for recall provisioning: ${registerPrePubkeyResult.error ?? 'unknown'}`);
+    const errMessage = `failed to register PRE pubkey for recall provisioning: ${registerPrePubkeyResult.error ?? 'unknown'}`;
+    logOp('org.provision_recall', 'error', {
+      org: orgId,
+      status: 'err',
+      step: 'register_pre_pubkey',
+      err: errMessage,
+    });
+    throw new Error(errMessage);
   }
 
   const { headers } = await buildWeVibeSignedAuth();
@@ -746,8 +858,27 @@ export async function provisionRecall(orgId: string): Promise<void> {
   );
 
   if (!response.res.ok) {
-    throw new Error(`failed to provision recall kfrag: HTTP ${response.res.status}${response.bodyText ? ` — ${response.bodyText}` : ''}`);
+    const errMessage = `failed to provision recall kfrag: HTTP ${response.res.status}${response.bodyText ? ` — ${response.bodyText}` : ''}`;
+    logOp('org.provision_recall', 'error', {
+      org: orgId,
+      status: 'err',
+      step: 'store_kfrag',
+      err: errMessage,
+    });
+    throw new Error(errMessage);
   }
+
+  logOp('org.provision_recall', 'info', {
+    org: orgId,
+    phase: 'outcome',
+    status: 'ok',
+    epoch: currentEpoch,
+    umbral_pk_fp: fp(epochPkHex),
+    member_pk_fp: fp(edPubkeyHex),
+    pre_pubkey_fp: fp(prePubkeyHex),
+    kfrag_fp: fp(kfragHex),
+    kfrag_stored: true,
+  });
 }
 
 export interface InviteMemberParams {

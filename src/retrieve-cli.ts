@@ -16,12 +16,14 @@ import { getActiveHubUrlForOrg, pickActiveEndpoint } from './hub-resolver.js';
 import { getOrgHubState, setOrgHubState } from './identity-sidecar.js';
 import { ensureIdentity } from './identity-runtime.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
+import { logOp, newTraceId } from './logger.js';
 
 export interface RetrieveInput {
   query: string;
   limit?: number;
   org_id?: string;
   session_id?: string;
+  trace_id?: string;
   intent?: string;
   task?: string;
   description?: string;
@@ -261,29 +263,31 @@ async function runWithHubSignatureFailover<T>(
 }
 
 export async function retrieve(input: RetrieveInput): Promise<Output> {
+  const trace = input.trace_id ?? newTraceId();
   await initCrypto();
 
   const identity = await ensureIdentity();
   if (!identity) {
-    console.error('[recall] retrieve error=no identity found in keychain');
+    console.error('[recall] retrieve error=no identity found in keychain trace=' + trace);
     return { status: 'error', error: 'no identity found in keychain' };
   }
-  console.error('[recall] identity ok');
+  console.error('[recall] identity ok trace=' + trace);
 
   let memberships: Awaited<ReturnType<typeof loadMemberships>>;
   try {
     memberships = await loadMemberships(HUB_URL);
   } catch (e) {
     console.error(
-      '[recall] retrieve error=failed to load org memberships hub_url=%s detail=%s',
+      '[recall] retrieve error=failed to load org memberships hub_url=%s detail=%s trace=%s',
       HUB_URL,
       sanitizeRecallLogValue(String(e)),
+      trace,
     );
     return { status: 'error', error: `failed to load org memberships: ${e}` };
   }
 
   if (memberships.length === 0) {
-    console.error('[recall] retrieve error=no org membership found');
+    console.error('[recall] retrieve error=no org membership found trace=' + trace);
     return { status: 'error', error: 'no org membership found' };
   }
 
@@ -292,19 +296,19 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     : memberships[0];
 
   if (!membership) {
-    console.error('[recall] retrieve error=org membership missing requested_org=%s', sanitizeRecallLogValue(input.org_id ?? ''));
+    console.error('[recall] retrieve error=org membership missing requested_org=%s trace=%s', sanitizeRecallLogValue(input.org_id ?? ''), trace);
     return { status: 'error', error: `org ${input.org_id} not found in memberships` };
   }
-  console.error('[recall] membership resolved org_id=%s', membership.orgId);
+  console.error('[recall] membership resolved org_id=%s trace=%s', membership.orgId, trace);
 
   let activeHubUrl = getActiveHubUrlForOrg(membership.orgId) ?? HUB_URL;
   const recallGovernor = getRecallModeGovernor();
   const scrubbedInput = scrubQueryHarvestInput(input, membership.egressMode, membership.allowedProviders);
-  console.error('[recall] query-scrub applied');
+  console.error('[recall] query-scrub applied trace=' + trace);
 
   const harvest = buildQueryHarvest(scrubbedInput);
   const needCardText = buildNeedCard(harvest);
-  console.error('[recall] need-card built length=%d', needCardText.length);
+  console.error('[recall] need-card built length=%d trace=%s', needCardText.length, trace);
   const stackSignals = harvest.stack ?? [];
   const recentActivitySignals = harvest.errorStrings ?? [];
   const keywordDescription = buildKeywordDescription(scrubbedInput, stackSignals);
@@ -318,10 +322,10 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   });
 
   const keywordTerms = keywords.map(kw => sanitizeRecallLogValue(kw.term));
-  console.error('[recall] keywords extracted count=%d terms=%s', keywords.length, keywordTerms.join(','));
+  console.error('[recall] keywords extracted count=%d terms=%s trace=%s', keywords.length, keywordTerms.join(','), trace);
 
   if (keywords.length === 0) {
-    console.error('[recall] retrieve error=no keywords extracted query=%s', sanitizeRecallLogValue(scrubbedInput.query));
+    console.error('[recall] retrieve error=no keywords extracted query=%s trace=%s', sanitizeRecallLogValue(scrubbedInput.query), trace);
     return { status: 'error', error: `no keywords extracted for "${scrubbedInput.query}"` };
   }
 
@@ -332,18 +336,19 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     queryVector = await computeLocalEmbedding(needCardText, { role: 'query', prefix: true }, embeddingConfig);
     embeddingModelId = embeddingConfig.model;
     console.error(
-      '[recall] embedding computed vector_dim=%d model=%s',
+      '[recall] embedding computed vector_dim=%d model=%s trace=%s',
       queryVector.length,
       sanitizeRecallLogValue(embeddingModelId),
+      trace,
     );
   } catch (e) {
-    console.error('[recall] retrieve error=embedding failed detail=%s', sanitizeRecallLogValue(String(e)));
+    console.error('[recall] retrieve error=embedding failed detail=%s trace=%s', sanitizeRecallLogValue(String(e)), trace);
     return { status: 'error', error: `embedding failed: ${e}` };
   }
 
   let rawMemories: ReturnType<typeof deserializeMemoryResult>[] = [];
   try {
-    console.error('[recall] about-to-call-hub org_id=%s hubUrl=%s', membership.orgId, activeHubUrl);
+    console.error('[recall] about-to-call-hub org_id=%s hubUrl=%s trace=%s', membership.orgId, activeHubUrl, trace);
     const queryResult = await runWithHubSignatureFailover(
       membership.orgId,
       activeHubUrl,
@@ -364,7 +369,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
     activeHubUrl = queryResult.hubUrl;
     const data = queryResult.result;
-    console.error('[recall] hub returned raw_count=%d', data.results?.length ?? 0);
+    console.error('[recall] hub returned raw_count=%d trace=%s', data.results?.length ?? 0, trace);
 
     if (data.results) {
       for (const r of data.results) {
@@ -372,7 +377,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       }
     }
   } catch (e) {
-    console.error('[recall] retrieve error=hub query failed detail=%s', sanitizeRecallLogValue(String(e)));
+    console.error('[recall] retrieve error=hub query failed detail=%s trace=%s', sanitizeRecallLogValue(String(e)), trace);
     return { status: 'error', error: `hub query failed: ${e}` };
   }
 
@@ -400,7 +405,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
       activeHubUrl = ciphertextResult.hubUrl;
       if (!ciphertextResult.result.res.ok) {
-        console.error('[recall] decrypt skip cid=%s reason=ciphertext_fetch_not_ok status=%d', m.cid, ciphertextResult.result.res.status);
+        console.error('[recall] decrypt skip cid=%s reason=ciphertext_fetch_not_ok status=%d trace=%s', m.cid, ciphertextResult.result.res.status, trace);
         captureDecryptFailureReason(`ciphertext fetch returned HTTP ${ciphertextResult.result.res.status}`);
         continue;
       }
@@ -411,7 +416,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       const ctData = ciphertextResult.result.json<{ ciphertext_hex?: string; encrypted_blob?: string }>();
       const ciphertextHexStr = ctData.ciphertext_hex ?? ctData.encrypted_blob;
       if (!ciphertextHexStr) {
-        console.error('[recall] decrypt skip cid=%s reason=ciphertext_missing (no ciphertext_hex/encrypted_blob in GetMemory response)', m.cid);
+        console.error('[recall] decrypt skip cid=%s reason=ciphertext_missing (no ciphertext_hex/encrypted_blob in GetMemory response) trace=%s', m.cid, trace);
         captureDecryptFailureReason('ciphertext missing in GetMemory response');
         continue;
       }
@@ -430,6 +435,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
           membership,
           m.epochId,
           hubUrl,
+          trace,
         ),
       );
 
@@ -478,7 +484,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       });
     } catch (e) {
       const reasonDetail = sanitizeRecallLogValue(e instanceof Error ? (e.stack ?? e.message) : String(e));
-      console.error('[recall] decrypt FAILED cid=%s reason=%s', m.cid, reasonDetail);
+      console.error('[recall] decrypt FAILED cid=%s reason=%s trace=%s', m.cid, reasonDetail, trace);
       captureDecryptFailureReason(reasonDetail);
       continue;
     }
@@ -486,9 +492,9 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   const rawCount = rawMemories.length;
   const decryptedCount = memories.length;
-  console.error('[recall] decrypt complete decrypted_count=%d', memories.length);
+  console.error('[recall] decrypt complete decrypted_count=%d trace=%s', memories.length, trace);
 
-  console.error('[recall] final memories returned count=%d', memories.length);
+  console.error('[recall] final memories returned count=%d trace=%s', memories.length, trace);
 
   if (memories.length === 0) {
     if (rawCount === 0) {

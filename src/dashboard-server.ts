@@ -38,6 +38,7 @@ import { HUB_URL, DASHBOARD_PORT, EMBEDDING_MODEL } from './config.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
 import { umbralEncrypt } from './sidecar.js';
+import { logOp, fp } from './logger.js';
 
 function resolvePort(): number {
   // CLI flag
@@ -213,6 +214,15 @@ function createMcpServer(): McpServer {
             epochUmbralPkHex,
             Buffer.from(dek).toString('hex'),
           );
+          logOp('dashboard.encrypt', 'info', {
+            status: 'ok',
+            item_id: item.id,
+            org: membership.orgId,
+            epoch: item.epoch_id,
+            umbral_pk_fp: fp(epochUmbralPkHex),
+            dek_len: dek.length,
+            capsule_fp: fp(capsule),
+          });
 
           const parsed = parseMemoryText(decrypted.plaintext);
           const structured: StructuredMemory = {
@@ -233,6 +243,13 @@ function createMcpServer(): McpServer {
             umbral_ciphertext: ciphertext,
           });
         } catch (e) {
+          logOp('dashboard.encrypt', 'error', {
+            status: 'err',
+            item_id: item.id,
+            org: membership.orgId,
+            epoch: item.epoch_id,
+            err: (e as Error).message,
+          });
           results.push({
             id: item.id,
             vector: null,

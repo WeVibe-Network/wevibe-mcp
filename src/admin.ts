@@ -44,6 +44,7 @@ import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } fro
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
 import { base32Decode, pairingIdFromSecret, decryptPairedIdentitySeed } from './pair-crypto.js';
 import { HUB_URL, CHAIN_REST_URL, DASHBOARD_URL } from './config.js';
+import { logOp } from './logger.js';
 import { writeIdentitySidecar, readIdentitySidecar } from './identity-sidecar.js';
 import { isBiometricAvailable } from './biometric.js';
 import { resolveAllOrgsOnce } from './hub-resolver.js';
@@ -439,13 +440,40 @@ async function cmdExportPairing(flags: Record<string, string>) {
 async function cmdCreateOrg(flags: Record<string, string>) {
   const orgName = requireFlag(flags, 'name');
   const domain = requireFlag(flags, 'domain');
+  logOp('admin.setup_org', 'info', { phase: 'entry', name: orgName, domain });
   const result = await createOrg({ orgName, domain, hubUrl: HUB_URL });
-  if (result.status === 'error') die(`Org creation failed: ${result.error}`);
+  if (result.status === 'error') {
+    logOp('admin.setup_org', 'error', {
+      phase: 'outcome',
+      status: 'err',
+      name: orgName,
+      domain,
+      err: result.error,
+    });
+    die(`Org creation failed: ${result.error}`);
+  }
 
   const masterKey = await loadKeyEnvelope(result.orgId, 'master');
-  if (!masterKey) die(`Org created (ID: ${result.orgId}) but master key not found.`);
+  if (!masterKey) {
+    logOp('admin.setup_org', 'error', {
+      phase: 'outcome',
+      status: 'err',
+      org: result.orgId,
+      name: orgName,
+      domain,
+      err: 'master key not found',
+    });
+    die(`Org created (ID: ${result.orgId}) but master key not found.`);
+  }
 
   const phrase = generateRecoveryPhrase(masterKey);
+  logOp('admin.setup_org', 'info', {
+    phase: 'outcome',
+    status: 'ok',
+    org: result.orgId,
+    name: orgName,
+    domain,
+  });
   console.log(`Org created: ${result.orgId}`);
   console.log(`\n╔══════════════════════════════════════════════════════════════╗`);
   console.log(`║  RECOVERY PHRASE — WRITE THIS DOWN AND STORE IT SECURELY   ║`);
@@ -526,12 +554,20 @@ async function cmdRotate(flags: Record<string, string>) {
 
 async function cmdProvisionRecall(flags: Record<string, string>) {
   const orgId = requireFlag(flags, 'org');
+  logOp('admin.provision_recall', 'info', { phase: 'entry', org: orgId });
   try {
     await provisionRecall(orgId);
   } catch (error) {
+    logOp('admin.provision_recall', 'error', {
+      phase: 'outcome',
+      status: 'err',
+      org: orgId,
+      err: error instanceof Error ? error.message : String(error),
+    });
     die(`Recall provisioning failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
+  logOp('admin.provision_recall', 'info', { phase: 'outcome', status: 'ok', org: orgId });
   console.log(`Recall provisioned for org ${orgId}.`);
 }
 

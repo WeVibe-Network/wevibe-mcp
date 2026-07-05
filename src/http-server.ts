@@ -17,6 +17,7 @@ import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.
 import { createOllamaProvider } from './llm-ollama.js';
 import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
 import { exportIdentityPairing } from './pairing-export.js';
+import { logOp, resolveTraceId, TRACE_HEADER } from './logger.js';
 import {
   buildCanonicalServeBodyBytes,
   deriveOrgServeKeyFromIdentitySeed,
@@ -220,6 +221,14 @@ function sanitizeRecallLogValue(value: string): string {
   return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 }
 
+function getRequestTrace(req: IncomingMessage): string | undefined {
+  return (req as IncomingMessage & { _wevibeTrace?: string })._wevibeTrace;
+}
+
+function setRequestTrace(req: IncomingMessage, trace: string): void {
+  (req as IncomingMessage & { _wevibeTrace?: string })._wevibeTrace = trace;
+}
+
 async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!authorize(req, res)) {
     return;
@@ -234,6 +243,7 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
   try {
     rawInput = JSON.parse(body) as Record<string, unknown>;
     input = rawInput as unknown as RetrieveInput;
+    input.trace_id = getRequestTrace(req);
 
     input.limit = typeof rawInput.limit === 'number' && Number.isFinite(rawInput.limit)
       ? rawInput.limit
@@ -416,6 +426,17 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     )
     : createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, extractionModel);
 
+  const extractOptions = {
+    provider,
+    systemPrompt: systemPromptOverride,
+    numCtx: numCtxOverride,
+    sessionId,
+    orgContext: orgId
+      ? { orgId, hubUrl: HUB_URL }
+      : undefined,
+    traceId: getRequestTrace(req),
+  } as Parameters<typeof extractMemories>[2];
+
   try {
     const result = await extractMemories(
       body.transcript,
@@ -424,15 +445,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
         directory,
         stack,
       },
-      {
-        provider,
-        systemPrompt: systemPromptOverride,
-        numCtx: numCtxOverride,
-        sessionId,
-        orgContext: orgId
-          ? { orgId, hubUrl: HUB_URL }
-          : undefined,
-      },
+      extractOptions,
     );
 
     jsonResponse(res, 200, { memories: result.memories, ...(result.meta ? { meta: result.meta } : {}) });
@@ -761,6 +774,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
       headers: {
         'Content-Type': 'application/json',
         ...authResult.headers,
+        'X-WeVibe-Trace-Id': getRequestTrace(req) ?? '',
       },
       body: JSON.stringify(hubBody),
     });
@@ -864,6 +878,7 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
       headers: {
         'Content-Type': 'application/json',
         ...authResult.headers,
+        'X-WeVibe-Trace-Id': getRequestTrace(req) ?? '',
       },
       body: JSON.stringify(hubBody),
     });
@@ -949,68 +964,84 @@ async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise
 export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = req.url ?? '';
   const method = req.method ?? '';
+  const trace = resolveTraceId(req.headers[TRACE_HEADER]);
+  setRequestTrace(req, trace);
+  const t0 = Date.now();
+  logOp('http.request', 'info', { trace, phase: 'entry', method, url });
 
-  if (method === 'GET' && url === '/v1/health') {
-    await handleHealth(req, res);
-    return;
+  try {
+    if (method === 'GET' && url === '/v1/health') {
+      await handleHealth(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/recall') {
+      await handleRecall(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/extract') {
+      await handleExtract(req, res);
+      return;
+    }
+
+    if (method === 'GET' && url === '/v1/extract/defaults') {
+      await handleExtractDefaults(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/identity/export-pairing') {
+      await handleIdentityExportPairing(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/shutdown') {
+      await handleShutdown(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/org-setup') {
+      await handleOrgSetup(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/org-setup/finalize') {
+      await handleOrgSetupFinalize(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/provision-recall') {
+      await handleProvisionRecall(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/serves') {
+      await handleServes(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/reports') {
+      await handleReports(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/denials') {
+      await handleDenials(req, res);
+      return;
+    }
+
+    jsonResponse(res, 404, { status: 'error', error: 'not found' });
+  } finally {
+    const status = res.statusCode;
+    logOp('http.request', status >= 500 ? 'error' : 'info', {
+      trace,
+      phase: 'outcome',
+      method,
+      url,
+      status,
+      dur_ms: Date.now() - t0,
+    });
   }
-
-  if (method === 'POST' && url === '/v1/recall') {
-    await handleRecall(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/extract') {
-    await handleExtract(req, res);
-    return;
-  }
-
-  if (method === 'GET' && url === '/v1/extract/defaults') {
-    await handleExtractDefaults(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/identity/export-pairing') {
-    await handleIdentityExportPairing(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/shutdown') {
-    await handleShutdown(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/org-setup') {
-    await handleOrgSetup(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/org-setup/finalize') {
-    await handleOrgSetupFinalize(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/provision-recall') {
-    await handleProvisionRecall(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/serves') {
-    await handleServes(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/reports') {
-    await handleReports(req, res);
-    return;
-  }
-
-  if (method === 'POST' && url === '/v1/denials') {
-    await handleDenials(req, res);
-    return;
-  }
-
-  jsonResponse(res, 404, { status: 'error', error: 'not found' });
 }
 
 export function startHttpServer(): Promise<boolean> {
