@@ -156,35 +156,31 @@ describe('moderation approval flow', () => {
     expect(body.content_flags).toBeUndefined();
   });
 
-  it('still approves when embedding fails and omits vector fields', async () => {
-    queueManifestAndApproveResponses();
+  it('fails closed when embedding fails and does not send approve', async () => {
     vi.mocked(computeLocalEmbedding).mockRejectedValueOnce(new Error('embedding offline'));
 
     const result = await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
 
-    expect(result.status).toBe('approved');
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('embedding failed');
 
-    const body = findApproveCallBody();
-    expect(body.vector).toBeUndefined();
-    expect(body.embedding_model_id).toBeUndefined();
-    expect(body.embedding_schema_version).toBeUndefined();
-    expect(body.vector_dim).toBeUndefined();
+    const approveCall = mockFetch.mock.calls.find(([url]) =>
+      String(url).includes('/moderation/') && String(url).includes('/approve'));
+    expect(approveCall).toBeUndefined();
   });
 
-  it('still approves when embedding config load fails and omits vector fields', async () => {
-    queueManifestAndApproveResponses();
+  it('fails closed when embedding config load fails and does not send approve', async () => {
     vi.mocked(loadEmbeddingConfig).mockImplementationOnce(() => {
       throw new Error('OpenRouter API key missing or masked in dashboard.json; paste a real key');
     });
 
     const result = await approveSubmission('http://localhost:4440', 'test-org', mockPendingItem, mockMembership);
 
-    expect(result.status).toBe('approved');
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('embedding failed');
 
-    const body = findApproveCallBody();
-    expect(body.vector).toBeUndefined();
-    expect(body.embedding_model_id).toBeUndefined();
-    expect(body.embedding_schema_version).toBeUndefined();
-    expect(body.vector_dim).toBeUndefined();
+    const approveCall = mockFetch.mock.calls.find(([url]) =>
+      String(url).includes('/moderation/') && String(url).includes('/approve'));
+    expect(approveCall).toBeUndefined();
   });
 });

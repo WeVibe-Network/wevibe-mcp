@@ -4,7 +4,6 @@ import { buildWeVibeSignedAuth } from './auth.js';
 import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership, MemoryType } from './types.js';
 import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonical.js';
-import { EMBEDDING_MODEL } from './config.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
 import { spawnSync } from 'node:child_process';
@@ -248,12 +247,12 @@ export async function approveSubmission(
     stack: Array.isArray(item.stack_hint) ? item.stack_hint : [],
   };
 
-  let vector: number[] | undefined;
-  let embeddingModelId: string | undefined;
+  let vector: number[];
+  let embeddingModelId: string;
   try {
     ({ vector, embeddingModelId } = await embedRetrievalCard(structured));
   } catch (e) {
-    console.warn(`approveSubmission: embedding failed; continuing without vector: ${(e as Error).message}`);
+    return { status: 'error', error: `embedding failed: ${(e as Error).message}` };
   }
 
   const moderatorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
@@ -278,23 +277,20 @@ export async function approveSubmission(
     memory_type: MemoryType;
     moderator_sig: string;
     signed_by: string;
-    vector?: number[];
-    embedding_model_id?: string;
-    embedding_schema_version?: string;
-    vector_dim?: number;
+    vector: number[];
+    embedding_model_id: string;
+    embedding_schema_version: string;
+    vector_dim: number;
   } = {
     epoch_id: item.epoch_id,
     memory_type: memoryType,
     moderator_sig: moderatorSigHex,
     signed_by: moderatorPubkeyHex,
+    vector,
+    embedding_model_id: embeddingModelId,
+    embedding_schema_version: 'retrieval-card-v1',
+    vector_dim: vector.length,
   };
-
-  if (vector !== undefined) {
-    requestBody.vector = vector;
-    requestBody.embedding_model_id = embeddingModelId ?? EMBEDDING_MODEL;
-    requestBody.embedding_schema_version = 'retrieval-card-v1';
-    requestBody.vector_dim = vector.length;
-  }
 
   const { headers: authHeaders } = await buildWeVibeSignedAuth();
 

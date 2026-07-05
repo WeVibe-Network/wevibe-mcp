@@ -4,6 +4,7 @@ import { decryptPendingItem, denySubmission, approveSubmission } from '../src/mo
 import { denySubmissionMessage } from '../src/canonical.js';
 import type { OrgMembership } from '../src/types.js';
 import type { PendingQueueItem } from '../src/moderation.js';
+import { embedRetrievalCard } from '../src/embed-card.js';
 import * as keyStore from '../src/key-store.js';
 import * as extraction from '../src/extraction.js';
 import * as orgClient from '../src/org-client.js';
@@ -11,6 +12,10 @@ import * as sidecar from '../src/sidecar.js';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
+
+vi.mock('../src/embed-card.js', () => ({
+  embedRetrievalCard: vi.fn(),
+}));
 
 beforeAll(async () => {
   await initCrypto();
@@ -149,6 +154,11 @@ describe('moderation crypto pipeline', () => {
 
   it('approveSubmission uses pending item memory_type in approval payload', async () => {
     const modIdentity = generateIdentity();
+    vi.mocked(embedRetrievalCard).mockResolvedValueOnce({
+      vector: Array.from({ length: 3072 }, (_, i) => i / 3072),
+      cardText: 'card',
+      embeddingModelId: 'test-embedding-model',
+    });
 
     const plaintext = 'Moderation memory type override test payload';
     const dek = generateDek();
@@ -174,17 +184,11 @@ describe('moderation crypto pipeline', () => {
 
     const loadIdentitySpy = vi.spyOn(keyStore, 'loadIdentity').mockResolvedValue(modIdentity);
 
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ umbral_pk: '11' }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({ status: 'approved' }),
-      } as Response);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'approved' }),
+    } as Response);
 
     const result = await approveSubmission(
       'http://localhost:4440',
