@@ -4,6 +4,18 @@ import { logOp, fp, appendRaw } from './logger.js';
 
 const execFileAsync = promisify(execFile);
 
+const SECRET_SIDECAR_FLAGS = ['--delegating-sk', '--seed', '--plaintext', '--receiving-sk', '--ciphertext'];
+
+function redactSecretArgs(text: string | undefined): string {
+  if (!text) return String(text ?? '');
+
+  let out = text;
+  for (const flag of SECRET_SIDECAR_FLAGS) {
+    out = out.replace(new RegExp(`(${flag})(=|\\s+)(\\S+)`, 'g'), '$1$2<redacted>');
+  }
+  return out;
+}
+
 export interface EncryptResult {
   capsule: string;
   ciphertext: string;
@@ -26,7 +38,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function formatSidecarError(command: string, stderrText: string, fallback: string): Error {
   if (!stderrText) {
-    return new Error(`sidecar ${command} failed: ${fallback}`);
+    return new Error(`sidecar ${command} failed: ${redactSecretArgs(fallback)}`);
   }
 
   try {
@@ -37,13 +49,13 @@ function formatSidecarError(command: string, stderrText: string, fallback: strin
         ? parsed.message
         : null;
     if (message) {
-      return new Error(`sidecar ${command} failed: ${message}`);
+      return new Error(`sidecar ${command} failed: ${redactSecretArgs(message)}`);
     }
   } catch {
     // Non-JSON stderr, fall through to raw text.
   }
 
-  return new Error(`sidecar ${command} failed: ${stderrText}`);
+  return new Error(`sidecar ${command} failed: ${redactSecretArgs(stderrText)}`);
 }
 
 async function runSidecar(
@@ -65,7 +77,7 @@ async function runSidecar(
     stderr = output.stderr;
     appendRaw(
       'umbral-sidecar.log',
-      `${new Date().toISOString()} [${command}] status=ok\n--- stdout ---\n${output.stdout ?? ''}\n--- stderr ---\n${output.stderr ?? ''}\n`,
+      `${new Date().toISOString()} [${command}] status=ok stdout_bytes=${Buffer.byteLength(output.stdout ?? '')} stdout_fp=${fp(output.stdout ?? '')} stderr_bytes=${Buffer.byteLength(output.stderr ?? '')} stderr_fp=${fp(output.stderr ?? '')}\n`,
     );
     logOp('sidecar', 'info', {
       ...logMeta,
@@ -77,19 +89,19 @@ async function runSidecar(
     const anyErr = error as { stdout?: string; stderr?: string; message?: string };
     appendRaw(
       'umbral-sidecar.log',
-      `${new Date().toISOString()} [${command}] status=err\n--- stdout ---\n${anyErr.stdout ?? ''}\n--- stderr ---\n${anyErr.stderr ?? ''}\n`,
+      `${new Date().toISOString()} [${command}] status=err stdout_bytes=${Buffer.byteLength(anyErr.stdout ?? '')} stdout_fp=${fp(anyErr.stdout ?? '')} stderr_bytes=${Buffer.byteLength(anyErr.stderr ?? '')} stderr_fp=${fp(anyErr.stderr ?? '')}\n`,
     );
     logOp('sidecar', 'error', {
       ...logMeta,
       command,
       status: 'err',
       dur_ms: Date.now() - t0,
-      err: anyErr.message ?? String(error),
+      err: redactSecretArgs(anyErr.message ?? String(error)),
     });
 
     const execError = error as Error & { stderr?: string };
     const stderrText = typeof execError.stderr === 'string' ? execError.stderr.trim() : '';
-    throw formatSidecarError(command, stderrText, execError.message);
+    throw formatSidecarError(command, stderrText, redactSecretArgs(execError.message));
   }
 
   if (stderr.trim()) {
@@ -132,7 +144,7 @@ async function runSidecarText(
     stderr = output.stderr;
     appendRaw(
       'umbral-sidecar.log',
-      `${new Date().toISOString()} [${command}] status=ok\n--- stdout ---\n${output.stdout ?? ''}\n--- stderr ---\n${output.stderr ?? ''}\n`,
+      `${new Date().toISOString()} [${command}] status=ok stdout_bytes=${Buffer.byteLength(output.stdout ?? '')} stdout_fp=${fp(output.stdout ?? '')} stderr_bytes=${Buffer.byteLength(output.stderr ?? '')} stderr_fp=${fp(output.stderr ?? '')}\n`,
     );
     logOp('sidecar', 'info', {
       ...logMeta,
@@ -144,19 +156,19 @@ async function runSidecarText(
     const anyErr = error as { stdout?: string; stderr?: string; message?: string };
     appendRaw(
       'umbral-sidecar.log',
-      `${new Date().toISOString()} [${command}] status=err\n--- stdout ---\n${anyErr.stdout ?? ''}\n--- stderr ---\n${anyErr.stderr ?? ''}\n`,
+      `${new Date().toISOString()} [${command}] status=err stdout_bytes=${Buffer.byteLength(anyErr.stdout ?? '')} stdout_fp=${fp(anyErr.stdout ?? '')} stderr_bytes=${Buffer.byteLength(anyErr.stderr ?? '')} stderr_fp=${fp(anyErr.stderr ?? '')}\n`,
     );
     logOp('sidecar', 'error', {
       ...logMeta,
       command,
       status: 'err',
       dur_ms: Date.now() - t0,
-      err: anyErr.message ?? String(error),
+      err: redactSecretArgs(anyErr.message ?? String(error)),
     });
 
     const execError = error as Error & { stderr?: string };
     const stderrText = typeof execError.stderr === 'string' ? execError.stderr.trim() : '';
-    throw formatSidecarError(command, stderrText, execError.message);
+    throw formatSidecarError(command, stderrText, redactSecretArgs(execError.message));
   }
 
   if (stderr.trim()) {
