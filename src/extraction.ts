@@ -15,8 +15,12 @@ import {
   budgetChars,
   chunkRoomChars,
   fitsSinglePass,
+  normalizeSlug,
+  resolveMaxOutputTokens,
   resolveContextWindow,
 } from './model-context.js';
+import { getOpenRouterCatalog } from './openrouter-catalog.js';
+import type { OpenRouterCatalog, OpenRouterModelEntry } from './openrouter-catalog.js';
 import { logOp } from './logger.js';
 import { readUsedMemoryTexts } from './served-memory-store.js';
 import type { MemoryType } from './types.js';
@@ -97,6 +101,12 @@ export interface ExtractMemoriesOptions {
   provider: LlmProvider;
   systemPrompt?: string;
   numCtx?: number;
+  /**
+   * true = local provider (ollama/lm_studio), use num_ctx hint;
+   * false = remote/OpenRouter, resolve from catalog + fail-closed.
+   * Defaults to true when unset (only the HTTP server sets it explicitly).
+   */
+  isLocal?: boolean;
   sessionId?: string;
   traceId?: string;
   orgContext?: {
@@ -721,8 +731,31 @@ export async function extractMemories(
   const modelSlug = typeof (options.provider as { model?: unknown }).model === 'string'
     ? (options.provider as { model?: string }).model
     : undefined;
-  const contextWindow = resolveContextWindow(modelSlug, options.numCtx);
+  const isLocal = options.isLocal ?? true;
+  let catalog: OpenRouterCatalog | undefined;
+  let modelEntry: OpenRouterModelEntry | undefined;
+  if (!isLocal) {
+    catalog = await getOpenRouterCatalog(options.traceId);
+    modelEntry = modelSlug ? catalog.get(normalizeSlug(modelSlug)) : undefined;
+  }
+  const contextWindow = resolveContextWindow({
+    slug: modelSlug,
+    isLocal,
+    numCtxHint: options.numCtx,
+    catalog,
+  });
   const budget = budgetChars(contextWindow);
+  const maxOutputTokens = resolveMaxOutputTokens(OUTPUT_RESERVE_TOKENS, modelEntry);
+  logOp('extract', 'info', {
+    trace: options.traceId,
+    phase: 'context_resolve',
+    model: modelSlug,
+    is_local: isLocal,
+    resolved_window: contextWindow,
+    source: isLocal ? 'local' : 'catalog',
+    budget_chars: budget,
+    max_output_tokens: maxOutputTokens,
+  });
   const usedMemoryTexts = options.sessionId ? readUsedMemoryTexts(options.sessionId) : [];
 
   const vocabularyBlock = orgVocabulary.length > 0
@@ -828,6 +861,7 @@ ${TRANSCRIPT_END_MARKER}`;
         temperature: 0.1,
         jsonFormat: true,
         jsonSchema: { name: 'wevibe_memory_extraction', schema: MEMORY_EXTRACTION_SCHEMA },
+        maxTokens: maxOutputTokens,
         timeoutMs: 300000,
         numCtx,
       });
@@ -870,6 +904,7 @@ ${buildNumberedList(priorChunkTexts)}
           temperature: 0.1,
           jsonFormat: true,
           jsonSchema: { name: 'wevibe_memory_extraction', schema: MEMORY_EXTRACTION_SCHEMA },
+          maxTokens: maxOutputTokens,
           timeoutMs: 300000,
           numCtx,
         });

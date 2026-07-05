@@ -13,6 +13,7 @@ import { buildOrgCryptoSetup, persistOrgKeys, provisionRecall } from './org-clie
 import { HTTP_HOST, HUB_URL, OLLAMA_URL } from './config.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 import { DEFAULT_EXTRACTION_NUM_CTX, extractMemories, getExtractionPrompt } from './extraction.js';
+import { ContextWindowResolutionError } from './model-context.js';
 import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.js';
 import { createOllamaProvider } from './llm-ollama.js';
 import { createOpenAICompatibleProvider } from './llm-openai-compat.js';
@@ -456,9 +457,11 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
       apiKeyOverride ?? '',
     )
     : createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, extractionModel);
+  const isLocal = providerOverride ? isLocalProvider(providerOverride) : true;
 
   const extractOptions = {
     provider,
+    isLocal,
     systemPrompt: systemPromptOverride,
     numCtx: numCtxOverride,
     sessionId,
@@ -481,6 +484,10 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
 
     jsonResponse(res, 200, { memories: result.memories, ...(result.meta ? { meta: result.meta } : {}) });
   } catch (error) {
+    if (error instanceof ContextWindowResolutionError) {
+      jsonResponse(res, 422, { error: error.message, code: error.code });
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     jsonResponse(res, 500, { error: `extraction failed: ${message}` });
   }

@@ -63,6 +63,9 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
             ],
             temperature: options?.temperature ?? 0.2,
           };
+          if (typeof options?.maxTokens === 'number' && Number.isFinite(options.maxTokens) && options.maxTokens > 0) {
+            reqBody.max_tokens = Math.floor(options.maxTokens);
+          }
           if (responseFormat) {
             reqBody.response_format = responseFormat;
           }

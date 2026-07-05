@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest';
 
 import {
   CHARS_PER_TOKEN,
+  ContextWindowResolutionError,
   DEFAULT_CONTEXT_WINDOW,
   EXTRACTION_BUDGET_FRACTION,
-  MODEL_CONTEXT_WINDOWS,
   budgetChars,
   chunkRoomChars,
   fitsSinglePass,
   normalizeSlug,
+  resolveMaxOutputTokens,
   resolveContextWindow,
 } from '../src/model-context.js';
 
@@ -24,28 +25,110 @@ describe('model-context', () => {
   });
 
   describe('resolveContextWindow', () => {
-    it('resolves known hosted slug from registry', () => {
-      expect(resolveContextWindow('anthropic/claude-opus-4.8')).toBe(MODEL_CONTEXT_WINDOWS['anthropic/claude-opus']);
+    const catalog = new Map([
+      [
+        'moonshotai/kimi-k2.6',
+        {
+          id: 'moonshotai/kimi-k2.6',
+          contextLength: 262144,
+          topProviderContextLength: 262144,
+          maxCompletionTokens: 262144,
+        },
+      ],
+      [
+        'minimax/minimax-m3',
+        {
+          id: 'minimax/minimax-m3',
+          contextLength: 1048576,
+          topProviderContextLength: 524288,
+          maxCompletionTokens: 524288,
+        },
+      ],
+    ]);
+
+    it('resolves remote kimi-k2.6 from catalog', () => {
+      expect(resolveContextWindow({ slug: 'moonshotai/kimi-k2.6', isLocal: false, catalog })).toBe(262144);
     });
 
-    it('uses longest-prefix matching for versioned variants', () => {
-      expect(resolveContextWindow('openrouter/minimax/minimax-m3-latest')).toBe(
-        MODEL_CONTEXT_WINDOWS['minimax/minimax-m3'],
+    it('resolves remote minimax-m3 to the smaller effective window and normalizes openrouter prefix', () => {
+      expect(resolveContextWindow({ slug: 'minimax/minimax-m3', isLocal: false, catalog })).toBe(524288);
+      expect(resolveContextWindow({ slug: 'openrouter/minimax/minimax-m3', isLocal: false, catalog })).toBe(524288);
+    });
+
+    it('throws ContextWindowResolutionError for unknown remote models (fail-closed)', () => {
+      const slug = 'foo/does-not-exist';
+      const resolveUnknown = () => resolveContextWindow({ slug, isLocal: false, catalog });
+
+      expect(resolveUnknown).toThrow(ContextWindowResolutionError);
+
+      let thrown: unknown;
+      let resolved: number | undefined;
+      try {
+        resolved = resolveUnknown();
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(resolved).toBeUndefined();
+      expect(resolved).not.toBe(DEFAULT_CONTEXT_WINDOW);
+      expect(thrown).toBeInstanceOf(ContextWindowResolutionError);
+      const err = thrown as ContextWindowResolutionError;
+      expect(err.code).toBe('unknown_model_context');
+      expect(err.message).toContain(slug);
+    });
+
+    it('keeps local behavior: num_ctx hint when present, safe default otherwise', () => {
+      expect(resolveContextWindow({ slug: 'local/whatever', isLocal: true, numCtxHint: 262144 })).toBe(262144);
+      expect(resolveContextWindow({ slug: 'x', isLocal: true })).toBe(DEFAULT_CONTEXT_WINDOW);
+    });
+
+    it('guards remote entries with missing/invalid windows', () => {
+      const invalidCatalog = new Map([
+        ['bad/model', { id: 'bad/model', contextLength: 0, topProviderContextLength: 0 }],
+      ]);
+      expect(() => resolveContextWindow({ slug: 'bad/model', isLocal: false, catalog: invalidCatalog })).toThrow(
+        ContextWindowResolutionError,
       );
+
+      const topOnlyCatalog = new Map([
+        ['top/only', { id: 'top/only', topProviderContextLength: 123456 }],
+      ]);
+      expect(resolveContextWindow({ slug: 'top/only', isLocal: false, catalog: topOnlyCatalog })).toBe(123456);
+    });
+  });
+
+  describe('resolveMaxOutputTokens', () => {
+    const catalog = new Map([
+      [
+        'moonshotai/kimi-k2.6',
+        {
+          id: 'moonshotai/kimi-k2.6',
+          contextLength: 262144,
+          topProviderContextLength: 262144,
+          maxCompletionTokens: 262144,
+        },
+      ],
+      [
+        'minimax/minimax-m3',
+        {
+          id: 'minimax/minimax-m3',
+          contextLength: 1048576,
+          topProviderContextLength: 524288,
+          maxCompletionTokens: 524288,
+        },
+      ],
+    ]);
+
+    it('returns desired reserve when provider cap is higher', () => {
+      expect(resolveMaxOutputTokens(4096, catalog.get('minimax/minimax-m3'))).toBe(4096);
     });
 
-    it('returns hint for unknown models when hint is positive finite', () => {
-      expect(resolveContextWindow('local/lm-studio-model', 262144)).toBe(262144);
+    it('caps to provider maxCompletionTokens when lower than desired reserve', () => {
+      expect(resolveMaxOutputTokens(4096, { id: 'tiny/output', maxCompletionTokens: 1000 })).toBe(1000);
     });
 
-    it('returns default for unknown models without usable hint', () => {
-      expect(resolveContextWindow('unknown/provider-model')).toBe(DEFAULT_CONTEXT_WINDOW);
-      expect(resolveContextWindow('unknown/provider-model', 0)).toBe(DEFAULT_CONTEXT_WINDOW);
-      expect(resolveContextWindow('unknown/provider-model', Number.POSITIVE_INFINITY)).toBe(DEFAULT_CONTEXT_WINDOW);
-    });
-
-    it('ignores hint when slug is in registry', () => {
-      expect(resolveContextWindow('openai/gpt-5.3-codex', 8192)).toBe(MODEL_CONTEXT_WINDOWS['openai/gpt-5']);
+    it('returns desired reserve when catalog entry is absent', () => {
+      expect(resolveMaxOutputTokens(4096, undefined)).toBe(4096);
     });
   });
 
