@@ -82,6 +82,15 @@ function resolveLogDir(): string {
     return memoizedLogDir;
   }
 
+  // Test-mode: NEVER write to the shared production .logs (it pollutes the
+  // /diagnostics error surface). Redirect to a throwaway temp dir. stderr
+  // writes (logOp) are unconditional and still fire, so stderr-capturing
+  // tests keep working. Production (NODE_ENV!=='test') is unchanged.
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+    memoizedLogDir = path.join(os.tmpdir(), 'wevibe-test-logs');
+    return memoizedLogDir;
+  }
+
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [process.cwd(), moduleDir];
 
