@@ -327,3 +327,81 @@ describe('retrieve failover on hub signature mismatch', () => {
     );
   });
 });
+
+describe('retrieve no-membership lifecycle handling', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
+
+  function mockRetrieveDeps(loadMembershipsMock: ReturnType<typeof vi.fn>): void {
+    vi.doMock('../src/key-store.js', () => ({
+      loadIdentity: vi.fn().mockResolvedValue({
+        edPubkey: new Uint8Array(32).fill(1),
+      }),
+    }));
+
+    vi.doMock('../src/org-client.js', () => ({
+      loadMemberships: loadMembershipsMock,
+      queryOrgMemories: vi.fn(),
+      decryptMemoryBlob: vi.fn(),
+    }));
+
+    vi.doMock('../src/auth.js', () => ({
+      buildWeVibeSignedAuth: vi.fn().mockResolvedValue({ headers: {} }),
+    }));
+
+    vi.doMock('../src/config.js', () => ({
+      HUB_URL: 'https://hub-default.example',
+      EMBEDDING_MODEL: 'test-embedding-model',
+    }));
+  }
+
+  it('returns graceful empty no_membership when identity has zero org memberships', async () => {
+    const loadMembershipsMock = vi.fn().mockResolvedValue([]);
+    mockRetrieveDeps(loadMembershipsMock);
+
+    const { retrieve } = await import('../src/retrieve-cli.js');
+    const result = await retrieve({
+      query: 'redis config',
+      org_id: 'org-1',
+      technologies: ['redis', 'typescript'],
+      recentActivity: ['ECONNREFUSED'],
+    });
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') {
+      throw new Error('expected retrieve to return status=ok');
+    }
+
+    expect(result.reason_code).toBe('no_membership');
+    expect(result).toMatchObject({
+      status: 'ok',
+      memories: [],
+      org_allowed_providers: [],
+      reason_code: 'no_membership',
+      reason: 'identity has no org membership yet (not onboarded to any org)',
+    });
+  });
+
+  it('keeps loadMemberships transport failures loud as status=error', async () => {
+    const loadMembershipsMock = vi.fn().mockRejectedValue(new Error('hub unreachable'));
+    mockRetrieveDeps(loadMembershipsMock);
+
+    const { retrieve } = await import('../src/retrieve-cli.js');
+    const result = await retrieve({
+      query: 'redis config',
+      org_id: 'org-1',
+      technologies: ['redis', 'typescript'],
+      recentActivity: ['ECONNREFUSED'],
+    });
+
+    expect(result.status).toBe('error');
+    if (result.status !== 'error') {
+      throw new Error('expected retrieve to return status=error');
+    }
+
+    expect(result.error).toContain('failed to load org memberships');
+  });
+});

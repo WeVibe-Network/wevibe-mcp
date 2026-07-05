@@ -296,6 +296,23 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  // Legitimate pre-onboarding state (identity has no org membership yet):
+  // return a graceful empty result independent of provider policy — NOT a 500,
+  // and NOT masked as provider_not_allowed.
+  if (result.reason_code === 'no_membership') {
+    console.error('[recall] /v1/recall result_count=0 reason_code=no_membership (identity not yet onboarded to any org)');
+    const body: { status: 'ok'; memories: []; reason_code: 'no_membership'; reason?: string } = {
+      status: 'ok',
+      memories: [],
+      reason_code: 'no_membership',
+    };
+    if (result.reason) {
+      body.reason = result.reason;
+    }
+    jsonResponse(res, 200, body);
+    return;
+  }
+
   const memoriesWithGuard: MemoryWithGuard[] = [];
 
   for (const memory of result.memories) {

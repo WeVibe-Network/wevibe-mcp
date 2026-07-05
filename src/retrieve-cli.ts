@@ -61,7 +61,7 @@ export interface RetrieveOutput {
   status: 'ok';
   memories: MemoryOutput[];
   org_allowed_providers: string[];
-  reason_code?: 'no_memories' | 'decrypt_failed' | 'filtered_out';
+  reason_code?: 'no_memories' | 'decrypt_failed' | 'filtered_out' | 'no_membership';
   reason?: string;
 }
 
@@ -287,8 +287,18 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   }
 
   if (memberships.length === 0) {
-    console.error('[recall] retrieve error=no org membership found trace=' + trace);
-    return { status: 'error', error: 'no org membership found' };
+    // Legitimate pre-onboarding state: identity exists but hub has no org
+    // membership for it yet (fresh/genesis-wiped, not yet onboarded). This is a
+    // benign empty-recall case, not a failure — return a graceful empty result
+    // with an honest reason_code, NOT a thrown error / 500.
+    console.error('[recall] retrieve no org membership yet — graceful empty reason_code=no_membership trace=' + trace);
+    return {
+      status: 'ok',
+      memories: [],
+      org_allowed_providers: [],
+      reason_code: 'no_membership',
+      reason: 'identity has no org membership yet (not onboarded to any org)',
+    };
   }
 
   const membership = input.org_id
