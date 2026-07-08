@@ -1,6 +1,7 @@
 import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';
+import { scrubPaths } from './mc1/paths.js';
 import type { RetrieveInput } from './retrieve-cli.js';
 
 type EgressMode = 'local_only' | 'allowlist' | 'unrestricted';
@@ -17,8 +18,8 @@ const LONG_BASE64ISH_REGEX = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g;
 
 const EMAIL_REGEX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
-const UNIX_ABSOLUTE_PATH_REGEX = /(?:\/(?:Users|home|root|var|tmp|opt|etc|private)\/[^\s'"]*)/g;
-const WINDOWS_ABSOLUTE_PATH_REGEX = /[A-Za-z]:\\[^\s'"]*/g;
+export const UNIX_ABSOLUTE_PATH_REGEX = /(?:\/(?:Users|home|root|var|tmp|opt|etc|private)\/[^\s'"]*)/g;
+export const WINDOWS_ABSOLUTE_PATH_REGEX = /[A-Za-z]:\\[^\s'"]*/g;
 
 function scrubField(
   value: string,
@@ -120,6 +121,7 @@ export function scrubQueryHarvestInput(
       limit: input.limit,
       org_id: input.org_id,
       session_id: input.session_id,
+      mc_version: input.mc_version,
       relevance_floor: input.relevance_floor,
       surface_budget: input.surface_budget,
       task: scrubOptionalString(input.task, normalizedMode, normalizedAllowedDomains),
@@ -134,7 +136,7 @@ export function scrubQueryHarvestInput(
       deps: scrubOptionalStringArray(input.deps, normalizedMode, normalizedAllowedDomains),
       errorStrings: scrubOptionalStringArray(input.errorStrings, normalizedMode, normalizedAllowedDomains),
       recentActivity: scrubOptionalStringArray(input.recentActivity, normalizedMode, normalizedAllowedDomains),
-      files: scrubOptionalStringArray(input.files, normalizedMode, normalizedAllowedDomains),
+      files: scrubPaths(Array.isArray(input.files) ? input.files : [], { root: input.directory }),
     };
   } catch {
     return {

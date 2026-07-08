@@ -298,14 +298,14 @@ describe('retrieve failover on hub signature mismatch', () => {
 
     expect(computeLocalEmbeddingMock).toHaveBeenCalledTimes(1);
     expect(computeLocalEmbeddingMock).toHaveBeenCalledWith(
-      expect.stringMatching(/^Intent:/),
+      'redis config',
       { role: 'query', prefix: true },
       expect.objectContaining({
         model: 'test-embedding-model',
       }),
     );
     const embeddedText = computeLocalEmbeddingMock.mock.calls[0][0] as string;
-    expect(embeddedText).toContain('Task: redis config');
+    expect(embeddedText).toBe('redis config');
 
     expect(queryOrgMemoriesMock).toHaveBeenCalledTimes(2);
     expect(queryOrgMemoriesMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ hubUrl: 'https://hub-a.example' }));

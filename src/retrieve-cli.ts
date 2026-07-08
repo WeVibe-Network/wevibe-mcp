@@ -1,9 +1,10 @@
 import { initCrypto } from './crypto.js';
-import { loadMemberships, queryOrgMemories, decryptMemoryBlob } from './org-client.js';
+import { decryptMemoryBlob, getOrgKeywords, loadMemberships, queryOrgMemories } from './org-client.js';
 import { dissect_to_keywords } from './session.js';
+import { boostKeywordsByVocab } from './mc1/keywords.js';
 import { computeLocalEmbedding } from './embedding.js';
 import { loadEmbeddingConfig } from './embedding-config.js';
-import { buildNeedCard, type NeedHarvest } from './retrieval-card.js';
+import { buildNeedCard, buildPromptDigest, type NeedHarvest } from './retrieval-card.js';
 import { deserializeMemoryResult } from './deserialize.js';
 import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
@@ -39,6 +40,7 @@ export interface RetrieveInput {
   projectName?: string;
   relevance_floor?: number;
   surface_budget?: number;
+  mc_version?: number;
 }
 
 export interface MemoryOutput {
@@ -318,7 +320,8 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   const harvest = buildQueryHarvest(scrubbedInput);
   const needCardText = buildNeedCard(harvest);
-  console.error('[recall] need-card built length=%d trace=%s', needCardText.length, trace);
+  const promptDigest = buildPromptDigest(harvest);
+  console.error('[recall] need-card built length=%d promptDigestLen=%d trace=%s', needCardText.length, promptDigest.length, trace);
   const stackSignals = harvest.stack ?? [];
   const recentActivitySignals = harvest.errorStrings ?? [];
   const keywordDescription = buildKeywordDescription(scrubbedInput, stackSignals);
@@ -349,7 +352,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   let embeddingModelId = '';
   try {
     const embeddingConfig = loadEmbeddingConfig();
-    queryVector = await computeLocalEmbedding(needCardText, { role: 'query', prefix: true }, embeddingConfig);
+    queryVector = await computeLocalEmbedding(promptDigest, { role: 'query', prefix: true }, embeddingConfig);
     embeddingModelId = embeddingConfig.model;
     console.error(
       '[recall] embedding computed vector_dim=%d model=%s trace=%s',
@@ -360,6 +363,22 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   } catch (e) {
     console.error('[recall] retrieve error=embedding failed detail=%s trace=%s', sanitizeRecallLogValue(String(e)), trace);
     return { status: 'error', error: `embedding failed: ${e}` };
+  }
+
+  // INV-7 org-domain-as-query-signal bridge: the org's controlled vocabulary weights the
+  // query keyword channel so domain-relevant memories get the boost. Boost-not-gate +
+  // fail-soft: if the vocab fetch fails we recall with the raw (unboosted) keywords.
+  let queryKeywords = keywords;
+  try {
+    const orgVocabulary = await getOrgKeywords(activeHubUrl, membership.orgId);
+    queryKeywords = boostKeywordsByVocab(keywords, orgVocabulary);
+    console.error('[recall] vocab-boost applied vocabSize=%d keywords=%d trace=%s', orgVocabulary.length, queryKeywords.length, trace);
+  } catch (err) {
+    console.error(
+      '[recall] vocab-boost skipped (org vocab fetch failed): %s trace=%s',
+      err instanceof Error ? err.message : String(err),
+      trace,
+    );
   }
 
   let rawMemories: ReturnType<typeof deserializeMemoryResult>[] = [];
@@ -374,7 +393,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
         orgId: membership.orgId,
         agentPubkey: uint8ArrayToHex(identity.edPubkey),
         sessionId: scrubbedInput.session_id,
-        keywordWeights: keywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
+        keywordWeights: queryKeywords.map(kw => ({ keyword: kw.term, weight: kw.weight })),
         vector: queryVector,
         embeddingModelId,
         limit: scrubbedInput.limit ?? recallGovernor.recall_limit,

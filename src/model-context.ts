@@ -1,13 +1,8 @@
-import type { OpenRouterCatalog, OpenRouterModelEntry } from './openrouter-catalog.js';
-
 /**
  * Extraction budgeting bridges token windows (model limits) to transcript size (characters).
  *
  * We reserve 75% of the model context window for extraction input, then convert tokens ->
  * characters with a conservative chars/token constant so we under-fill and avoid overflow.
- * Budget accounting has two blocks:
- * - A: shared used memories already selected for this request.
- * - B: intra-session extracted text from prior chunks (accumulated) when chunking.
  */
 // Conservative: truncation forensics measured ~3.7 chars/token on real code+prose
 // transcripts. We use 3.5 so a token budget maps to slightly fewer chars and under-fills.
@@ -32,60 +27,23 @@ export class ContextWindowResolutionError extends Error {
   }
 }
 
-function effectiveWindow(entry: OpenRouterModelEntry): number | undefined {
-  const a = typeof entry.contextLength === 'number' && entry.contextLength > 0
-    ? entry.contextLength
-    : undefined;
-  const b = typeof entry.topProviderContextLength === 'number' && entry.topProviderContextLength > 0
-    ? entry.topProviderContextLength
-    : undefined;
-  if (a !== undefined && b !== undefined) {
-    return Math.min(a, b);
-  }
-  return a ?? b;
-}
-
 export function resolveContextWindow(params: {
   slug: string | undefined;
   isLocal: boolean;
   numCtxHint?: number;
-  catalog?: OpenRouterCatalog;
+  remoteMinWindow?: number; // pre-fetched min-across-providers window (undefined if model unknown)
 }): number {
-  const {
-    slug,
-    isLocal,
-    numCtxHint,
-    catalog,
-  } = params;
+  const { slug, isLocal, numCtxHint, remoteMinWindow } = params;
 
   if (isLocal) {
-    // LOCAL (ollama/lm_studio): unchanged — use the num_ctx hint, else the safe default.
-    if (typeof numCtxHint === 'number' && Number.isFinite(numCtxHint) && numCtxHint > 0) {
-      return numCtxHint;
-    }
+    if (typeof numCtxHint === 'number' && Number.isFinite(numCtxHint) && numCtxHint > 0) return numCtxHint;
     return DEFAULT_CONTEXT_WINDOW;
   }
-
-  // REMOTE (OpenRouter): exact id match on the normalized slug; FAIL-CLOSED on miss.
-  const entry = catalog?.get(normalizeSlug(slug ?? ''));
-  if (!entry) {
-    throw new ContextWindowResolutionError(slug ?? '(unknown)');
+  // REMOTE: fail-closed on a missing/invalid min window — NEVER default to 32768.
+  if (typeof remoteMinWindow === 'number' && Number.isFinite(remoteMinWindow) && remoteMinWindow > 0) {
+    return remoteMinWindow;
   }
-
-  const eff = effectiveWindow(entry);
-  if (eff === undefined || eff <= 0) {
-    throw new ContextWindowResolutionError(slug ?? '(unknown)');
-  }
-
-  return eff;
-}
-
-export function resolveMaxOutputTokens(desiredReserveTokens: number, entry?: OpenRouterModelEntry): number {
-  const cap = entry?.maxCompletionTokens;
-  if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) {
-    return Math.min(desiredReserveTokens, Math.floor(cap));
-  }
-  return desiredReserveTokens;
+  throw new ContextWindowResolutionError(slug ?? '(unknown)');
 }
 
 export function budgetChars(contextWindowTokens: number): number {
@@ -104,8 +62,7 @@ export function fitsSinglePass(
 export function chunkRoomChars(
   budgetCharsValue: number,
   usedMemoriesChars: number,
-  accumulatedExtractedChars: number,
   bufferChars: number,
 ): number {
-  return budgetCharsValue - usedMemoriesChars - accumulatedExtractedChars - bufferChars;
+  return budgetCharsValue - usedMemoriesChars - bufferChars;
 }

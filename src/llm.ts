@@ -12,6 +12,13 @@ export interface LlmJsonSchema {
   schema: Record<string, unknown>;
 }
 
+export interface LlmRetryPolicy {
+  /** Total attempts INCLUDING the first (1 = no retry). */
+  maxAttempts: number;
+  /** Backoff ms before attempt N+1, indexed [attempt-1]; last value reused if fewer entries. */
+  backoffMs: number[];
+}
+
 export interface LlmChatOptions {
   temperature?: number;
   /**
@@ -29,7 +36,15 @@ export interface LlmChatOptions {
    */
   jsonSchema?: LlmJsonSchema;
   timeoutMs?: number;
-  maxTokens?: number;
+  /** Correlation id threaded from the caller for retry logging (header-derived; never signed body). */
+  traceId?: string;
+  /** Short label of the logical call site (e.g. "chunk-2", "tier1") for retry logs. */
+  logLabel?: string;
+  /**
+   * Retry-with-reroute for transient remote failures (empty response, HTTP 429/5xx, network/timeout).
+   * Omit (or set maxAttempts=1) to disable; required for local providers to avoid hammering local models.
+   */
+  retry?: LlmRetryPolicy;
   numCtx?: number;
 }
 

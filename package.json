@@ -19,12 +19,21 @@
     "coding-agent"
   ],
   "main": "dist/server.js",
+  "exports": {
+    ".": "./dist/server.js",
+    "./mc1": {
+      "types": "./dist/mc1/index.d.ts",
+      "default": "./dist/mc1/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist/",
     "README.md",
     "LICENSE"
   ],
   "bin": {
+    "wevibe": "dist/cli/bind.js",
     "wevibe-mcp": "dist/server.js",
     "wevibe-admin": "dist/admin.js",
     "wevibe-retrieve": "dist/retrieve-cli.js"
@@ -34,9 +43,7 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "dev": "tsx src/server.ts",
-    "admin": "tsx src/admin.ts",
-    "dashboard": "node dist/dashboard-server.js",
-    "postinstall": "node-gyp rebuild --directory=node_modules/node-mac-auth || true"
+    "admin": "tsx src/admin.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -49,7 +56,7 @@
     "zod": "^3.22.0"
   },
   "optionalDependencies": {
-    "node-mac-auth": "^1.1.0"
+    "wevibe-biometric": "^0.1.0"
   },
   "devDependencies": {
     "@types/express": "5.0.6",

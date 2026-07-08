@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { generateIdentityFromSeed } from './crypto.js';
 import { requireBiometric } from './biometric.js';
 import { getKeychainItem, setKeychainItem, deleteKeychainItem } from './keychain.js';
+import { logOp, newTraceId, fp } from './logger.js';
 
 const SERVICE = 'wevibe-network';
 const IDENTITY_SEED_ACCOUNT = 'identity-seed-v1';
@@ -254,7 +255,29 @@ export async function storeIdentitySeed(seed: Uint8Array): Promise<void> {
     throw new Error('identity seed must be 32 bytes');
   }
 
-  await storeIdentitySeedB64(Buffer.from(seed).toString('base64'));
+  const seedB64 = Buffer.from(seed).toString('base64');
+  if (seedBackend() === 'keychain') {
+    const trace = newTraceId();
+    const seedFp = fp(seed);
+    const biometricOk = await requireBiometric('Create your WeVibe identity');
+    if (!biometricOk) {
+      logOp('identity.create', 'warn', {
+        trace,
+        phase: 'biometric',
+        status: 'denied',
+        seed_fp: seedFp,
+      });
+      throw new Error('biometric authentication failed');
+    }
+    logOp('identity.create', 'info', {
+      trace,
+      phase: 'biometric',
+      status: 'ok',
+      seed_fp: seedFp,
+    });
+  }
+
+  await storeIdentitySeedB64(seedB64);
   cachedIdentity = null;
 }
 

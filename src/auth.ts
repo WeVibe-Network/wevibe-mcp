@@ -97,7 +97,7 @@ export function getPreSecretKeyHex(): string {
 export async function buildWeVibeSignedAuth(): Promise<WeVibeAuthResult> {
   const identity = await loadIdentity();
   if (!identity) {
-    throw new Error('no identity in keychain');
+    throw new Error('No WeVibe identity found. Create your identity first — run `wevibe setup-identity` (or create it from the WeVibe plugin), then retry.');
   }
 
   const pubkeyHex = Buffer.from(identity.edPubkey).toString('hex');

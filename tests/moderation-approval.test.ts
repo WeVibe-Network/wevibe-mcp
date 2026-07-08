@@ -67,6 +67,7 @@ const mockPendingItem = {
   wrapped_dek_mod: 'wrapped_dek_mod_hex',
   stack_hint: ['typescript', 'nodejs'],
   memory_type: 'memory' as const,
+  mc_version: 1,
   created_at: new Date().toISOString(),
   status: 'pending',
 };
@@ -113,6 +114,7 @@ describe('moderation approval flow', () => {
 
     expect(body.epoch_id).toBe(1);
     expect(body.memory_type).toBe('memory');
+    expect(body.mc_version).toBe(mockPendingItem.mc_version);
     expect(body.signed_by).toBeDefined();
     expect(body.moderator_sig).toBeDefined();
   });

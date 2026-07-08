@@ -101,3 +101,17 @@ export function buildNeedCard(h: NeedHarvest): string {
 
   return lines.join('\n');
 }
+
+/** INV-6: the SEMANTIC-PROSE core of the query for the DENSE embedding channel.
+ * Intent + task prose ONLY — deterministically excludes the identifier soup
+ * (stack/frameworks/deps/files/errors) which dilutes the dense vector and is
+ * already carried by the keyword channel (dissect_to_keywords). Same input →
+ * same output (D-RECALL-ALIGNMENT). */
+export function buildPromptDigest(h: NeedHarvest): string {
+  const intent = String(h.intent ?? '').replace(/\s+/g, ' ').trim();
+  const task = String(h.task ?? '').replace(/\s+/g, ' ').trim();
+  const segments: string[] = [];
+  if (intent) segments.push(intent);
+  if (task) segments.push(task);
+  return segments.length > 0 ? segments.join('. ') : 'unknown';
+}

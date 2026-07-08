@@ -2,10 +2,15 @@ import { openEnvelope, decryptSymmetric, sign } from './crypto.js';
 import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth } from './auth.js';
 import { ensureCrypto } from './crypto-utils.js';
+import { HUB_URL, EMBEDDING_MODEL } from './config.js';
+import { getEpochUmbralPk } from './org-client.js';
 import type { OrgMembership, MemoryType } from './types.js';
 import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonical.js';
+import { MC_VERSION } from './mc1/schema.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
+import { umbralEncrypt } from './sidecar.js';
+import { logOp, fp } from './logger.js';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +26,7 @@ export interface PendingQueueItem {
   wrapped_dek_mod: string;
   stack_hint: string[];
   memory_type: MemoryType;
+  mc_version?: number;
   created_at: string;
   status: string;
   votes?: number;
@@ -51,6 +57,24 @@ export interface DecryptedPendingItem {
   plaintext: string;
   decryptError?: string;
   stegScan?: StegScanResult;
+}
+
+export interface EmbedCardItem {
+  id: string;
+  ciphertext_hex: string;
+  wrapped_dek_mod: string;
+  epoch_id: number;
+  stack_hint: string[];
+}
+
+export interface EmbedCardResult {
+  id: string;
+  vector: number[] | null;
+  embedding_model_id: string;
+  embedding_schema_version: string;
+  umbral_capsule: string | null;
+  umbral_ciphertext: string | null;
+  error?: string;
 }
 
 export interface StegScanResult {
@@ -193,6 +217,80 @@ export function decryptCiphertext(
   }
 }
 
+export async function buildEncryptedRetrievalCard(
+  item: EmbedCardItem,
+  membership: OrgMembership,
+): Promise<EmbedCardResult> {
+  try {
+    const decrypted = decryptCiphertext(item.ciphertext_hex, item.wrapped_dek_mod, membership);
+    if (decrypted.error) {
+      throw new Error(decrypted.error);
+    }
+    if (typeof decrypted.plaintext !== 'string') {
+      throw new Error('decryption failed');
+    }
+
+    if (!membership.modPrivkey) {
+      throw new Error('no moderation private key');
+    }
+
+    const dek = openEnvelope(
+      new Uint8Array(Buffer.from(item.wrapped_dek_mod, 'hex')),
+      membership.modPrivkey,
+    );
+    const epochUmbralPkHex = await getEpochUmbralPk(HUB_URL, membership.orgId, item.epoch_id);
+    const { capsule, ciphertext } = await umbralEncrypt(
+      epochUmbralPkHex,
+      Buffer.from(dek).toString('hex'),
+    );
+    logOp('dashboard.encrypt', 'info', {
+      status: 'ok',
+      item_id: item.id,
+      org: membership.orgId,
+      epoch: item.epoch_id,
+      umbral_pk_fp: fp(epochUmbralPkHex),
+      dek_len: dek.length,
+      capsule_fp: fp(capsule),
+    });
+
+    const parsed = parseMemoryText(decrypted.plaintext);
+    const structured: StructuredMemory = {
+      implement: parsed.implement,
+      context: parsed.context,
+      dnd: parsed.dnd,
+      stack: item.stack_hint,
+    };
+
+    const { vector, embeddingModelId } = await embedRetrievalCard(structured);
+
+    return {
+      id: item.id,
+      vector,
+      embedding_model_id: embeddingModelId,
+      embedding_schema_version: 'retrieval-card-v1',
+      umbral_capsule: capsule,
+      umbral_ciphertext: ciphertext,
+    };
+  } catch (e) {
+    logOp('dashboard.encrypt', 'error', {
+      status: 'err',
+      item_id: item.id,
+      org: membership.orgId,
+      epoch: item.epoch_id,
+      err: (e as Error).message,
+    });
+    return {
+      id: item.id,
+      vector: null,
+      embedding_model_id: EMBEDDING_MODEL,
+      embedding_schema_version: 'retrieval-card-v1',
+      umbral_capsule: null,
+      umbral_ciphertext: null,
+      error: (e as Error).message,
+    };
+  }
+}
+
 export interface SimilarMemory {
   cid: string;
   score: number;
@@ -275,6 +373,7 @@ export async function approveSubmission(
   const requestBody: {
     epoch_id: number;
     memory_type: MemoryType;
+    mc_version: number;
     moderator_sig: string;
     signed_by: string;
     vector: number[];
@@ -284,6 +383,7 @@ export async function approveSubmission(
   } = {
     epoch_id: item.epoch_id,
     memory_type: memoryType,
+    mc_version: item.mc_version ?? MC_VERSION,
     moderator_sig: moderatorSigHex,
     signed_by: moderatorPubkeyHex,
     vector,

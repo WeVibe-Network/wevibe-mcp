@@ -401,7 +401,7 @@ async function cmdExportPairing(flags: Record<string, string>) {
 
   try {
     const { token, pairingId } = await exportIdentityPairing();
-    const adoptUrl = `${DASHBOARD_URL}/adopt#code=${token}`;
+    const adoptUrl = `${DASHBOARD_URL}/connect-wevibe#code=${token}`;
 
     // Open the browser unless explicitly suppressed. Default is to open.
     const shouldOpen = !hasFlag(flags, 'no-open');

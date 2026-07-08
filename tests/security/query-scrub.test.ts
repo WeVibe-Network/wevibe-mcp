@@ -12,6 +12,7 @@ describe('query scrub security', () => {
       apiKeyValue: 'SUPERSECRETVALUE123',
       passwordValue: 'hunter2pass',
       absolutePathPrefix: '/Users/jerry',
+      absoluteProjectDir: '/Users/jerry/secret-proj',
       absolutePath: '/Users/jerry/secret-proj/src/app.ts',
       email: 'dev@corp.example.com',
       evilUrl: 'https://evil.example.com/exfil',
@@ -25,7 +26,7 @@ describe('query scrub security', () => {
       description: `${planted.jwt} ${planted.pem}`,
       intent: `api_key=${planted.apiKeyValue}`,
       language: `password: ${planted.passwordValue}`,
-      directory: planted.absolutePath,
+      directory: planted.absoluteProjectDir,
       projectName: planted.email,
       stack: [planted.awsKey],
       technologies: [planted.githubToken],
@@ -33,7 +34,7 @@ describe('query scrub security', () => {
       deps: [planted.pem],
       errorStrings: [`api_key=${planted.apiKeyValue}`],
       recentActivity: [`password: ${planted.passwordValue}`],
-      files: [planted.absolutePath, planted.evilUrl, planted.email, planted.publicIp],
+      files: [planted.absolutePath],
       limit: 3,
       org_id: 'org-sec',
       session_id: 'sess-sec',
@@ -68,6 +69,7 @@ describe('query scrub security', () => {
     expect(serialized).toContain('<redacted-path>');
     expect(serialized).toContain('<redacted-external-host>');
     expect(serialized).toContain('<redacted-ip>');
+    expect(output.files).toEqual(['src/app.ts']);
   });
 
   it('passes clean fields through unchanged', () => {
@@ -87,6 +89,22 @@ describe('query scrub security', () => {
     expect(output.language).toBe('TypeScript');
     expect(output.files).toEqual(['src/cache.ts', 'tests/cache.test.ts']);
     expect(output.stack).toEqual(['Node.js', 'Redis']);
+  });
+
+  it('relativizes absolute files paths to identity-free relative paths (INV-12)', () => {
+    const input = {
+      query: 'fix cache',
+      directory: '/Users/alice/proj',
+      files: ['/Users/alice/proj/src/cache.ts', '/Users/alice/proj/tests/cache.test.ts'],
+    } as RetrieveInput;
+    const out = scrubQueryHarvestInput(input, 'local_only', []);
+    expect(out.files).toEqual(['src/cache.ts', 'tests/cache.test.ts']);
+    // no redaction token, no absolute/home leak
+    for (const f of out.files ?? []) {
+      expect(f).not.toContain('<redacted-path>');
+      expect(f).not.toContain('/Users/');
+      expect(f.startsWith('/')).toBe(false);
+    }
   });
 
   it('is fail-closed and preserves pass-through scalars', () => {

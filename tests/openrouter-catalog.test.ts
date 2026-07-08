@@ -1,23 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-
-import { normalizeSlug } from '../src/model-context.js';
 
 const MODULE_PATH = '../src/openrouter-catalog.js';
 
 let cacheDir = '';
+let cachePath = '';
 
 async function loadCatalogModule() {
   vi.resetModules();
   return import(MODULE_PATH);
 }
 
+function writeDiskCache(payload: unknown): void {
+  writeFileSync(cachePath, JSON.stringify(payload), 'utf-8');
+}
+
 describe('openrouter-catalog', () => {
   beforeEach(() => {
     cacheDir = mkdtempSync(join(tmpdir(), 'wevibe-openrouter-catalog-test-'));
-    process.env.WEVIBE_OPENROUTER_MODELS_PATH = join(cacheDir, 'openrouter-models.json');
+    cachePath = join(cacheDir, 'openrouter-models.json');
+    process.env.WEVIBE_OPENROUTER_MODELS_PATH = cachePath;
   });
 
   afterEach(() => {
@@ -26,70 +30,86 @@ describe('openrouter-catalog', () => {
     if (cacheDir) {
       rmSync(cacheDir, { recursive: true, force: true });
       cacheDir = '';
+      cachePath = '';
     }
   });
 
-  it('parseModelsResponse maps valid entries and skips malformed elements', async () => {
-    const { parseModelsResponse } = await loadCatalogModule();
+  it('parseEndpointsResponse returns min context length across providers', async () => {
+    const { parseEndpointsResponse } = await loadCatalogModule();
 
-    const parsed = parseModelsResponse({
-      data: [
-        {
-          id: 'moonshotai/kimi-k2.6',
-          context_length: 262144,
-          top_provider: {
-            context_length: 262144,
-            max_completion_tokens: 262144,
-          },
-        },
-        {
-          id: 'minimax/minimax-m3',
-          context_length: 1048576,
-          top_provider: {
-            context_length: 524288,
-          },
-        },
-        {
-          context_length: 999,
-        },
-      ],
+    const parsed = parseEndpointsResponse({
+      data: {
+        endpoints: [
+          { context_length: 262144 },
+          { context_length: 262144 },
+          { context_length: 96000 },
+          { context_length: 256000 },
+        ],
+      },
     });
 
-    expect(parsed).toHaveLength(2);
-
-    const kimi = parsed.find((entry) => entry.id === 'moonshotai/kimi-k2.6');
-    expect(kimi).toEqual({
-      id: 'moonshotai/kimi-k2.6',
-      contextLength: 262144,
-      topProviderContextLength: 262144,
-      maxCompletionTokens: 262144,
-    });
-
-    const minimax = parsed.find((entry) => entry.id === 'minimax/minimax-m3');
-    expect(minimax).toEqual({
-      id: 'minimax/minimax-m3',
-      contextLength: 1048576,
-      topProviderContextLength: 524288,
-      maxCompletionTokens: undefined,
+    expect(parsed).toEqual({
+      minContextLength: 96000,
+      providerCount: 4,
     });
   });
 
-  it('refreshOpenRouterCatalog fetches and returns normalized map keys', async () => {
-    const { refreshOpenRouterCatalog } = await loadCatalogModule();
+  it('parseEndpointsResponse skips malformed and non-positive context lengths', async () => {
+    const { parseEndpointsResponse } = await loadCatalogModule();
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    const parsed = parseEndpointsResponse({
+      data: {
+        endpoints: [
+          { context_length: 0 },
+          { context_length: -100 },
+          { context_length: '262144' },
+          { context_length: null },
+          { context_length: 96000 },
+          {},
+          'invalid',
+        ],
+      },
+    });
+
+    expect(parsed).toEqual({
+      minContextLength: 96000,
+      providerCount: 1,
+    });
+  });
+
+  it('parseEndpointsResponse returns undefined for empty endpoints', async () => {
+    const { parseEndpointsResponse } = await loadCatalogModule();
+
+    expect(
+      parseEndpointsResponse({
+        data: { endpoints: [] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('parseEndpointsResponse returns undefined when data is missing', async () => {
+    const { parseEndpointsResponse } = await loadCatalogModule();
+
+    expect(parseEndpointsResponse({})).toBeUndefined();
+    expect(parseEndpointsResponse({ data: {} })).toBeUndefined();
+  });
+
+  it('getModelMinContextWindow fetches endpoints and returns normalized slug + min window', async () => {
+    const { getModelMinContextWindow } = await loadCatalogModule();
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
-          data: [
-            {
-              id: 'moonshotai/kimi-k2.6',
-              context_length: 262144,
-              top_provider: {
-                context_length: 262144,
-                max_completion_tokens: 262144,
-              },
-            },
-          ],
+          data: {
+            id: 'moonshotai/kimi-k2.6',
+            endpoints: [
+              { context_length: 262144 },
+              { context_length: 256000 },
+              { context_length: 96000 },
+              { context_length: 0 },
+              { context_length: 'bad' },
+            ],
+          },
         }),
         {
           status: 200,
@@ -100,22 +120,63 @@ describe('openrouter-catalog', () => {
       ),
     );
 
-    const catalog = await refreshOpenRouterCatalog('unit-refresh');
-    expect(catalog.get(normalizeSlug('moonshotai/kimi-k2.6'))).toEqual({
-      id: 'moonshotai/kimi-k2.6',
-      contextLength: 262144,
-      topProviderContextLength: 262144,
-      maxCompletionTokens: 262144,
+    const result = await getModelMinContextWindow(' OpenRouter/MoonshotAI/Kimi-K2.6 ', 'unit-fetch-ok');
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      slug: 'moonshotai/kimi-k2.6',
+      minContextLength: 96000,
+      providerCount: 3,
     });
   });
 
-  it('returns empty map when fetch fails and no disk cache exists', async () => {
-    const { refreshOpenRouterCatalog } = await loadCatalogModule();
+  it('getModelMinContextWindow returns undefined on 404', async () => {
+    const { getModelMinContextWindow } = await loadCatalogModule();
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'not found' }), {
+        status: 404,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }),
+    );
+
+    const result = await getModelMinContextWindow('moonshotai/not-a-real-model', 'unit-404');
+    expect(result).toBeUndefined();
+  });
+
+  it('getModelMinContextWindow returns undefined on network failure when no disk entry exists', async () => {
+    const { getModelMinContextWindow } = await loadCatalogModule();
 
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
 
-    const catalog = await refreshOpenRouterCatalog('unit-failure');
-    expect(catalog).toBeInstanceOf(Map);
-    expect(catalog.size).toBe(0);
+    const result = await getModelMinContextWindow('moonshotai/kimi-k2.6', 'unit-network-miss');
+    expect(result).toBeUndefined();
+  });
+
+  it('getModelMinContextWindow falls back to fresh disk entry when fetch rejects', async () => {
+    const { getModelMinContextWindow } = await loadCatalogModule();
+
+    const normalizedSlug = 'moonshotai/kimi-k2.6';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      writeDiskCache({
+        models: {
+          [normalizedSlug]: {
+            min_context_length: 96000,
+            provider_count: 4,
+            fetched_at: Date.now(),
+          },
+        },
+      });
+      throw new Error('network down after disk write');
+    });
+
+    const result = await getModelMinContextWindow(normalizedSlug, 'unit-network-fallback');
+    expect(result).toEqual({
+      slug: normalizedSlug,
+      minContextLength: 96000,
+      providerCount: 4,
+    });
   });
 });

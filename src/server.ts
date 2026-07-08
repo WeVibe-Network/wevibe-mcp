@@ -19,7 +19,6 @@ import { getProviderPolicy, setProviderPolicy } from './risk-appetite.js';
 import { generateRecoveryPhrase } from './recovery.js';
 import { getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { startHttpServer, stopHttpServer } from './http-server.js';
-import { refreshOpenRouterCatalog } from './openrouter-catalog.js';
 import { initSessionToken, persistSessionToken } from './session-token.js';
 import { HUB_URL } from './config.js';
 
@@ -328,9 +327,6 @@ async function main() {
 
   try {
     await initCrypto();
-    // Warm the OpenRouter model catalog in the background (24h TTL, bounded fetch, never throws).
-    // Non-blocking so a slow/absent network never delays server startup (R-31).
-    void refreshOpenRouterCatalog();
     // Lazy identity (spec §F): do NOT load the identity OR call any hub API that
     // signs with it at boot — both trigger Touch ID. loadMemberships() internally
     // calls loadIdentity(), so it must NOT run here. Only a non-prompting

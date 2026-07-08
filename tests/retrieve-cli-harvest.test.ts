@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildNeedCard } from '../src/retrieval-card.js';
+import { buildNeedCard, buildPromptDigest } from '../src/retrieval-card.js';
 import { buildQueryHarvest } from '../src/retrieve-cli.js';
 
 describe('buildQueryHarvest', () => {
@@ -56,5 +56,28 @@ describe('buildQueryHarvest', () => {
     expect(harvest).toEqual({
       task: 'Investigate flaky reconnect tests',
     });
+  });
+
+  it('buildPromptDigest keeps intent/task prose and excludes identifier soup', () => {
+    const harvest = buildQueryHarvest({
+      query: 'fallback query text',
+      intent: 'Stabilize inbound webhook retries',
+      task: 'Investigate queue race causing duplicate retry scheduling',
+      stack: ['react'],
+      frameworks: ['nextjs'],
+      deps: ['lodash-uniquedep'],
+      files: ['/Users/x/proj/secret-file.ts'],
+      errorStrings: ['TypeError-uniquetok'],
+    });
+
+    const digest = buildPromptDigest(harvest);
+
+    expect(digest).toContain('Stabilize inbound webhook retries');
+    expect(digest).toContain('Investigate queue race causing duplicate retry scheduling');
+    expect(digest).not.toContain('lodash-uniquedep');
+    expect(digest).not.toContain('secret-file.ts');
+    expect(digest).not.toContain('nextjs');
+    expect(digest).not.toContain('TypeError-uniquetok');
+    expect(digest).not.toContain('react');
   });
 });

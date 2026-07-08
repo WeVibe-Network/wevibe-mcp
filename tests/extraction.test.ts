@@ -1,5 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { extractMemories, computeEmbedding, extractKeywords } from '../src/extraction.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  annotateNearDuplicates,
+  cosineSimilarity,
+  extractMemories,
+  computeEmbedding,
+  dedupeOverlapCandidatesByExtractionHash,
+  extractKeywords,
+  NEAR_DUP_COSINE_THRESHOLD,
+  planChunkSlices,
+  runBounded,
+} from '../src/extraction.js';
+import { computeLocalEmbedding } from '../src/embedding.js';
+import type { MemoryCandidate } from '../src/extraction.js';
 import type { LlmChatOptions, LlmProvider } from '../src/llm.js';
 
 vi.mock('../src/embedding.js', () => ({
@@ -383,6 +395,277 @@ describe('extractMemories', () => {
     expect(capturedUserMessage).toContain('react');
     expect(capturedUserMessage).toContain('next.js');
   });
+
+  it('dedupes overlap candidates after multi-chunk extraction merge', async () => {
+    const TRANSCRIPT_BEGIN_MARKER = '===WEVIBE_TRANSCRIPT_BEGIN===';
+    const TRANSCRIPT_END_MARKER = '===WEVIBE_TRANSCRIPT_END===';
+    const duplicateImplement = 'Use staged rollout with feature flags for risky infra changes.';
+    const capturedUserMessages: string[] = [];
+    let callIndex = 0;
+
+    const provider = createMockLlmProvider((_systemPrompt, userMessage) => {
+      capturedUserMessages.push(userMessage);
+      const uniqueSuffix = callIndex;
+      callIndex += 1;
+
+      return JSON.stringify([
+        {
+          implement: duplicateImplement,
+          context: 'Deployment discipline for platform changes with non-trivial blast radius.',
+          dnd: 'Do not ship wide-open changes without a kill switch.',
+          stack: ['kubernetes', 'typescript'],
+          memory_type: 'memory',
+        },
+        {
+          implement: `Unique chunk memory ${uniqueSuffix}`,
+          context: `Chunk-specific context ${uniqueSuffix}`,
+          dnd: null,
+          stack: ['typescript'],
+          memory_type: 'memory',
+        },
+      ]);
+    });
+
+    const transcript = Array.from({ length: 1200 }, (_, i) => `line-${i.toString().padStart(4, '0')}: chunking regression note`)
+      .join('\n');
+
+    const result = await extractMemories(
+      transcript,
+      { name: 'chunk-test', stack: ['typescript'], directory: '/Users/test' },
+      {
+        provider,
+        numCtx: 8000,
+      },
+    );
+
+    const extractSlice = (userMessage: string): string => {
+      const begin = userMessage.indexOf(`${TRANSCRIPT_BEGIN_MARKER}\n`);
+      const end = userMessage.indexOf(`\n${TRANSCRIPT_END_MARKER}`);
+      expect(begin).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(begin);
+      return userMessage.slice(begin + TRANSCRIPT_BEGIN_MARKER.length + 1, end);
+    };
+
+    expect(capturedUserMessages.length).toBeGreaterThan(0);
+    const firstSliceLength = extractSlice(capturedUserMessages[0]!).length;
+    const slices = planChunkSlices(transcript.length, firstSliceLength, 8000);
+
+    expect(capturedUserMessages.length).toBeGreaterThanOrEqual(3);
+    expect(capturedUserMessages.length).toBe(slices.length);
+    expect(callIndex).toBe(capturedUserMessages.length);
+
+    const duplicateCount = result.memories.filter(memory => memory.implement === duplicateImplement).length;
+    expect(duplicateCount).toBe(1);
+    expect(result.memories).toHaveLength(callIndex + 1);
+  });
+});
+
+describe('extraction retry wiring', () => {
+  const projectContext = { name: 'retry-test', stack: ['typescript'], directory: '/Users/test' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
+
+  it('remote passes retry policy', async () => {
+    const capturedOptions: LlmChatOptions[] = [];
+    const provider = Object.assign(
+      createMockLlmProvider((_systemPrompt, _userMessage, options) => {
+        capturedOptions.push(options ?? {});
+        return '[]';
+      }),
+      { model: 'openrouter/moonshotai/kimi-k2.6' },
+    );
+
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          data: {
+            endpoints: [
+              { context_length: 131072 },
+              { context_length: 262144 },
+            ],
+          },
+        };
+      },
+    });
+
+    await extractMemories(
+      'Short transcript that should stay in tier-1 extraction.',
+      projectContext,
+      {
+        provider,
+        isLocal: false,
+        traceId: 'trace-retry-remote',
+      },
+    );
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0]?.retry).toEqual({ maxAttempts: 3, backoffMs: [600, 1500] });
+    expect(capturedOptions[0]?.timeoutMs).toBe(600000);
+    expect(capturedOptions[0]?.logLabel).toBe('tier1');
+  });
+
+  it('local omits retry (R-33)', async () => {
+    const capturedOptions: LlmChatOptions[] = [];
+    const provider = createMockLlmProvider((_systemPrompt, _userMessage, options) => {
+      capturedOptions.push(options ?? {});
+      return '[]';
+    });
+
+    await extractMemories(
+      'Short local transcript that should stay in tier-1 extraction.',
+      projectContext,
+      {
+        provider,
+        isLocal: true,
+        traceId: 'trace-retry-local',
+      },
+    );
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0]?.retry).toBeUndefined();
+    expect(capturedOptions[0]?.timeoutMs).toBe(600000);
+    expect(capturedOptions[0]?.logLabel).toBe('tier1');
+  });
+
+  it('chunked extraction labels each call with chunk index', async () => {
+    const capturedOptions: LlmChatOptions[] = [];
+    const provider = createMockLlmProvider((_systemPrompt, _userMessage, options) => {
+      capturedOptions.push(options ?? {});
+      return '[]';
+    });
+
+    const transcript = Array.from(
+      { length: 1200 },
+      (_, i) => `line-${i.toString().padStart(4, '0')}: chunk retry wiring fixture`,
+    ).join('\n');
+
+    await extractMemories(
+      transcript,
+      projectContext,
+      {
+        provider,
+        isLocal: true,
+        numCtx: 8000,
+        traceId: 'trace-retry-chunked',
+      },
+    );
+
+    expect(capturedOptions.length).toBeGreaterThan(1);
+    for (const options of capturedOptions) {
+      expect(options.logLabel).toMatch(/^chunk-\d+$/);
+      expect(options.retry).toBeUndefined();
+      expect(options.timeoutMs).toBe(600000);
+    }
+  });
+});
+
+describe('extraction chunk helpers', () => {
+  it('plans chunk slices with overlap and caps at transcript end', () => {
+    expect(planChunkSlices(100, 40, 10)).toEqual([
+      { start: 0, end: 40 },
+      { start: 30, end: 70 },
+      { start: 60, end: 100 },
+    ]);
+  });
+
+  it('returns a single slice when room covers the full transcript', () => {
+    expect(planChunkSlices(100, 150, 10)).toEqual([
+      { start: 0, end: 100 },
+    ]);
+  });
+
+  it('guarantees forward progress when overlap is at least room', () => {
+    expect(planChunkSlices(100, 40, 50)).toEqual([
+      { start: 0, end: 40 },
+      { start: 40, end: 80 },
+      { start: 80, end: 100 },
+    ]);
+  });
+
+  it('runBounded limits in-flight work and preserves result ordering', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => i);
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const result = await runBounded(items, 3, async item => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return item * 2;
+    });
+
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(result).toEqual(items.map(item => item * 2));
+  });
+
+  it('runBounded propagates worker failures', async () => {
+    await expect(runBounded([0, 1, 2, 3], 3, async item => {
+      if (item === 2) {
+        throw new Error('boom');
+      }
+      return item;
+    })).rejects.toThrow('boom');
+  });
+
+  it('dedupes overlapping candidates by extraction hash and preserves passthrough records', () => {
+    const duplicateA = {
+      implement: 'Set connection pooling to avoid DB socket exhaustion.',
+      context: 'Node.js API with bursty traffic patterns.',
+      dnd: null,
+      stack: ['nodejs', 'postgresql'],
+      memory_type: 'memory',
+      preference_confidence: 0.2,
+    };
+    const duplicateB = {
+      implement: 'Set connection pooling to avoid DB socket exhaustion.',
+      context: 'Node.js API with bursty traffic patterns.',
+      dnd: null,
+      stack: ['nodejs', 'postgresql'],
+      memory_type: 'memory',
+      preference_confidence: 0.8,
+    };
+    const distinct = {
+      implement: 'Enable prepared statements to reduce parse overhead.',
+      context: 'PostgreSQL under frequent repeat queries.',
+      dnd: null,
+      stack: ['postgresql'],
+      memory_type: 'memory',
+    };
+    const passthrough = {
+      context: 'Missing implement should remain passthrough for downstream filtering.',
+      memory_type: 'memory',
+    };
+
+    const deduped = dedupeOverlapCandidatesByExtractionHash([
+      duplicateA,
+      duplicateB,
+      distinct,
+      passthrough,
+    ]);
+
+    const duplicateCount = deduped.filter(candidate => {
+      if (candidate === null || typeof candidate !== 'object') {
+        return false;
+      }
+      return (candidate as Record<string, unknown>).implement === duplicateA.implement;
+    }).length;
+
+    expect(duplicateCount).toBe(1);
+    expect(deduped).toHaveLength(3);
+    expect(deduped).toContain(passthrough);
+    expect(deduped.some(candidate => {
+      if (candidate === null || typeof candidate !== 'object') {
+        return false;
+      }
+      return (candidate as Record<string, unknown>).implement === distinct.implement;
+    })).toBe(true);
+  });
 });
 
 describe('extractKeywords', () => {
@@ -575,5 +858,82 @@ describe('computeEmbedding', () => {
         usePrefix: expect.any(Boolean),
       }),
     );
+  });
+});
+
+describe('near-duplicate detection', () => {
+  const DEFAULT_EMBEDDING = new Array(3072).fill(0.1);
+
+  afterEach(() => {
+    vi.mocked(computeLocalEmbedding).mockReset();
+    vi.mocked(computeLocalEmbedding).mockResolvedValue(DEFAULT_EMBEDDING);
+  });
+
+  it('computes cosine similarity and guards invalid vectors', () => {
+    expect(cosineSimilarity([1, 2, 3], [1, 2, 3])).toBeCloseTo(1, 10);
+    expect(cosineSimilarity([1, 0], [0, 1])).toBe(0);
+    expect(cosineSimilarity([1, 2, 3], [1, 2])).toBe(0);
+    expect(cosineSimilarity([0, 0], [1, 1])).toBe(0);
+    expect(cosineSimilarity([1, 1], [0, 0])).toBe(0);
+  });
+
+  it('flags intra-session and injected near-duplicates while keeping distinct memories', async () => {
+    const makeMemory = (implement: string, context: string, extractionHash: string): MemoryCandidate => ({
+      implement,
+      context,
+      dnd: null,
+      stack: ['typescript'],
+      memory_type: 'memory',
+      preference_confidence: 0,
+      extraction_hash: extractionHash,
+      keywords: {
+        classified: [],
+        suggestions: [],
+      },
+      mc1: {
+        mc_version: 1,
+        org_id: 'test-org',
+        keywords: [],
+      },
+    });
+
+    const memories: MemoryCandidate[] = [
+      makeMemory('alpha implementation', 'alpha context', 'hash-a'),
+      makeMemory('alpha implementation variant', 'alpha context variant', 'hash-b'),
+      makeMemory('clearly distinct implementation', 'clearly distinct context', 'hash-c'),
+      makeMemory('served-memory overlap implementation', 'served-memory overlap context', 'hash-d'),
+    ];
+    const injectedTexts = ['served memory that was already injected'];
+
+    const textToVector = new Map<string, number[]>([
+      [`${memories[0].implement}\n${memories[0].context}`, [1, 0, 0, 0]],
+      [`${memories[1].implement}\n${memories[1].context}`, [0.96, 0.28, 0, 0]],
+      [`${memories[2].implement}\n${memories[2].context}`, [0, 1, 0, 0]],
+      [`${memories[3].implement}\n${memories[3].context}`, [0, 0, 1, 0]],
+      [injectedTexts[0], [0, 0, 0.97, 0.24]],
+    ]);
+
+    vi.mocked(computeLocalEmbedding).mockImplementation(async (text: string) => {
+      const vector = textToVector.get(text);
+      if (!vector) {
+        throw new Error(`missing test embedding for ${text}`);
+      }
+      return vector;
+    });
+
+    await annotateNearDuplicates(memories, injectedTexts, {
+      traceId: 'trace-near-dup-test',
+      exactHashCollapsed: 1,
+    });
+
+    expect(memories[0].near_dup?.source).toBe('intra_session');
+    expect(memories[0].near_dup?.matched).toBe(memories[1].extraction_hash);
+    expect(memories[0].near_dup?.score ?? 0).toBeGreaterThanOrEqual(NEAR_DUP_COSINE_THRESHOLD);
+
+    expect(memories[2].near_dup).toBeUndefined();
+
+    expect(memories[3].near_dup?.source).toBe('injected_memory');
+    expect(memories[3].near_dup?.matched).toBe('injected:1');
+    expect(memories[3].near_dup?.score ?? 0).toBeGreaterThanOrEqual(NEAR_DUP_COSINE_THRESHOLD);
   });
 });

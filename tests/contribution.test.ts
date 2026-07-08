@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { writeFileSync, chmodSync } from 'node:fs';
 import { submitMemory } from '../src/contribution.js';
 import { submitMemoryMessage } from '../src/canonical.js';
+import { MC_VERSION, type Mc1WriteEnvelope } from '../src/mc1/schema.js';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -145,6 +146,48 @@ describe('submitMemory payload', () => {
     expect(body.epoch_id).toBe(5);
     expect(body).toHaveProperty('memory_type');
     expect(body.memory_type).toBe('correct_implementation');
+  });
+
+  it('includes MC-1 version field in payload', async () => {
+    const mockGuard = createMockGuard({ passed: true, detections: [], flags: [] });
+    process.env.WEVIBE_GUARD_BIN = mockGuard;
+
+    const membership = {
+      orgId: 'test-org',
+      orgName: 'Test',
+      role: 'member' as const,
+      currentEpoch: 5,
+      historyAccessFromEpoch: 1,
+      egressMode: 'unrestricted' as const,
+      allowedProviders: [],
+      encKeys: new Map(),
+      searchKeys: new Map(),
+      modPubkey: new Uint8Array(32),
+    };
+
+    const mc1: Mc1WriteEnvelope = {
+      mc_version: MC_VERSION,
+      org_id: 'test-org',
+      keywords: ['typescript'],
+    };
+
+    await submitMemory(
+      'valid memory content that is long enough to pass the 50 char check',
+      'test-org',
+      'http://localhost:4440',
+      membership,
+      'correct_implementation',
+      ['typescript'],
+      undefined,
+      undefined,
+      mc1,
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const calledWith = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse((calledWith[1] as RequestInit).body as string);
+
+    expect(body.mc_version).toBe(mc1.mc_version);
   });
 
   it('returns explicit error when memory_type is missing', async () => {

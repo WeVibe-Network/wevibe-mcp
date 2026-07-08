@@ -8,6 +8,7 @@ import { runAttestationHook, computeSessionHash } from './attestation.js';
 import type { OrgMembership, AttestationMetadata, ProvenanceTier } from './types.js';
 import { submitMemoryMessage } from './canonical.js';
 import type { MemoryType } from './types.js';
+import { MC_VERSION, type Mc1WriteEnvelope } from './mc1/schema.js';
 
 type MemoryKeywordMetadata = {
   classified: Array<{ keyword: string; weight: number; base_weight: number }>;
@@ -23,6 +24,7 @@ export async function submitMemory(
   stackHint?: string[],
   sessionTranscript?: string,
   keywords?: MemoryKeywordMetadata,
+  mc1?: Mc1WriteEnvelope,
 ): Promise<{ status: string; submissionHash?: string; error?: string; attestation?: AttestationMetadata }> {
   if (!memoryType) {
     return { status: 'error', error: 'memory_type is required, did Pass 1 extraction run?' };
@@ -120,6 +122,7 @@ export async function submitMemory(
     contributor_pubkey: contributorPubkeyHex,
     contributor_sig: Buffer.from(sig).toString('hex'),
     memory_type: memoryType,
+    mc_version: mc1?.mc_version ?? MC_VERSION,
     stack_hint: stackHint ?? [],
     keywords: keywords ?? { classified: [], suggestions: [] },
     attestation: attestation ?? null,

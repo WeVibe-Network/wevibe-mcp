@@ -134,7 +134,6 @@ Dashboard moderation flows now consume quorum-aware MCP moderation tools:
 2. **Pass 2 — Keyword classification:** `extractKeywords(plaintext, stackHint, orgVocabulary)` classifies each memory against the org's established keyword vocabulary. Available via MCP tool `wevibe_extract_keywords_batch`.
 
 **Canonical extraction path (CO-238):**
-- All memory extraction goes through the MCP tools in dashboard-server.ts
 - No other code should call the LLM for keywords or memories
 - Dashboard `/api/extract` proxies to `wevibe_extract_memories` MCP tool
 
@@ -142,10 +141,6 @@ Dashboard moderation flows now consume quorum-aware MCP moderation tools:
 - Classified keyword weights are normalized to sum to 1.0 across all classified keywords
 - Suggestion weights are normalized separately to sum to 1.0
 - The LLM assigns relative relevancy weights; normalization happens server-side
-
-**New MCP tools in dashboard-server.ts (CO-238):**
-- `wevibe_extract_memories` — Pass 1: extract memories from transcript
-- `wevibe_extract_keywords_batch` — Pass 2: batch keyword classification against org vocabulary
 
 **New types in `src/extraction.ts`:**
 - `ClassifiedKeyword { keyword: string, weight: number }` — keyword selected from org vocabulary (normalized to sum 1.0)

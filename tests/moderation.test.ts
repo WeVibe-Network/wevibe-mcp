@@ -174,6 +174,7 @@ describe('moderation crypto pipeline', () => {
       wrapped_dek_mod: Buffer.from(wrappedDekMod).toString('hex'),
       stack_hint: ['typescript'],
       memory_type: 'memory',
+      mc_version: 1,
       created_at: new Date().toISOString(),
       status: 'pending',
     };
@@ -203,6 +204,7 @@ describe('moderation crypto pipeline', () => {
     expect(approveCall).toBeDefined();
     const body = JSON.parse(String((approveCall?.[1] as { body?: string })?.body));
     expect(body.memory_type).toBe('memory');
+    expect(body.mc_version).toBe(item.mc_version);
     expect(body.epoch_id).toBe(0);
     expect(body.signed_by).toBeDefined();
     expect(body.moderator_sig).toBeDefined();
