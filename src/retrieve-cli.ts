@@ -382,6 +382,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   }
 
   let rawMemories: ReturnType<typeof deserializeMemoryResult>[] = [];
+  let contested: boolean | undefined;
   try {
     console.error('[recall] about-to-call-hub org_id=%s hubUrl=%s trace=%s', membership.orgId, activeHubUrl, trace);
     const queryResult = await runWithHubSignatureFailover(
@@ -404,6 +405,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
     activeHubUrl = queryResult.hubUrl;
     const data = queryResult.result;
+    contested = data.contested;
     console.error('[recall] hub returned raw_count=%d trace=%s', data.results?.length ?? 0, trace);
 
     if (data.results) {
@@ -523,6 +525,30 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       captureDecryptFailureReason(reasonDetail);
       continue;
     }
+  }
+
+  // D-RECALL-GOVERNOR pt5: contested-twin suppression (deterministic; no re-rank, no LLM).
+  // On a near-tie (hub pos1-pos2 gap < contestedThreshold) surface the position-1 winner
+  // cleanly and suppress the near-tied position-2 twin. Positions 3+ are untouched.
+  if (contested === true && memories.length >= 2) {
+    const pos1 = memories[0];
+    const twin = memories[1];
+    const c1 = (pos1.breakdown as { combined_score?: number } | undefined)?.combined_score;
+    const c2 = (twin.breakdown as { combined_score?: number } | undefined)?.combined_score;
+    const gap = (typeof c1 === 'number' && typeof c2 === 'number') ? (c1 - c2) : undefined;
+    memories.splice(1, 1); // drop the near-tied twin; KEEP the winner (never re-rank)
+    console.error(
+      '[recall] contested-twin-suppression pos1_cid=%s dropped_twin_cid=%s score_gap=%s kept_count=%d trace=%s',
+      pos1.cid, twin.cid, gap === undefined ? 'n/a' : gap.toFixed(4), memories.length, trace,
+    );
+    logOp('recall.suppress', 'info', {
+      trace,
+      contested: true,
+      pos1_cid: pos1.cid,
+      dropped_twin_cid: twin.cid,
+      score_gap: gap === undefined ? null : Number(gap.toFixed(4)),
+      kept_count: memories.length,
+    });
   }
 
   const rawCount = rawMemories.length;
