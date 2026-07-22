@@ -70,6 +70,8 @@ export interface NeedHarvest {
   frameworks?: string[];
   deps?: string[];
   errorStrings?: string[];
+  buildFailing?: boolean;
+  testFailing?: boolean;
   files?: string[];
 }
 
@@ -79,6 +81,16 @@ function csvOrUnknown(values: string[]): string {
 
 function coerceStringArray(values: unknown): string[] {
   return Array.isArray(values) ? values.map((value) => String(value)) : [];
+}
+
+function failureState(value: boolean | undefined): 'failing' | 'ok' | 'unknown' {
+  if (value === true) {
+    return 'failing';
+  }
+  if (value === false) {
+    return 'ok';
+  }
+  return 'unknown';
 }
 
 export function buildNeedCard(h: NeedHarvest): string {
@@ -96,6 +108,8 @@ export function buildNeedCard(h: NeedHarvest): string {
     `Frameworks: ${csvOrUnknown(frameworks)}`,
     `Dependencies: ${csvOrUnknown(deps)}`,
     `Errors: ${csvOrUnknown(errorStrings)}`,
+    `Build: ${failureState(h.buildFailing)}`,
+    `Tests: ${failureState(h.testFailing)}`,
     `Files: ${csvOrUnknown(files)}`,
   ];
 

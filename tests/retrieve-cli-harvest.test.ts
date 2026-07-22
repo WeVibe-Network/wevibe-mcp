@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildNeedCard, buildPromptDigest } from '../src/retrieval-card.js';
-import { buildQueryHarvest } from '../src/retrieve-cli.js';
+import { buildQueryHarvest, type RetrieveInput } from '../src/retrieve-cli.js';
 
 describe('buildQueryHarvest', () => {
   it('builds a sparse harvest from query-only input', () => {
@@ -27,6 +27,8 @@ describe('buildQueryHarvest', () => {
       deps: ['ioredis'],
       errorStrings: ['ECONNREFUSED'],
       recentActivity: ['socket timeout'],
+      buildFailing: true,
+      testFailing: false,
       files: ['src/cache.ts', 'tests/cache.test.ts'],
     });
 
@@ -38,6 +40,8 @@ describe('buildQueryHarvest', () => {
       frameworks: ['Vitest'],
       deps: ['ioredis'],
       errorStrings: ['ECONNREFUSED', 'socket timeout'],
+      buildFailing: true,
+      testFailing: false,
       files: ['src/cache.ts', 'tests/cache.test.ts'],
     });
 
@@ -45,6 +49,19 @@ describe('buildQueryHarvest', () => {
     expect(needCard).toContain('Task: Fix redis reconnect backoff');
     expect(needCard).toContain('Stack: Node.js, Redis, TypeScript');
     expect(needCard).toContain('Errors: ECONNREFUSED, socket timeout');
+    expect(needCard).toContain('Build: failing');
+    expect(needCard).toContain('Tests: ok');
+  });
+
+  it('drops non-boolean build/test failing values to undefined', () => {
+    const harvest = buildQueryHarvest({
+      query: 'fallback query text',
+      buildFailing: 'yes',
+      testFailing: 1,
+    } as unknown as RetrieveInput);
+
+    expect(harvest.buildFailing).toBeUndefined();
+    expect(harvest.testFailing).toBeUndefined();
   });
 
   it('uses description as task when dedicated task is absent', () => {

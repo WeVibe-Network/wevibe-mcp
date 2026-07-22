@@ -35,6 +35,8 @@ export interface RetrieveInput {
   deps?: string[];
   errorStrings?: string[];
   recentActivity?: string[];
+  buildFailing?: boolean;
+  testFailing?: boolean;
   files?: string[];
   directory?: string;
   projectName?: string;
@@ -167,6 +169,10 @@ function optionalArray(values: string[]): string[] | undefined {
   return values.length > 0 ? values : undefined;
 }
 
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 function sanitizeRecallLogValue(value: string): string {
   return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 }
@@ -205,6 +211,8 @@ export function buildQueryHarvest(input: RetrieveInput): NeedHarvest {
     frameworks: optionalArray(frameworks),
     deps: optionalArray(deps),
     errorStrings: optionalArray(errorStrings),
+    buildFailing: optionalBoolean(input.buildFailing),
+    testFailing: optionalBoolean(input.testFailing),
     files: optionalArray(files),
   };
 }

@@ -32,6 +32,8 @@ import { classifyFreeModelLapse, createOpenAICompatibleProvider, stripFreeSuffix
 import { getModelMinContextWindow } from './openrouter-catalog.js';
 import { exportIdentityPairing } from './pairing-export.js';
 import { fp, logOp, resolveTraceId, TRACE_HEADER } from './logger.js';
+import { buildSessionSubstrate, type SubstrateEvent } from './session-substrate.js';
+import { renderFailureEpisodeBlock, segmentFailureEpisodes } from './failure-episodes.js';
 import {
   buildEncryptedRetrievalCard,
   decryptCiphertext,
@@ -148,6 +150,7 @@ interface MemoryWithGuard {
 
 interface ExtractRequestBody {
   transcript?: unknown;
+  events?: SubstrateEvent[];
   model?: unknown;
   ollama_url?: unknown;
   prompt?: unknown;
@@ -447,10 +450,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  if (typeof body.transcript !== 'string') {
-    jsonResponse(res, 400, { error: 'transcript is required and must be a string' });
-    return;
-  }
+  const trace = getRequestTrace(req);
 
   const title = typeof body.project_context?.title === 'string' ? body.project_context.title : '';
   const directory = typeof body.project_context?.directory === 'string' ? body.project_context.directory : '';
@@ -494,9 +494,88 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     ? body.base_url
     : undefined;
 
-  const transcript = body.transcript;
+  const eventsCandidate = body.events as unknown;
+  if (eventsCandidate !== undefined) {
+    if (!Array.isArray(eventsCandidate)) {
+      jsonResponse(res, 400, { error: 'events must be an array', code: 'invalid_events' });
+      return;
+    }
+
+    const hasInvalidEvent = eventsCandidate.some((event): boolean => {
+      if (typeof event !== 'object' || event === null) {
+        return true;
+      }
+
+      const candidate = event as Record<string, unknown>;
+      const kind = candidate.kind;
+      const isValidKind = kind === 'user'
+        || kind === 'assistant'
+        || kind === 'reasoning'
+        || kind === 'tool'
+        || kind === 'edit';
+
+      return !isValidKind
+        || typeof candidate.time !== 'number'
+        || !Number.isFinite(candidate.time)
+        || typeof candidate.seq !== 'number'
+        || !Number.isFinite(candidate.seq);
+    });
+
+    if (hasInvalidEvent) {
+      jsonResponse(res, 400, { error: 'events must include kind,time,seq for every event', code: 'invalid_events' });
+      return;
+    }
+  }
+
+  let transcript: string;
+  let evidenceBlock: string | undefined;
+  if (Array.isArray(eventsCandidate) && eventsCandidate.length > 0) {
+    // Precedence contract: a non-empty events array overrides transcript when both are provided.
+    const events = eventsCandidate as SubstrateEvent[];
+    const substrateStart = Date.now();
+    const substrate = buildSessionSubstrate(events);
+    transcript = substrate.text;
+    logOp('extract', 'info', {
+      trace,
+      phase: 'substrate',
+      session_id: sessionId,
+      events: eventsCandidate.length,
+      user: substrate.stats.user,
+      assistant: substrate.stats.assistant,
+      reasoning: substrate.stats.reasoning,
+      tool: substrate.stats.tool,
+      edit: substrate.stats.edit,
+      chars: substrate.stats.chars,
+      fingerprint: substrate.stats.fingerprint,
+      dur_ms: Date.now() - substrateStart,
+    });
+
+    const episodes = segmentFailureEpisodes(events);
+    const renderedEvidenceBlock = renderFailureEpisodeBlock(episodes, events);
+    evidenceBlock = renderedEvidenceBlock.length > 0 ? renderedEvidenceBlock : undefined;
+    const resolved = episodes.filter(episode => episode.resolution === 'resolved').length;
+    const unresolved = episodes.filter(episode => episode.resolution === 'unresolved').length;
+    const coincidental = episodes.filter(episode => episode.resolution === 'coincidental').length;
+    logOp('extract', 'info', {
+      trace,
+      phase: 'episodes',
+      session_id: sessionId,
+      episodes: episodes.length,
+      resolved,
+      unresolved,
+      coincidental,
+      block_chars: renderedEvidenceBlock.length,
+    });
+  } else {
+    if (typeof body.transcript !== 'string') {
+      jsonResponse(res, 400, { error: 'transcript is required and must be a string' });
+      return;
+    }
+    transcript = body.transcript;
+  }
+
   const resumeStack = stack.length > 0 ? stack.join(',') : undefined;
-  const resumeInputs: ExtractResumeInputs = {
+  const resumeInputs: ExtractResumeInputs & { evidence_block?: string } = {
     transcript,
     ...(title.length > 0 || directory.length > 0 || resumeStack
       ? {
@@ -515,6 +594,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     session_id: sessionId,
     num_ctx: numCtxOverride,
     prompt: systemPromptOverride,
+    ...(evidenceBlock ? { evidence_block: evidenceBlock } : {}),
   };
 
   const isLocal = providerOverride ? isLocalProvider(providerOverride) : true;
@@ -535,10 +615,10 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     orgContext: orgId
       ? { orgId, hubUrl: HUB_URL }
       : undefined,
-    traceId: getRequestTrace(req),
+    evidenceBlock,
+    traceId: trace,
   } as Parameters<typeof extractMemories>[2];
 
-  const trace = getRequestTrace(req);
   const jobId = randomUUID();
   createJob(jobId, resumeInputs, trace);
 
@@ -681,6 +761,7 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
     );
 
   const trace = getRequestTrace(req);
+  const resumeWithEvidence = job.resume as ExtractResumeInputs & { evidence_block?: string };
   const stack = typeof job.resume.project_context?.stack === 'string' && job.resume.project_context.stack.trim().length > 0
     ? job.resume.project_context.stack.split(',').map(item => item.trim()).filter(item => item.length > 0)
     : [];
@@ -692,6 +773,9 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
     sessionId: job.resume.session_id,
     orgContext: job.resume.org_id
       ? { orgId: job.resume.org_id, hubUrl: HUB_URL }
+      : undefined,
+    evidenceBlock: typeof resumeWithEvidence.evidence_block === 'string'
+      ? resumeWithEvidence.evidence_block
       : undefined,
     traceId: trace,
   } as Parameters<typeof extractMemories>[2];

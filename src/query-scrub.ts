@@ -136,6 +136,8 @@ export function scrubQueryHarvestInput(
       deps: scrubOptionalStringArray(input.deps, normalizedMode, normalizedAllowedDomains),
       errorStrings: scrubOptionalStringArray(input.errorStrings, normalizedMode, normalizedAllowedDomains),
       recentActivity: scrubOptionalStringArray(input.recentActivity, normalizedMode, normalizedAllowedDomains),
+      buildFailing: input.buildFailing,
+      testFailing: input.testFailing,
       files: scrubPaths(Array.isArray(input.files) ? input.files : [], { root: input.directory }),
     };
   } catch {
@@ -146,6 +148,8 @@ export function scrubQueryHarvestInput(
       session_id: safeRead(() => input.session_id),
       relevance_floor: safeRead(() => input.relevance_floor),
       surface_budget: safeRead(() => input.surface_budget),
+      buildFailing: safeRead(() => input.buildFailing),
+      testFailing: safeRead(() => input.testFailing),
     };
   }
 }

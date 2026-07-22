@@ -79,6 +79,8 @@ describe('query scrub security', () => {
       language: 'TypeScript',
       files: ['src/cache.ts', 'tests/cache.test.ts'],
       stack: ['Node.js', 'Redis'],
+      buildFailing: true,
+      testFailing: false,
       limit: 5,
     };
 
@@ -89,6 +91,8 @@ describe('query scrub security', () => {
     expect(output.language).toBe('TypeScript');
     expect(output.files).toEqual(['src/cache.ts', 'tests/cache.test.ts']);
     expect(output.stack).toEqual(['Node.js', 'Redis']);
+    expect(output.buildFailing).toBe(true);
+    expect(output.testFailing).toBe(false);
   });
 
   it('relativizes absolute files paths to identity-free relative paths (INV-12)', () => {
@@ -167,6 +171,8 @@ describe('query scrub security', () => {
       session_id: 'sess-catastrophic',
       relevance_floor: 0.77,
       surface_budget: 14,
+      buildFailing: true,
+      testFailing: false,
     } as unknown as RetrieveInput;
 
     const output = scrubQueryHarvestInput(throwingInput, 'local_only', []);
@@ -178,6 +184,8 @@ describe('query scrub security', () => {
       session_id: 'sess-catastrophic',
       relevance_floor: 0.77,
       surface_budget: 14,
+      buildFailing: true,
+      testFailing: false,
     });
   });
 
