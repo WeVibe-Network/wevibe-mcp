@@ -176,3 +176,46 @@ describe('GET /v1/extract/status/:job_id', () => {
     expect(typeof body.updated_at).toBe('string');
   });
 });
+
+describe('POST /v1/extract request validation', () => {
+  let validToken: string;
+  let jobsDir: string;
+
+  beforeEach(async () => {
+    _setTokenStoreForTests(testStore);
+    testStore._reset();
+    await testStore.init();
+    validToken = testStore.getToken()!;
+    clearTestStore();
+
+    _resetJobsForTests();
+    jobsDir = join(tmpdir(), `wevibe-mcp-jobs-http-extract-${randomUUID()}`);
+    process.env.WEVIBE_JOBS_PATH = jobsDir;
+  });
+
+  afterEach(() => {
+    clearTestStore();
+    _resetJobsForTests();
+    delete process.env.WEVIBE_JOBS_PATH;
+    rmSync(jobsDir, { recursive: true, force: true });
+  });
+
+  it('rejects transcript-only payloads now that events are required', async () => {
+    const req = createMockRequest('POST', '/v1/extract', {
+      Authorization: `Bearer ${validToken}`,
+    }, JSON.stringify({
+      model: 'openrouter/openai/gpt-4o-mini',
+      transcript: 'legacy adapter payload',
+    }));
+    const res = createMockResponse();
+
+    await handleRequest(req, res);
+    const parsed = parseResponse(res);
+
+    expect(parsed.status).toBe(400);
+    expect(parsed.body).toEqual({
+      error: 'events is required and must be a non-empty SubstrateEvent array',
+      code: 'invalid_events',
+    });
+  });
+});

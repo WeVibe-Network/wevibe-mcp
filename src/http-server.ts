@@ -149,7 +149,6 @@ interface MemoryWithGuard {
 }
 
 interface ExtractRequestBody {
-  transcript?: unknown;
   events?: SubstrateEvent[];
   model?: unknown;
   ollama_url?: unknown;
@@ -495,84 +494,76 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     : undefined;
 
   const eventsCandidate = body.events as unknown;
-  if (eventsCandidate !== undefined) {
-    if (!Array.isArray(eventsCandidate)) {
-      jsonResponse(res, 400, { error: 'events must be an array', code: 'invalid_events' });
-      return;
-    }
-
-    const hasInvalidEvent = eventsCandidate.some((event): boolean => {
-      if (typeof event !== 'object' || event === null) {
-        return true;
-      }
-
-      const candidate = event as Record<string, unknown>;
-      const kind = candidate.kind;
-      const isValidKind = kind === 'user'
-        || kind === 'assistant'
-        || kind === 'reasoning'
-        || kind === 'tool'
-        || kind === 'edit';
-
-      return !isValidKind
-        || typeof candidate.time !== 'number'
-        || !Number.isFinite(candidate.time)
-        || typeof candidate.seq !== 'number'
-        || !Number.isFinite(candidate.seq);
+  if (!Array.isArray(eventsCandidate) || eventsCandidate.length === 0) {
+    jsonResponse(res, 400, {
+      error: 'events is required and must be a non-empty SubstrateEvent array',
+      code: 'invalid_events',
     });
-
-    if (hasInvalidEvent) {
-      jsonResponse(res, 400, { error: 'events must include kind,time,seq for every event', code: 'invalid_events' });
-      return;
-    }
+    return;
   }
 
-  let transcript: string;
+  const hasInvalidEvent = eventsCandidate.some((event): boolean => {
+    if (typeof event !== 'object' || event === null) {
+      return true;
+    }
+
+    const candidate = event as Record<string, unknown>;
+    const kind = candidate.kind;
+    const isValidKind = kind === 'user'
+      || kind === 'assistant'
+      || kind === 'reasoning'
+      || kind === 'tool'
+      || kind === 'edit';
+
+    return !isValidKind
+      || typeof candidate.time !== 'number'
+      || !Number.isFinite(candidate.time)
+      || typeof candidate.seq !== 'number'
+      || !Number.isFinite(candidate.seq);
+  });
+
+  if (hasInvalidEvent) {
+    jsonResponse(res, 400, { error: 'events must include kind,time,seq for every event', code: 'invalid_events' });
+    return;
+  }
+
+  const events = eventsCandidate as SubstrateEvent[];
+
   let evidenceBlock: string | undefined;
-  if (Array.isArray(eventsCandidate) && eventsCandidate.length > 0) {
-    // Precedence contract: a non-empty events array overrides transcript when both are provided.
-    const events = eventsCandidate as SubstrateEvent[];
-    const substrateStart = Date.now();
-    const substrate = buildSessionSubstrate(events);
-    transcript = substrate.text;
-    logOp('extract', 'info', {
-      trace,
-      phase: 'substrate',
-      session_id: sessionId,
-      events: eventsCandidate.length,
-      user: substrate.stats.user,
-      assistant: substrate.stats.assistant,
-      reasoning: substrate.stats.reasoning,
-      tool: substrate.stats.tool,
-      edit: substrate.stats.edit,
-      chars: substrate.stats.chars,
-      fingerprint: substrate.stats.fingerprint,
-      dur_ms: Date.now() - substrateStart,
-    });
+  const substrateStart = Date.now();
+  const substrate = buildSessionSubstrate(events);
+  const transcript = substrate.text;
+  logOp('extract', 'info', {
+    trace,
+    phase: 'substrate',
+    session_id: sessionId,
+    events: events.length,
+    user: substrate.stats.user,
+    assistant: substrate.stats.assistant,
+    reasoning: substrate.stats.reasoning,
+    tool: substrate.stats.tool,
+    edit: substrate.stats.edit,
+    chars: substrate.stats.chars,
+    fingerprint: substrate.stats.fingerprint,
+    dur_ms: Date.now() - substrateStart,
+  });
 
-    const episodes = segmentFailureEpisodes(events);
-    const renderedEvidenceBlock = renderFailureEpisodeBlock(episodes, events);
-    evidenceBlock = renderedEvidenceBlock.length > 0 ? renderedEvidenceBlock : undefined;
-    const resolved = episodes.filter(episode => episode.resolution === 'resolved').length;
-    const unresolved = episodes.filter(episode => episode.resolution === 'unresolved').length;
-    const coincidental = episodes.filter(episode => episode.resolution === 'coincidental').length;
-    logOp('extract', 'info', {
-      trace,
-      phase: 'episodes',
-      session_id: sessionId,
-      episodes: episodes.length,
-      resolved,
-      unresolved,
-      coincidental,
-      block_chars: renderedEvidenceBlock.length,
-    });
-  } else {
-    if (typeof body.transcript !== 'string') {
-      jsonResponse(res, 400, { error: 'transcript is required and must be a string' });
-      return;
-    }
-    transcript = body.transcript;
-  }
+  const episodes = segmentFailureEpisodes(events);
+  const renderedEvidenceBlock = renderFailureEpisodeBlock(episodes, events);
+  evidenceBlock = renderedEvidenceBlock.length > 0 ? renderedEvidenceBlock : undefined;
+  const resolved = episodes.filter(episode => episode.resolution === 'resolved').length;
+  const unresolved = episodes.filter(episode => episode.resolution === 'unresolved').length;
+  const coincidental = episodes.filter(episode => episode.resolution === 'coincidental').length;
+  logOp('extract', 'info', {
+    trace,
+    phase: 'episodes',
+    session_id: sessionId,
+    episodes: episodes.length,
+    resolved,
+    unresolved,
+    coincidental,
+    block_chars: renderedEvidenceBlock.length,
+  });
 
   const resumeStack = stack.length > 0 ? stack.join(',') : undefined;
   const resumeInputs: ExtractResumeInputs & { evidence_block?: string } = {
