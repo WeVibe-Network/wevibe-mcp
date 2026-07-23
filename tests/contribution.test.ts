@@ -3,6 +3,8 @@ import { writeFileSync, chmodSync } from 'node:fs';
 import { submitMemory } from '../src/contribution.js';
 import { submitMemoryMessage } from '../src/canonical.js';
 import { MC_VERSION, type Mc1WriteEnvelope } from '../src/mc1/schema.js';
+import { sign } from '../src/crypto.js';
+import { loadIdentity } from '../src/key-store.js';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -146,6 +148,123 @@ describe('submitMemory payload', () => {
     expect(body.epoch_id).toBe(5);
     expect(body).toHaveProperty('memory_type');
     expect(body.memory_type).toBe('correct_implementation');
+  });
+
+  it('attaches a well-formed WeVibe-Signed Authorization header to the /submit request', async () => {
+    const mockGuard = createMockGuard({ passed: true, detections: [], flags: [] });
+    process.env.WEVIBE_GUARD_BIN = mockGuard;
+
+    const membership = {
+      orgId: 'test-org',
+      orgName: 'Test',
+      role: 'member' as const,
+      currentEpoch: 5,
+      historyAccessFromEpoch: 1,
+      egressMode: 'unrestricted' as const,
+      allowedProviders: [],
+      encKeys: new Map(),
+      searchKeys: new Map(),
+      modPubkey: new Uint8Array(32),
+    };
+
+    await submitMemory(
+      'valid memory content that is long enough to pass the 50 char check',
+      'test-org',
+      'http://localhost:4440',
+      membership,
+      'correct_implementation',
+      ['typescript']
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = opts.headers as Record<string, string>;
+
+    expect(headers.Authorization).toMatch(
+      /^WeVibe-Signed pubkey=[0-9a-f]{64},timestamp=[^,]+,signature=[0-9a-f]{128}$/,
+    );
+
+    const bodyText = opts.body as string;
+    const body = JSON.parse(bodyText) as Record<string, unknown>;
+    expect(body.contributor_pubkey).toBeTruthy();
+    expect(body.submission_hash).toBeTruthy();
+    expect(headers.Authorization).toBeTruthy();
+  });
+
+  it('signs the timestamp carried in the auth header', async () => {
+    const mockGuard = createMockGuard({ passed: true, detections: [], flags: [] });
+    process.env.WEVIBE_GUARD_BIN = mockGuard;
+
+    const membership = {
+      orgId: 'test-org',
+      orgName: 'Test',
+      role: 'member' as const,
+      currentEpoch: 5,
+      historyAccessFromEpoch: 1,
+      egressMode: 'unrestricted' as const,
+      allowedProviders: [],
+      encKeys: new Map(),
+      searchKeys: new Map(),
+      modPubkey: new Uint8Array(32),
+    };
+
+    await submitMemory(
+      'valid memory content that is long enough to pass the 50 char check',
+      'test-org',
+      'http://localhost:4440',
+      membership,
+      'correct_implementation',
+      ['typescript']
+    );
+
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = opts.headers as Record<string, string>;
+    const auth = headers.Authorization;
+    const timestampMatch = auth.match(/timestamp=([^,]+),signature=/);
+
+    expect(timestampMatch).not.toBeNull();
+    const timestamp = timestampMatch![1];
+    const encodedTimestamp = new TextEncoder().encode(timestamp);
+
+    const signedTimestampCall = vi.mocked(sign).mock.calls.find(([, data]) => {
+      if (!(data instanceof Uint8Array)) {
+        return false;
+      }
+      return Buffer.from(data).equals(Buffer.from(encodedTimestamp));
+    });
+
+    expect(signedTimestampCall).toBeDefined();
+  });
+
+  it('fails closed — sends no request when identity is missing', async () => {
+    const mockGuard = createMockGuard({ passed: true, detections: [], flags: [] });
+    process.env.WEVIBE_GUARD_BIN = mockGuard;
+    vi.mocked(loadIdentity).mockResolvedValueOnce(null);
+
+    const membership = {
+      orgId: 'test-org',
+      orgName: 'Test',
+      role: 'member' as const,
+      currentEpoch: 5,
+      historyAccessFromEpoch: 1,
+      egressMode: 'unrestricted' as const,
+      allowedProviders: [],
+      encKeys: new Map(),
+      searchKeys: new Map(),
+      modPubkey: new Uint8Array(32),
+    };
+
+    const result = await submitMemory(
+      'valid memory content that is long enough to pass the 50 char check',
+      'test-org',
+      'http://localhost:4440',
+      membership,
+      'correct_implementation',
+      ['typescript']
+    );
+
+    expect(result.status).toBe('error');
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('includes MC-1 version field in payload', async () => {

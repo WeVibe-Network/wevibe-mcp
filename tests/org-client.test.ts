@@ -588,6 +588,110 @@ describe('inviteMember', () => {
     expect(body.signed_by).toBeTruthy();
   });
 
+  it('attaches a well-formed WeVibe-Signed Authorization header to the /members request', async () => {
+    mockKeyStore.set('org-abc-master', new Uint8Array(32).fill(0xaa));
+
+    const { inviteMember } = await import('../src/org-client.js');
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ current_epoch: 2 }),
+    });
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ pubkey: 'invitee_pub', role: 'member' }),
+    });
+
+    const result = await inviteMember({
+      orgId: 'org-abc',
+      inviteePubkeyHex: 'invitee_pub',
+      inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
+      prePubkeyHex: PRE_PUBKEY_HEX,
+      canContribute: false,
+      canModerate: false,
+      hubUrl: 'http://localhost:4440',
+    });
+
+    expect(result.status).toBe('invited');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    const [, opts] = mockFetch.mock.calls[1];
+    const headers = (opts?.headers ?? {}) as Record<string, string>;
+    expect(headers.Authorization).toMatch(/^WeVibe-Signed pubkey=[0-9a-f]{64},timestamp=[^,]+,signature=[0-9a-f]{128}$/);
+
+    const body = JSON.parse((opts?.body ?? '{}') as string);
+    expect(body.pubkey).toBe('invitee_pub');
+    expect(body.signed_by).toBeTruthy();
+    expect(body.signature).toBeTruthy();
+  });
+
+  it('signs the timestamp carried in the members auth header', async () => {
+    mockKeyStore.set('org-abc-master', new Uint8Array(32).fill(0xaa));
+
+    const { inviteMember } = await import('../src/org-client.js');
+    const { sign } = await import('../src/crypto.js');
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ current_epoch: 2 }),
+    });
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ pubkey: 'invitee_pub', role: 'member' }),
+    });
+
+    const result = await inviteMember({
+      orgId: 'org-abc',
+      inviteePubkeyHex: 'invitee_pub',
+      inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
+      prePubkeyHex: PRE_PUBKEY_HEX,
+      canContribute: false,
+      canModerate: false,
+      hubUrl: 'http://localhost:4440',
+    });
+
+    expect(result.status).toBe('invited');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    const [, opts] = mockFetch.mock.calls[1];
+    const headers = (opts?.headers ?? {}) as Record<string, string>;
+    const authHeader = headers.Authorization ?? '';
+    const timestampMatch = authHeader.match(/timestamp=([^,]+),signature=/);
+    expect(timestampMatch).not.toBeNull();
+
+    const timestamp = timestampMatch![1];
+    const encodedTimestamp = new TextEncoder().encode(timestamp);
+    const timestampSignCall = vi.mocked(sign).mock.calls.find(([, data]) =>
+      Buffer.from(data as Uint8Array).equals(Buffer.from(encodedTimestamp)),
+    );
+    expect(timestampSignCall).toBeDefined();
+  });
+
+  it('fails closed — sends no request when identity is missing', async () => {
+    mockKeyStore.set('org-abc-master', new Uint8Array(32).fill(0xaa));
+
+    const { inviteMember } = await import('../src/org-client.js');
+    const { loadIdentity } = await import('../src/key-store.js');
+
+    vi.mocked(loadIdentity).mockResolvedValueOnce(null);
+
+    const result = await inviteMember({
+      orgId: 'org-abc',
+      inviteePubkeyHex: 'invitee_pub',
+      inviteeX25519PubkeyHex: INVITEE_X25519_HEX,
+      prePubkeyHex: PRE_PUBKEY_HEX,
+      canContribute: false,
+      canModerate: false,
+      hubUrl: 'http://localhost:4440',
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('no identity');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it('returns error when no master key for org', async () => {
     const { inviteMember } = await import('../src/org-client.js');
 

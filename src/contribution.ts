@@ -9,6 +9,8 @@ import type { OrgMembership, AttestationMetadata, ProvenanceTier } from './types
 import { submitMemoryMessage } from './canonical.js';
 import type { MemoryType } from './types.js';
 import { MC_VERSION, type Mc1WriteEnvelope } from './mc1/schema.js';
+import { buildWeVibeSignedAuth } from './auth.js';
+import { logOp, fp, newTraceId } from './logger.js';
 
 type MemoryKeywordMetadata = {
   classified: Array<{ keyword: string; weight: number; base_weight: number }>;
@@ -128,18 +130,45 @@ export async function submitMemory(
     attestation: attestation ?? null,
   };
 
+  let trace = '';
   try {
+    trace = newTraceId();
+    const { headers: authHeaders } = await buildWeVibeSignedAuth();
     const response = await fetch(`${hubUrl}/v1/orgs/${orgId}/submit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
       body: JSON.stringify(payload),
     });
 
-    if (!response.ok) {
+    if (response.ok) {
+      logOp('org.submit_memory', 'info', {
+        trace,
+        org_id: orgId,
+        epoch_id: membership.currentEpoch,
+        contributor_pk_fp: fp(contributorPubkeyHex),
+        submission_hash_fp: fp(submissionHash),
+        status: response.status,
+      });
+    } else {
       console.warn(`wevibe-mcp: submitMemory — Hub returned ${response.status}`);
+      logOp('org.submit_memory', 'error', {
+        trace,
+        org_id: orgId,
+        submission_hash_fp: fp(submissionHash),
+        status: response.status,
+      });
     }
   } catch (e) {
     console.warn(`wevibe-mcp: submitMemory — Hub unavailable: ${e}`);
+    logOp('org.submit_memory', 'error', {
+      trace,
+      org_id: orgId,
+      submission_hash_fp: fp(submissionHash),
+      err: String(e),
+    });
   }
 
   await storePendingDek(

@@ -10,7 +10,7 @@ import type { MemoryType } from './types.js';
 import { umbralDecryptReencrypted, umbralDeriveEpochKeypair, umbralGenerateKfrag } from './sidecar.js';
 import { HubSignatureError, hubFetchVerified, hubFetchVerifiedWithKey } from './hub-fetch.js';
 import { HUB_URL } from './config.js';
-import { logOp, fp } from './logger.js';
+import { logOp, fp, newTraceId } from './logger.js';
 import { hkdfSync } from 'node:crypto';
 
 interface HubMemberOrgEntry {
@@ -974,10 +974,13 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
   }
 
   let response: Response;
+  let trace = '';
   try {
+    trace = newTraceId();
+    const { headers: authHeaders } = await buildWeVibeSignedAuth();
     const verified = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/members`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify(payload),
     });
     response = verified.res;
@@ -989,11 +992,34 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
       } catch {
         errMsg = `HTTP ${response.status}`;
       }
+      logOp('org.invite_member', 'error', {
+        trace,
+        org_id: params.orgId,
+        member_pk_fp: fp(params.inviteePubkeyHex),
+        status: response.status,
+        err: errMsg,
+      });
       return { status: 'error', error: errMsg };
     }
   } catch (e) {
+    logOp('org.invite_member', 'error', {
+      trace,
+      org_id: params.orgId,
+      member_pk_fp: fp(params.inviteePubkeyHex),
+      err: String(e),
+    });
     return { status: 'error', error: `hub unavailable: ${e}` };
   }
+
+  logOp('org.invite_member', 'info', {
+    trace,
+    org_id: params.orgId,
+    member_pk_fp: fp(params.inviteePubkeyHex),
+    leader_pk_fp: fp(leaderPubkeyHex),
+    role: 'member',
+    can_moderate: params.canModerate,
+    status: response.status,
+  });
 
   return { status: 'invited' };
 }
