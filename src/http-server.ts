@@ -32,6 +32,7 @@ import { classifyFreeModelLapse, createOpenAICompatibleProvider, stripFreeSuffix
 import { getModelMinContextWindow } from './openrouter-catalog.js';
 import { exportIdentityPairing } from './pairing-export.js';
 import { fp, logOp, resolveTraceId, TRACE_HEADER } from './logger.js';
+import { emitExtractionIntegrity, type ExtractionEpisodeCounts } from './extraction-integrity.js';
 import { buildSessionSubstrate, type SubstrateEvent } from './session-substrate.js';
 import { renderFailureEpisodeBlock, segmentFailureEpisodes } from './failure-episodes.js';
 import {
@@ -632,12 +633,28 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
         proposed_paid_slug: failure.proposed_paid_slug,
       });
       parkJob(jobId, failure, trace);
+      emitExtractionIntegrity({
+        jobId,
+        trace,
+        sessionId,
+        outcome: 'parked',
+        episodes: { resolved, unresolved, coincidental },
+      });
       jsonResponse(res, 202, { job_id: jobId, status: 'awaiting_decision' });
       return;
     }
   }
 
-  runExtractionJob(jobId, transcript, { name: title, directory, stack }, extractOptions, extractionModel, trace);
+  runExtractionJob(
+    jobId,
+    transcript,
+    { name: title, directory, stack },
+    extractOptions,
+    extractionModel,
+    trace,
+    sessionId,
+    { resolved, unresolved, coincidental },
+  );
 
   logOp('extract.job', 'info', {
     trace,
@@ -654,6 +671,8 @@ function runExtractionJob(
   extractOptions: Parameters<typeof extractMemories>[2],
   attemptedModel: string,
   trace?: string,
+  sessionId?: string,
+  episodes?: ExtractionEpisodeCounts,
 ): void {
   void (async () => {
     try {
@@ -666,6 +685,15 @@ function runExtractionJob(
         },
       );
       completeJob(jobId, result, trace);
+      emitExtractionIntegrity({
+        jobId,
+        trace,
+        sessionId,
+        outcome: 'completed',
+        episodes,
+        emittedMemoryCount: result.memories.length,
+        emptyReason: result.meta?.emptyReason,
+      });
     } catch (error) {
       const lapse = classifyFreeModelLapse(error, attemptedModel);
       if (lapse.lapsed) {
@@ -684,9 +712,23 @@ function runExtractionJob(
           lapsed_model: lapse.lapsed_model!,
           proposed_paid_slug: lapse.proposed_paid_slug!,
         }, trace);
+        emitExtractionIntegrity({
+          jobId,
+          trace,
+          sessionId,
+          outcome: 'parked',
+          episodes,
+        });
       } else {
         const message = error instanceof Error ? error.message : String(error);
         failJob(jobId, message, trace);
+        emitExtractionIntegrity({
+          jobId,
+          trace,
+          sessionId,
+          outcome: 'failed',
+          episodes,
+        });
       }
     }
   })();
@@ -796,6 +838,7 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
     extractOptions,
     model,
     trace,
+    job.resume.session_id,
   );
 
   jsonResponse(res, 202, { job_id: jobId });
