@@ -549,8 +549,30 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     dur_ms: Date.now() - substrateStart,
   });
 
-  const episodes = segmentFailureEpisodes(events);
-  const renderedEvidenceBlock = renderFailureEpisodeBlock(episodes, events);
+  let episodes: ReturnType<typeof segmentFailureEpisodes>;
+  let renderedEvidenceBlock: string;
+  try {
+    episodes = segmentFailureEpisodes(events);
+    renderedEvidenceBlock = renderFailureEpisodeBlock(episodes, events);
+  } catch (error) {
+    const jobId = randomUUID();
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    logOp('extract', 'error', {
+      trace,
+      phase: 'episodes',
+      session_id: sessionId,
+      err: message,
+    });
+    emitExtractionIntegrity({
+      jobId,
+      trace,
+      sessionId,
+      outcome: 'failed',
+      emptyReason: 'segmentation_error',
+    });
+    jsonResponse(res, 500, { status: 'error', error: 'extraction_segmentation_failed' });
+    return;
+  }
   evidenceBlock = renderedEvidenceBlock.length > 0 ? renderedEvidenceBlock : undefined;
   const resolved = episodes.filter(episode => episode.resolution === 'resolved').length;
   const unresolved = episodes.filter(episode => episode.resolution === 'unresolved').length;
@@ -613,6 +635,40 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
 
   const jobId = randomUUID();
   createJob(jobId, resumeInputs, trace);
+
+  if (resolved === 0) {
+    logOp('extract', 'info', {
+      trace,
+      phase: 'zero_progress',
+      job_id: jobId,
+      session_id: sessionId,
+      resolved,
+      unresolved,
+      coincidental,
+    });
+    completeJob(jobId, {
+      memories: [],
+      meta: {
+        emptyReason: 'zero_progress',
+      },
+    }, trace);
+    emitExtractionIntegrity({
+      jobId,
+      trace,
+      sessionId,
+      outcome: 'completed',
+      episodes: { resolved, unresolved, coincidental },
+      emittedMemoryCount: 0,
+      emptyReason: 'zero_progress',
+    });
+    logOp('extract.job', 'info', {
+      trace,
+      job_id: jobId,
+      phase: 'accepted',
+    });
+    jsonResponse(res, 202, { job_id: jobId, status: 'accepted' });
+    return;
+  }
 
   const resolvedBaseUrl = (baseUrlOverride ?? 'https://openrouter.ai/api/v1').toLowerCase();
   const isOpenRouterProvider = !isLocal
