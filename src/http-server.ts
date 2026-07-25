@@ -37,6 +37,13 @@ import { emitExtractionIntegrity, type ExtractionEpisodeCounts } from './extract
 import { buildSessionSubstrate, type SubstrateEvent } from './session-substrate.js';
 import { renderFailureEpisodeBlock, segmentFailureEpisodes } from './failure-episodes.js';
 import {
+  appendGoalEpisodeIndex,
+  emitEpisodeOps,
+  enrichEpisodes,
+  episodeIndexRecord,
+} from './gstv/episodes.js';
+import { getGstvEngine, handleGstvGoal, handleGstvSeal, startGstvRuntime } from './gstv/routes.js';
+import {
   buildEncryptedRetrievalCard,
   decryptCiphertext,
   decryptPendingItem,
@@ -554,6 +561,27 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   let renderedEvidenceBlock: string;
   try {
     episodes = segmentFailureEpisodes(events);
+    const episodeTrace = trace ?? '-';
+    const enrichedEpisodes = enrichEpisodes(episodes, events);
+    emitEpisodeOps(enrichedEpisodes, sessionId ? { trace: episodeTrace, session_id: sessionId } : { trace: episodeTrace });
+    if (sessionId) {
+      const goalDirPath = getGstvEngine().goalDirForSession(sessionId);
+      if (goalDirPath) {
+        const ts = new Date().toISOString();
+        const records = enrichedEpisodes.map((episode) => episodeIndexRecord(episode, sessionId, ts));
+        try {
+          await appendGoalEpisodeIndex(goalDirPath, records);
+        } catch (error) {
+          const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+          logOp('extract', 'error', {
+            trace,
+            phase: 'episodes.index_append',
+            session_id: sessionId,
+            err: message,
+          });
+        }
+      }
+    }
     renderedEvidenceBlock = renderFailureEpisodeBlock(episodes, events);
   } catch (error) {
     const jobId = randomUUID();
@@ -1958,6 +1986,22 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       return;
     }
 
+    if (method === 'GET' && url.startsWith('/v1/gstv/goal')) {
+      if (!authorize(req, res)) {
+        return;
+      }
+      await handleGstvGoal(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/gstv/seal') {
+      if (!authorize(req, res)) {
+        return;
+      }
+      await handleGstvSeal(req, res);
+      return;
+    }
+
     jsonResponse(res, 404, { status: 'error', error: 'not found' });
   } finally {
     const status = res.statusCode;
@@ -2014,6 +2058,7 @@ export function startHttpServer(): Promise<boolean> {
 
     server.listen(HTTP_PORT, HTTP_HOST, () => {
       console.error(`wevibe-mcp: HTTP API listening on ${HTTP_HOST}:${HTTP_PORT}`);
+      void startGstvRuntime();
       // Periodic flush of denial queue — ensures denials reach the hub even when
       // the consumer is idle (no recall triggered). 60s interval is sufficient for
       // background retry; the timer naturally stops when the process exits.
