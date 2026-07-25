@@ -26,7 +26,7 @@ Core responsibilities in the current implementation:
 - Applies local safety controls (`wevibe-guard` scan, artifact policy checks, OCR sanitization, blacklist handling) before candidate presentation.
 - Powers the human approval gate used before memory injection.
 - Maintains local identity and keystore data under `~/.wevibe/`.
-- Ships CLI entrypoints: `wevibe-mcp`, `wevibe-admin`, and `wevibe-retrieve`.
+- Ships CLI entrypoints: `wevibe-mcp` and `wevibe-admin`.
 - Bundles OpenCode plugin source for local onboarding automation.
 
 > Note: this repository still contains some legacy Python-era artifacts, but the shipped runtime path is TypeScript.

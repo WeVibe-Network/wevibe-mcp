@@ -35,8 +35,7 @@
   "bin": {
     "wevibe": "dist/cli/bind.js",
     "wevibe-mcp": "dist/server.js",
-    "wevibe-admin": "dist/admin.js",
-    "wevibe-retrieve": "dist/retrieve-cli.js"
+    "wevibe-admin": "dist/admin.js"
   },
   "scripts": {
     "build": "tsc",
@@ -51,7 +50,6 @@
     "@noble/ed25519": "3.1.0",
     "@noble/hashes": "^1.8.0",
     "@noble/secp256k1": "3.1.0",
-    "express": "5.2.1",
     "toml": "^3.0.0",
     "zod": "^3.22.0"
   },
@@ -59,7 +57,6 @@
     "wevibe-biometric": "^0.1.0"
   },
   "devDependencies": {
-    "@types/express": "5.0.6",
     "@types/node": "^20.19.42",
     "tsx": "^4.22.4",
     "typescript": "^5.4.0",

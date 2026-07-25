@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scrubQueryHarvestInput } from '../../src/query-scrub.js';
-import type { RetrieveInput } from '../../src/retrieve-cli.js';
+import type { RetrieveInput } from '../../src/retrieve-types.js';
 
 describe('query scrub security', () => {
   it('strips secrets, PII, machine paths, and egress-violating artifacts', () => {

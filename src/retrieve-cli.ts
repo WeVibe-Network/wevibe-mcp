@@ -18,32 +18,7 @@ import { getOrgHubState, setOrgHubState } from './identity-sidecar.js';
 import { ensureIdentity } from './identity-runtime.js';
 import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
 import { logOp, newTraceId } from './logger.js';
-
-export interface RetrieveInput {
-  query: string;
-  limit?: number;
-  org_id?: string;
-  session_id?: string;
-  trace_id?: string;
-  intent?: string;
-  task?: string;
-  description?: string;
-  language?: string;
-  stack?: string[];
-  technologies?: string[];
-  frameworks?: string[];
-  deps?: string[];
-  errorStrings?: string[];
-  recentActivity?: string[];
-  buildFailing?: boolean;
-  testFailing?: boolean;
-  files?: string[];
-  directory?: string;
-  projectName?: string;
-  relevance_floor?: number;
-  surface_budget?: number;
-  mc_version?: number;
-}
+import type { RetrieveInput } from './retrieve-types.js';
 
 export interface MemoryOutput {
   cid: string;

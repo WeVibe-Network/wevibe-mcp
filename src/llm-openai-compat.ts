@@ -14,8 +14,6 @@ const NO_ENDPOINTS_RE = /no endpoints?/i;
 const NOT_A_VALID_MODEL_RE = /not a valid model/i;
 const MODEL_UNAVAILABLE_RE = /model .* (not found|unavailable)/i;
 
-export const DEFAULT_LLM_TIMEOUT_MS = 600000;
-
 function truncateBodySnippet(body: string): string {
   if (body.length <= ERROR_BODY_SNIPPET_LIMIT) {
     return body;
@@ -171,7 +169,7 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
   const provider: LlmProvider & { model: string } = {
     model,
     async chat(systemPrompt: string, userMessage: string, options?: LlmChatOptions): Promise<string> {
-      const timeoutMs = options?.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
+      const timeoutMs = options?.timeoutMs ?? 600000;
       const cascade = buildFormatCascade(options);
 
       const runSingleAttempt = async (): Promise<string> => {

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { UNIX_ABSOLUTE_PATH_REGEX, WINDOWS_ABSOLUTE_PATH_REGEX } from '../query-scrub.js';
+import { UNIX_ABSOLUTE_PATH_REGEX, WINDOWS_ABSOLUTE_PATH_REGEX } from './path-regexes.js';
 
 function normalizeSeparators(path: string): string {
   return path.replace(/\\/g, '/');

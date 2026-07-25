@@ -1,8 +1,9 @@
 import { extractArtifacts } from './artifact-extract.js';
 import { checkArtifactPolicy } from './artifact-policy.js';
 import { transformMemoryContent } from './artifact-transform.js';
+import { UNIX_ABSOLUTE_PATH_REGEX, WINDOWS_ABSOLUTE_PATH_REGEX } from './mc1/path-regexes.js';
 import { scrubPaths } from './mc1/paths.js';
-import type { RetrieveInput } from './retrieve-cli.js';
+import type { RetrieveInput } from './retrieve-types.js';
 
 type EgressMode = 'local_only' | 'allowlist' | 'unrestricted';
 
@@ -17,9 +18,6 @@ const LONG_HEX_REGEX = /\b[0-9a-fA-F]{32,}\b/g;
 const LONG_BASE64ISH_REGEX = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g;
 
 const EMAIL_REGEX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-
-export const UNIX_ABSOLUTE_PATH_REGEX = /(?:\/(?:Users|home|root|var|tmp|opt|etc|private)\/[^\s'"]*)/g;
-export const WINDOWS_ABSOLUTE_PATH_REGEX = /[A-Za-z]:\\[^\s'"]*/g;
 
 function scrubField(
   value: string,

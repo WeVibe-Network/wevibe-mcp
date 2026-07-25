@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getRecallMode, getRecallModeGovernor, retrieve, type RetrieveInput } from './retrieve-cli.js';
+import { getRecallMode, getRecallModeGovernor, retrieve } from './retrieve-cli.js';
+import type { RetrieveInput } from './retrieve-types.js';
 import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
 import { loadIdentity } from './key-store.js';

@@ -123,21 +123,3 @@ export async function listPending(orgId?: string): Promise<PendingEntry[]> {
 
   return entries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
-
-export async function updateStatus(submissionHash: string, status: 'pending' | 'approved' | 'denied'): Promise<void> {
-  await _ensureCrypto();
-  const path = _getEntryPath(submissionHash);
-
-  if (!existsSync(path)) {
-    return;
-  }
-
-  const entry = await _decryptEntry(path);
-  if (!entry) return;
-
-  entry.status = status;
-  const tmpPath = path + '.tmp';
-  const encrypted = await _encryptEntry(entry);
-  writeFileSync(tmpPath, encrypted);
-  renameSync(tmpPath, path);
-}

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildNeedCard, buildPromptDigest } from '../src/retrieval-card.js';
-import { buildQueryHarvest, type RetrieveInput } from '../src/retrieve-cli.js';
+import { buildQueryHarvest } from '../src/retrieve-cli.js';
+import type { RetrieveInput } from '../src/retrieve-types.js';
 
 describe('buildQueryHarvest', () => {
   it('builds a sparse harvest from query-only input', () => {
