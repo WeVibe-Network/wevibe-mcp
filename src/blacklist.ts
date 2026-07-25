@@ -49,15 +49,3 @@ export function add_to_blacklist(pack_id: string): boolean {
   _save(ids);
   return true;
 }
-
-export function filter_blacklisted(memories: Array<{ pack_id?: string }>): Array<{ pack_id?: string }> {
-  const blacklisted = _load();
-  if (blacklisted.size === 0) {
-    return memories;
-  }
-  return memories.filter((m) => !blacklisted.has(m.pack_id ?? ''));
-}
-
-export function get_blacklist(): string[] {
-  return [..._load()];
-}

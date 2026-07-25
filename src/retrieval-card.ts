@@ -8,12 +8,6 @@ export interface StructuredMemory {
   stack: string[];
 }
 
-export function serializeMemoryText(m: { implement: string; context?: string | null; dnd?: string | null }): string {
-  const context = typeof m.context === 'string' ? m.context : '';
-  const dnd = typeof m.dnd === 'string' ? m.dnd : '';
-  return `${m.implement}${context ? `${CONTEXT_MARKER}${context}` : ''}${dnd ? `${DND_MARKER}${dnd}` : ''}`;
-}
-
 export function parseMemoryText(plaintext: string): { implement: string; context: string; dnd: string | null } {
   const raw = String(plaintext ?? '');
   const contextIndex = raw.indexOf(CONTEXT_MARKER);

@@ -52,8 +52,6 @@ vi.mock('../src/blacklist.js', async (importOriginal) => {
     ...actual,
     add_to_blacklist: actual.add_to_blacklist,
     is_blacklisted: actual.is_blacklisted,
-    filter_blacklisted: actual.filter_blacklisted,
-    get_blacklist: actual.get_blacklist,
   };
 });
 

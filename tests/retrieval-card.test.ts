@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  serializeMemoryText,
   parseMemoryText,
   buildRetrievalCard,
   buildNeedCard,
@@ -8,48 +7,6 @@ import {
 } from '../src/retrieval-card.js';
 
 describe('retrieval-card formatting', () => {
-  it('serializes and parses memory text with implement/context/dnd', () => {
-    const memory = {
-      implement: 'Use explicit allowlists.',
-      context: 'When handling partner webhooks.',
-      dnd: 'Trust wildcard origins.',
-    };
-
-    const serialized = serializeMemoryText(memory);
-    expect(serialized).toBe("Use explicit allowlists.\n\nContext: When handling partner webhooks.\n\nDon't: Trust wildcard origins.");
-
-    expect(parseMemoryText(serialized)).toEqual({
-      implement: 'Use explicit allowlists.',
-      context: 'When handling partner webhooks.',
-      dnd: 'Trust wildcard origins.',
-    });
-  });
-
-  it('serializes and parses memory text with implement/context only', () => {
-    const serialized = serializeMemoryText({
-      implement: 'Pin exact API versions.',
-      context: 'When integrating vendor SDKs.',
-    });
-
-    expect(serialized).toBe('Pin exact API versions.\n\nContext: When integrating vendor SDKs.');
-    expect(parseMemoryText(serialized)).toEqual({
-      implement: 'Pin exact API versions.',
-      context: 'When integrating vendor SDKs.',
-      dnd: null,
-    });
-  });
-
-  it('serializes and parses memory text with implement only', () => {
-    const serialized = serializeMemoryText({ implement: 'Run schema migrations before deploy.' });
-
-    expect(serialized).toBe('Run schema migrations before deploy.');
-    expect(parseMemoryText(serialized)).toEqual({
-      implement: 'Run schema migrations before deploy.',
-      context: '',
-      dnd: null,
-    });
-  });
-
   it('parses a plain string with no markers', () => {
     expect(parseMemoryText('  wevibe_author_memory  ')).toEqual({
       implement: 'wevibe_author_memory',

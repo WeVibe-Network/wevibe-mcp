@@ -33,7 +33,7 @@ export async function read_project_manifest(workingDir: string = '.'): Promise<s
   return [];
 }
 
-export function read_package_json(path: string): string[] {
+function read_package_json(path: string): string[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -58,7 +58,7 @@ export function read_package_json(path: string): string[] {
   }
 }
 
-export function read_requirements_txt(path: string): string[] {
+function read_requirements_txt(path: string): string[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -86,7 +86,7 @@ export function read_requirements_txt(path: string): string[] {
   }
 }
 
-export function read_pyproject_toml(path: string): string[] {
+function read_pyproject_toml(path: string): string[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -123,7 +123,7 @@ export function read_pyproject_toml(path: string): string[] {
   }
 }
 
-export function read_cargo_toml(path: string): string[] {
+function read_cargo_toml(path: string): string[] {
   if (!existsSync(path)) {
     return [];
   }
@@ -144,7 +144,7 @@ export function read_cargo_toml(path: string): string[] {
   }
 }
 
-export function read_go_mod(path: string): string[] {
+function read_go_mod(path: string): string[] {
   if (!existsSync(path)) {
     return [];
   }

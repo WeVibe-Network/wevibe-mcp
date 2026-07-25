@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 const TEST_DIR = join(tmpdir(), 'wevibe-test-blacklist-' + Date.now());
 const TEST_FILE = join(TEST_DIR, 'blacklist.json');
 
-import { is_blacklisted, add_to_blacklist, filter_blacklisted, get_blacklist } from '../src/blacklist.js';
+import { is_blacklisted, add_to_blacklist } from '../src/blacklist.js';
 
 function cleanup() {
   try {
@@ -48,29 +48,4 @@ describe('blacklist', () => {
     expect(result).toBe(false);
   });
 
-  it('filter_blacklisted removes blacklisted entries', () => {
-    add_to_blacklist('bad-1');
-    const memories = [
-      { pack_id: 'good-1', task: 'ok' },
-      { pack_id: 'bad-1', task: 'nope' },
-      { pack_id: 'good-2', task: 'ok' },
-    ];
-    const filtered = filter_blacklisted(memories);
-    expect(filtered.length).toBe(2);
-    expect(filtered.every((m) => m.pack_id !== 'bad-1')).toBe(true);
-  });
-
-  it('filter_blacklisted returns all when none blacklisted', () => {
-    const memories = [{ pack_id: 'a' }, { pack_id: 'b' }];
-    const filtered = filter_blacklisted(memories);
-    expect(filtered.length).toBe(2);
-  });
-
-  it('get_blacklist returns all entries', () => {
-    add_to_blacklist('entry-1');
-    add_to_blacklist('entry-2');
-    const list = get_blacklist();
-    expect(list).toContain('entry-1');
-    expect(list).toContain('entry-2');
-  });
 });

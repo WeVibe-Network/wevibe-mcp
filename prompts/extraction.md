@@ -19,6 +19,13 @@ ORG CONTEXT (if provided):
 - Do NOT force unrelated session content to conform to the org's domain.
 - NEVER invent keywords the transcript does not actually support. Faithfulness to the transcript always wins over alignment.
 
+DOMAIN LABELING (name the PROBLEM, not the tooling):
+- A keyword must name the problem domain / concept / technique the memory is about — the thing a future sufferer of the same problem would search for. It must NOT name the build/test tooling used during the session.
+- Stack/tool identity (languages, frameworks, test runners, bundlers) belongs in the "stack" field, never in "keywords".
+- GOOD (problem domain): `backgammon`, `doubling_cube`, `pip_count` — someone searching these has the same problem.
+- BAD (build tooling, do-not-emit as keywords): `type_stripping`, `frontend`, `vitest` — these describe how code was built, not the problem solved.
+- Test: if two sessions about entirely different problems would share the keyword only because they used the same tool, the keyword is wrong.
+
 Rules:
 - Emit 3-8 keywords when possible.
 - Assign each keyword a relevancy weight in (0,1] (higher = more relevant). Weights need not sum to anything; they are normalized downstream. Do not emit zero or negative weights.
