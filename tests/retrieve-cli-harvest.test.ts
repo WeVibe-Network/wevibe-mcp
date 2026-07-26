@@ -1,7 +1,73 @@
 import { describe, expect, it } from 'vitest';
 import { buildNeedCard, buildPromptDigest } from '../src/retrieval-card.js';
-import { buildQueryHarvest } from '../src/retrieve-cli.js';
+import { buildKeywordDescription, buildQueryHarvest } from '../src/retrieve-cli.js';
 import type { RetrieveInput } from '../src/retrieve-types.js';
+
+describe('buildKeywordDescription', () => {
+  it('matches pre-change behavior when task is absent', () => {
+    const input: RetrieveInput = {
+      query: 'fix cache timeout',
+      description: 'Investigate redis reconnect strategy',
+    };
+
+    expect(buildKeywordDescription(input, ['Node.js', 'Redis'])).toBe(
+      'fix cache timeout Investigate redis reconnect strategy Node.js Redis',
+    );
+  });
+
+  it('includes task when present and distinct', () => {
+    const input: RetrieveInput = {
+      query: 'fix cache timeout',
+      description: 'Investigate redis reconnect strategy',
+      task: 'Patch retry jitter bug in reconnect loop',
+    };
+
+    expect(buildKeywordDescription(input, ['Node.js', 'Redis'])).toBe(
+      'fix cache timeout Investigate redis reconnect strategy Patch retry jitter bug in reconnect loop Node.js Redis',
+    );
+  });
+
+  it('does not double-count task when it matches query after trim', () => {
+    const input: RetrieveInput = {
+      query: 'fix cache timeout',
+      task: '  fix cache timeout  ',
+    };
+
+    expect(buildKeywordDescription(input, [])).toBe('fix cache timeout');
+  });
+
+  it('does not double-count task when it matches description after trim', () => {
+    const input: RetrieveInput = {
+      query: 'fix cache timeout',
+      description: 'Investigate redis reconnect strategy',
+      task: '  Investigate redis reconnect strategy  ',
+    };
+
+    expect(buildKeywordDescription(input, [])).toBe('fix cache timeout Investigate redis reconnect strategy');
+  });
+
+  it('skips empty or whitespace-only task values', () => {
+    const input: RetrieveInput = {
+      query: 'fix cache timeout',
+      description: 'Investigate redis reconnect strategy',
+      task: '   ',
+    };
+
+    expect(buildKeywordDescription(input, ['Node.js'])).toBe(
+      'fix cache timeout Investigate redis reconnect strategy Node.js',
+    );
+  });
+
+  it('includes task when query and description are absent', () => {
+    const input: RetrieveInput = {
+      query: '   ',
+      description: '   ',
+      task: 'Patch retry jitter bug in reconnect loop',
+    };
+
+    expect(buildKeywordDescription(input, [])).toBe('Patch retry jitter bug in reconnect loop');
+  });
+});
 
 describe('buildQueryHarvest', () => {
   it('builds a sparse harvest from query-only input', () => {

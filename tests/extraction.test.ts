@@ -11,6 +11,8 @@ import {
   runBounded,
 } from '../src/extraction.js';
 import { computeLocalEmbedding } from '../src/embedding.js';
+import * as logger from '../src/logger.js';
+import * as orgClient from '../src/org-client.js';
 import type { MemoryCandidate } from '../src/extraction.js';
 import type { LlmChatOptions, LlmProvider } from '../src/llm.js';
 
@@ -25,6 +27,12 @@ vi.mock('../src/embedding-config.js', () => ({
     model: 'text-embedding-3-large',
     usePrefix: false,
   }),
+}));
+
+vi.mock('../src/org-client.js', () => ({
+  getOrgInfo: vi.fn().mockResolvedValue(null),
+  getOrgKeywords: vi.fn().mockResolvedValue([]),
+  getOrgKeywordCandidates: vi.fn().mockResolvedValue([]),
 }));
 
 const mockFetch = vi.fn();
@@ -56,6 +64,9 @@ describe('extractMemories', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockReset();
+    vi.mocked(orgClient.getOrgInfo).mockResolvedValue(null);
+    vi.mocked(orgClient.getOrgKeywords).mockResolvedValue([]);
+    vi.mocked(orgClient.getOrgKeywordCandidates).mockResolvedValue([]);
   });
 
   it('returns structured memories from a session with learnings', async () => {
@@ -342,6 +353,98 @@ describe('extractMemories', () => {
 
     expect(capturedSystemPrompt).toBe('ORG EXTRACTION PROFILE PROMPT');
     expect(capturedNumCtx).toBe(65536);
+  });
+
+  it('logs org_fetch success with org context metrics', async () => {
+    const logSpy = vi.spyOn(logger, 'logOp');
+    const provider = createMockLlmProvider(() => '[]');
+    vi.mocked(orgClient.getOrgInfo).mockResolvedValue({ description: 'some text' });
+    vi.mocked(orgClient.getOrgKeywords).mockResolvedValue(['redis', 'typescript']);
+    vi.mocked(orgClient.getOrgKeywordCandidates).mockResolvedValue(['emerging']);
+
+    await extractMemories(
+      'Org-context extraction transcript',
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      {
+        provider,
+        traceId: 'trace-org-fetch-ok',
+        orgContext: { orgId: 'org-1', hubUrl: 'http://127.0.0.1:8080' },
+      },
+    );
+
+    expect(logSpy).toHaveBeenCalledWith(
+      'extract',
+      'info',
+      expect.objectContaining({
+        phase: 'org_fetch',
+        status: 'ok',
+        desc_present: true,
+        desc_len: 9,
+        vocab_n: 2,
+        candidates_n: 1,
+        dur_ms: expect.any(Number),
+      }),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('logs org_fetch success with empty description when org info is null', async () => {
+    const logSpy = vi.spyOn(logger, 'logOp');
+    const provider = createMockLlmProvider(() => '[]');
+    vi.mocked(orgClient.getOrgInfo).mockResolvedValue(null);
+    vi.mocked(orgClient.getOrgKeywords).mockResolvedValue(['redis', 'typescript']);
+    vi.mocked(orgClient.getOrgKeywordCandidates).mockResolvedValue(['emerging']);
+
+    await extractMemories(
+      'Org-context extraction transcript',
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      {
+        provider,
+        traceId: 'trace-org-fetch-null-info',
+        orgContext: { orgId: 'org-1', hubUrl: 'http://127.0.0.1:8080' },
+      },
+    );
+
+    expect(logSpy).toHaveBeenCalledWith(
+      'extract',
+      'info',
+      expect.objectContaining({
+        phase: 'org_fetch',
+        status: 'ok',
+        desc_present: false,
+        desc_len: 0,
+      }),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('logs org_fetch error before fatal org vocabulary throw', async () => {
+    const logSpy = vi.spyOn(logger, 'logOp');
+    const provider = createMockLlmProvider(() => '[]');
+    vi.mocked(orgClient.getOrgInfo).mockResolvedValue({ description: 'some text' });
+    vi.mocked(orgClient.getOrgKeywords).mockRejectedValue(new Error('hub keywords down'));
+
+    await expect(extractMemories(
+      'Org-context extraction transcript',
+      { name: 'test-project', stack: ['nodejs'], directory: '/Users/test' },
+      {
+        provider,
+        traceId: 'trace-org-fetch-err',
+        orgContext: { orgId: 'org-1', hubUrl: 'http://127.0.0.1:8080' },
+      },
+    )).rejects.toThrow('failed to load org vocabulary for alignment (org org-1): hub keywords down — extraction aborted to avoid minting duplicate keywords');
+
+    expect(logSpy).toHaveBeenCalledWith(
+      'extract',
+      'error',
+      expect.objectContaining({
+        phase: 'org_fetch',
+        status: 'err',
+        err: 'hub keywords down',
+        dur_ms: expect.any(Number),
+      }),
+    );
+    logSpy.mockRestore();
   });
 
   it('returns empty array for routine session', async () => {

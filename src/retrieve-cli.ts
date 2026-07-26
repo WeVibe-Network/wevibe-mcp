@@ -152,7 +152,7 @@ function sanitizeRecallLogValue(value: string): string {
   return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 }
 
-function buildKeywordDescription(input: RetrieveInput, stack: string[]): string {
+export function buildKeywordDescription(input: RetrieveInput, stack: string[]): string {
   const parts: string[] = [];
   const query = nonEmptyString(input.query);
   if (query) {
@@ -162,6 +162,11 @@ function buildKeywordDescription(input: RetrieveInput, stack: string[]): string 
   const description = nonEmptyString(input.description);
   if (description && description !== query) {
     parts.push(description);
+  }
+
+  const task = nonEmptyString(input.task);
+  if (task && task !== query && task !== description) {
+    parts.push(task);
   }
 
   if (stack.length > 0) {
@@ -309,6 +314,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   const recentActivitySignals = harvest.errorStrings ?? [];
   const keywordDescription = buildKeywordDescription(scrubbedInput, stackSignals);
 
+  const keywordStart = Date.now();
   const keywords = dissect_to_keywords({
     description: keywordDescription,
     technologies: stackSignals,
@@ -318,10 +324,11 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   });
 
   const keywordTerms = keywords.map(kw => sanitizeRecallLogValue(kw.term));
-  console.error('[recall] keywords extracted count=%d terms=%s trace=%s', keywords.length, keywordTerms.join(','), trace);
+  const keywordMs = Date.now() - keywordStart;
+  console.error('[recall] keywords extracted count=%d terms=%s dur_ms=%d trace=%s', keywords.length, keywordTerms.join(','), keywordMs, trace);
 
   if (keywords.length === 0) {
-    console.error('[recall] retrieve no extractable keywords — graceful empty reason_code=no_keywords trace=' + trace);
+    console.error('[recall] retrieve no extractable keywords — graceful empty reason_code=no_keywords dur_ms=%d trace=%s', keywordMs, trace);
     return {
       status: 'ok',
       memories: [],
@@ -333,18 +340,20 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   let queryVector: number[];
   let embeddingModelId = '';
+  const embeddingStart = Date.now();
   try {
     const embeddingConfig = loadEmbeddingConfig();
     queryVector = await computeLocalEmbedding(promptDigest, { role: 'query', prefix: true }, embeddingConfig);
     embeddingModelId = embeddingConfig.model;
     console.error(
-      '[recall] embedding computed vector_dim=%d model=%s trace=%s',
+      '[recall] embedding computed vector_dim=%d model=%s dur_ms=%d trace=%s',
       queryVector.length,
       sanitizeRecallLogValue(embeddingModelId),
+      Date.now() - embeddingStart,
       trace,
     );
   } catch (e) {
-    console.error('[recall] retrieve error=embedding failed detail=%s trace=%s', sanitizeRecallLogValue(String(e)), trace);
+    console.error('[recall] retrieve error=embedding failed detail=%s dur_ms=%d trace=%s', sanitizeRecallLogValue(String(e)), Date.now() - embeddingStart, trace);
     return { status: 'error', error: `embedding failed: ${e}` };
   }
 
@@ -352,20 +361,23 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   // query keyword channel so domain-relevant memories get the boost. Boost-not-gate +
   // fail-soft: if the vocab fetch fails we recall with the raw (unboosted) keywords.
   let queryKeywords = keywords;
+  const vocabStart = Date.now();
   try {
     const orgVocabulary = await getOrgKeywords(activeHubUrl, membership.orgId);
     queryKeywords = boostKeywordsByVocab(keywords, orgVocabulary);
-    console.error('[recall] vocab-boost applied vocabSize=%d keywords=%d trace=%s', orgVocabulary.length, queryKeywords.length, trace);
+    console.error('[recall] vocab-boost applied vocabSize=%d keywords=%d dur_ms=%d trace=%s', orgVocabulary.length, queryKeywords.length, Date.now() - vocabStart, trace);
   } catch (err) {
     console.error(
-      '[recall] vocab-boost skipped (org vocab fetch failed): %s trace=%s',
+      '[recall] vocab-boost skipped (org vocab fetch failed): %s dur_ms=%d trace=%s',
       err instanceof Error ? err.message : String(err),
+      Date.now() - vocabStart,
       trace,
     );
   }
 
   let rawMemories: ReturnType<typeof deserializeMemoryResult>[] = [];
   let contested: boolean | undefined;
+  const hubQueryStart = Date.now();
   try {
     console.error('[recall] about-to-call-hub org_id=%s hubUrl=%s trace=%s', membership.orgId, activeHubUrl, trace);
     const queryResult = await runWithHubSignatureFailover(
@@ -389,7 +401,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     activeHubUrl = queryResult.hubUrl;
     const data = queryResult.result;
     contested = data.contested;
-    console.error('[recall] hub returned raw_count=%d trace=%s', data.results?.length ?? 0, trace);
+    console.error('[recall] hub returned raw_count=%d dur_ms=%d trace=%s', data.results?.length ?? 0, Date.now() - hubQueryStart, trace);
 
     if (data.results) {
       for (const r of data.results) {
@@ -397,7 +409,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
       }
     }
   } catch (e) {
-    console.error('[recall] retrieve error=hub query failed detail=%s trace=%s', sanitizeRecallLogValue(String(e)), trace);
+    console.error('[recall] retrieve error=hub query failed detail=%s dur_ms=%d trace=%s', sanitizeRecallLogValue(String(e)), Date.now() - hubQueryStart, trace);
     return { status: 'error', error: `hub query failed: ${e}` };
   }
 
@@ -410,6 +422,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   };
   const { headers: authHeaders } = await buildWeVibeSignedAuth();
 
+  const decryptStart = Date.now();
   for (const m of rawMemories) {
     try {
       const ciphertextResult = await runWithHubSignatureFailover(
@@ -510,6 +523,8 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
     }
   }
 
+  const decryptMs = Date.now() - decryptStart;
+
   // D-RECALL-GOVERNOR pt5: contested-twin suppression (deterministic; no re-rank, no LLM).
   // On a near-tie (hub pos1-pos2 gap < contestedThreshold) surface the position-1 winner
   // cleanly and suppress the near-tied position-2 twin. Positions 3+ are untouched.
@@ -536,7 +551,7 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
 
   const rawCount = rawMemories.length;
   const decryptedCount = memories.length;
-  console.error('[recall] decrypt complete decrypted_count=%d trace=%s', memories.length, trace);
+  console.error('[recall] decrypt complete decrypted_count=%d dur_ms=%d trace=%s', memories.length, decryptMs, trace);
 
   console.error('[recall] final memories returned count=%d trace=%s', memories.length, trace);
 

@@ -974,12 +974,21 @@ export async function extractMemories(
   let emergingTerms: string[] = [];
   let orgInfo: OrgInfo | null = null;
   if (options.orgContext) {
+    const orgFetchStart = Date.now();
     orgInfo = await getOrgInfo(options.orgContext.hubUrl, options.orgContext.orgId);
 
     try {
       orgVocabulary = await getOrgKeywords(options.orgContext.hubUrl, options.orgContext.orgId);
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
+      logOp('extract', 'error', {
+        trace: options.traceId,
+        phase: 'org_fetch',
+        org: options.orgContext.orgId,
+        status: 'err',
+        err: cause,
+        dur_ms: Date.now() - orgFetchStart,
+      });
       throw new Error(`failed to load org vocabulary for alignment (org ${options.orgContext.orgId}): ${cause} — extraction aborted to avoid minting duplicate keywords`);
     }
 
@@ -994,6 +1003,19 @@ export async function extractMemories(
       console.error(`wevibe-mcp: emerging keyword candidates fetch failed for org ${options.orgContext.orgId}: ${cause}`);
       emergingTerms = [];
     }
+
+    const orgDescription = typeof orgInfo?.description === 'string' ? orgInfo.description.trim() : '';
+    logOp('extract', 'info', {
+      trace: options.traceId,
+      phase: 'org_fetch',
+      org: options.orgContext.orgId,
+      status: 'ok',
+      desc_present: orgDescription.length > 0,
+      desc_len: orgDescription.length,
+      vocab_n: orgVocabulary.length,
+      candidates_n: emergingTerms.length,
+      dur_ms: Date.now() - orgFetchStart,
+    });
   }
 
   const modelSlug = typeof (options.provider as { model?: unknown }).model === 'string'

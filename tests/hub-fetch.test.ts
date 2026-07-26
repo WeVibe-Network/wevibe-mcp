@@ -444,3 +444,98 @@ describe('retrieve no-membership lifecycle handling', () => {
     expect(result.error).toContain('failed to load org memberships');
   });
 });
+
+describe('retrieve [recall] step logs include dur_ms', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    mockFetch.mockReset();
+  });
+
+  it('emits dur_ms on keyword, embedding, vocab, hub, and decrypt-complete step logs', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const loadMembershipsMock = vi.fn().mockResolvedValue([
+      {
+        orgId: 'org-1',
+        allowedProviders: ['openai'],
+        egressMode: 'unrestricted',
+      },
+    ]);
+    const dissectToKeywordsMock = vi.fn().mockReturnValue([
+      { term: 'redis', weight: 1.0 },
+    ]);
+    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    const getOrgKeywordsMock = vi.fn().mockResolvedValue(['redis']);
+    const queryOrgMemoriesMock = vi.fn().mockResolvedValue({ results: [] });
+
+    vi.doMock('../src/key-store.js', () => ({
+      loadIdentity: vi.fn().mockResolvedValue({
+        edPubkey: new Uint8Array(32).fill(1),
+      }),
+    }));
+
+    vi.doMock('../src/org-client.js', () => ({
+      loadMemberships: loadMembershipsMock,
+      queryOrgMemories: queryOrgMemoriesMock,
+      decryptMemoryBlob: vi.fn(),
+      getOrgKeywords: getOrgKeywordsMock,
+    }));
+
+    vi.doMock('../src/session.js', () => ({
+      dissect_to_keywords: dissectToKeywordsMock,
+    }));
+
+    vi.doMock('../src/embedding.js', () => ({
+      computeLocalEmbedding: computeLocalEmbeddingMock,
+    }));
+
+    vi.doMock('../src/embedding-config.js', () => ({
+      loadEmbeddingConfig: loadEmbeddingConfigMock,
+    }));
+
+    vi.doMock('../src/auth.js', () => ({
+      buildWeVibeSignedAuth: vi.fn().mockResolvedValue({ headers: {} }),
+    }));
+
+    vi.doMock('../src/config.js', () => ({
+      HUB_URL: 'https://hub-default.example',
+      EMBEDDING_MODEL: 'test-embedding-model',
+    }));
+
+    vi.doMock('../src/hub-resolver.js', () => ({
+      getActiveHubUrlForOrg: vi.fn().mockReturnValue('https://hub-default.example'),
+      pickActiveEndpoint: vi.fn(),
+    }));
+
+    loadEmbeddingConfigMock.mockReturnValue({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test',
+      model: 'test-embedding-model',
+      usePrefix: false,
+    });
+
+    const { retrieve } = await import('../src/retrieve-cli.js');
+    const result = await retrieve({
+      query: 'redis config',
+      org_id: 'org-1',
+      technologies: ['redis', 'typescript'],
+      recentActivity: ['ECONNREFUSED'],
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      memories: [],
+      org_allowed_providers: ['openai'],
+    });
+
+    const formats = errorSpy.mock.calls.map(call => String(call[0]));
+    expect(formats.some(line => line.includes('[recall] keywords extracted') && line.includes('dur_ms=%d'))).toBe(true);
+    expect(formats.some(line => line.includes('[recall] embedding computed') && line.includes('dur_ms=%d'))).toBe(true);
+    expect(formats.some(line => line.includes('[recall] vocab-boost applied') && line.includes('dur_ms=%d'))).toBe(true);
+    expect(formats.some(line => line.includes('[recall] hub returned') && line.includes('dur_ms=%d'))).toBe(true);
+    expect(formats.some(line => line.includes('[recall] decrypt complete') && line.includes('dur_ms=%d'))).toBe(true);
+
+    errorSpy.mockRestore();
+  });
+});
