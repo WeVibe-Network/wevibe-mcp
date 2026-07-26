@@ -2,7 +2,7 @@ import { initCrypto } from './crypto.js';
 import { decryptMemoryBlob, getOrgKeywords, loadMemberships, queryOrgMemories } from './org-client.js';
 import { dissect_to_keywords } from './session.js';
 import { boostKeywordsByVocab } from './mc1/keywords.js';
-import { computeLocalEmbedding } from './embedding.js';
+import { computeLocalEmbedding, EXPECTED_EMBEDDING_DIM } from './embedding.js';
 import { loadEmbeddingConfig } from './embedding-config.js';
 import { buildNeedCard, buildPromptDigest, type NeedHarvest } from './retrieval-card.js';
 import { deserializeMemoryResult } from './deserialize.js';
@@ -344,10 +344,21 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   try {
     const embeddingConfig = loadEmbeddingConfig();
     queryVector = await computeLocalEmbedding(promptDigest, { role: 'query', prefix: true }, embeddingConfig);
+    if (queryVector.length !== EXPECTED_EMBEDDING_DIM) {
+      console.error(
+        '[recall] embedding dimension mismatch expected_dim=%d actual_dim=%d model=%s trace=%s',
+        EXPECTED_EMBEDDING_DIM,
+        queryVector.length,
+        sanitizeRecallLogValue(embeddingConfig.model),
+        trace,
+      );
+      return { status: 'error', error: `embedding dimension mismatch: expected ${EXPECTED_EMBEDDING_DIM}, got ${queryVector.length} (model ${embeddingConfig.model})` };
+    }
     embeddingModelId = embeddingConfig.model;
     console.error(
-      '[recall] embedding computed vector_dim=%d model=%s dur_ms=%d trace=%s',
+      '[recall] embedding computed vector_dim=%d expected_dim=%d model=%s dur_ms=%d trace=%s',
       queryVector.length,
+      EXPECTED_EMBEDDING_DIM,
       sanitizeRecallLogValue(embeddingModelId),
       Date.now() - embeddingStart,
       trace,

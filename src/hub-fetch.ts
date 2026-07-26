@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { verify } from './crypto.js';
 import { getOrgHubState } from './identity-sidecar.js';
+import { logOp } from './logger.js';
 
-const warnedMissingPubkeyOrgs = new Set<string>();
 const HUB_SIGNATURE_HEADER = 'x-hub-signature';
 
 export class HubSignatureError extends Error {
@@ -96,9 +96,12 @@ export async function hubFetchVerified(orgId: string, url: string, init?: Reques
   if (hubResponsePubkey) {
     const signatureHex = getRequiredSignatureHeader(res, orgId);
     verifyBody(orgId, bodyBytes, signatureHex, hubResponsePubkey, 'hub_response_pubkey');
-  } else if (!warnedMissingPubkeyOrgs.has(orgId)) {
-    warnedMissingPubkeyOrgs.add(orgId);
-    console.warn(`hub response signature not verified for ${orgId}: no hub_response_pubkey published yet`);
+  } else {
+    logOp('hub.sig_verify', 'warn', {
+      org: orgId,
+      phase: 'sig_verify_skipped',
+      reason: 'no_hub_response_pubkey',
+    });
   }
 
   return asVerifiedResult(res, bodyText);

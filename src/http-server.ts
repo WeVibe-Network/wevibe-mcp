@@ -58,6 +58,7 @@ import {
   normalizeHex,
   signCanonicalBody,
 } from './serve-signing.js';
+import { BodyReadError, readBody } from './http-body.js';
 
 const BUILD_STAMP = (() => {
   try {
@@ -90,18 +91,21 @@ function purgeExpiredOrgSetups(): void {
   }
 }
 
-export async function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: string[] = [];
-    req.on('data', (chunk: string) => chunks.push(chunk));
-    req.on('end', () => resolve(chunks.join('')));
-    req.on('error', reject);
-  });
-}
-
 function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
+}
+
+function respondBodyGuardError(res: ServerResponse, req: IncomingMessage, err: unknown): boolean {
+  if (!(err instanceof BodyReadError)) return false;
+  logOp('http.request', 'warn', {
+    trace: getRequestTrace(req),
+    phase: 'body_guard',
+    reason: err.code,
+    status: err.status,
+  });
+  jsonResponse(res, err.status, { status: 'error', code: err.code, error: err.message });
+  return true;
 }
 
 async function handleHealth(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -292,11 +296,11 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
 
   flushDenials().catch(err => console.error('denial flush on recall failed:', err));
 
-  const body = await readBody(req);
   const recallGovernor = getRecallModeGovernor();
   let input: RetrieveInput;
   let rawInput: Record<string, unknown>;
   try {
+    const body = await readBody(req);
     rawInput = JSON.parse(body) as Record<string, unknown>;
     input = rawInput as unknown as RetrieveInput;
     input.trace_id = getRequestTrace(req);
@@ -312,7 +316,8 @@ async function handleRecall(req: IncomingMessage, res: ServerResponse): Promise<
     input.surface_budget = typeof rawInput.surface_budget === 'number' && Number.isFinite(rawInput.surface_budget)
       ? rawInput.surface_budget
       : recallGovernor.surface_budget;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     console.error('[recall] /v1/recall error=invalid JSON');
     jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
@@ -449,11 +454,12 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: ExtractRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as ExtractRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { error: 'invalid JSON' });
     return;
   }
@@ -824,11 +830,12 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: ExtractResumeRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as ExtractResumeRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { error: 'invalid JSON' });
     return;
   }
@@ -1037,11 +1044,12 @@ async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promis
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: OrgSetupRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as OrgSetupRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
@@ -1106,11 +1114,12 @@ async function handleOrgSetupFinalize(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: OrgSetupFinalizeRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as OrgSetupFinalizeRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
@@ -1159,11 +1168,12 @@ async function handleProvisionRecall(req: IncomingMessage, res: ServerResponse):
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: ProvisionRecallRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as ProvisionRecallRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { status: 'error', code: 'invalid_json', error: 'invalid JSON' });
     return;
   }
@@ -1208,11 +1218,12 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: ServeRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as ServeRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
     return;
   }
@@ -1357,11 +1368,12 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: ReportRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as ReportRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
     return;
   }
@@ -1498,11 +1510,15 @@ async function handleModQueue(req: IncomingMessage, res: ServerResponse): Promis
   try {
     await initCrypto();
 
-    const bodyStr = await readBody(req);
     let body: ModQueueRequestBody;
     try {
+      const bodyStr = await readBody(req);
       body = JSON.parse(bodyStr) as ModQueueRequestBody;
-    } catch {
+    } catch (err) {
+      if (respondBodyGuardError(res, req, err)) {
+        status = err instanceof BodyReadError ? err.status : status;
+        return;
+      }
       status = 400;
       jsonResponse(res, status, { status: 'error', error: 'invalid JSON' });
       return;
@@ -1595,11 +1611,15 @@ async function handleModDecryptBatch(req: IncomingMessage, res: ServerResponse):
   try {
     await initCrypto();
 
-    const bodyStr = await readBody(req);
     let body: ModDecryptBatchRequestBody;
     try {
+      const bodyStr = await readBody(req);
       body = JSON.parse(bodyStr) as ModDecryptBatchRequestBody;
-    } catch {
+    } catch (err) {
+      if (respondBodyGuardError(res, req, err)) {
+        status = err instanceof BodyReadError ? err.status : status;
+        return;
+      }
       status = 400;
       jsonResponse(res, status, { status: 'error', error: 'invalid JSON' });
       return;
@@ -1690,11 +1710,15 @@ async function handleModEmbedRetrievalCard(req: IncomingMessage, res: ServerResp
   try {
     await initCrypto();
 
-    const bodyStr = await readBody(req);
     let body: ModEmbedRetrievalCardRequestBody;
     try {
+      const bodyStr = await readBody(req);
       body = JSON.parse(bodyStr) as ModEmbedRetrievalCardRequestBody;
-    } catch {
+    } catch (err) {
+      if (respondBodyGuardError(res, req, err)) {
+        status = err instanceof BodyReadError ? err.status : status;
+        return;
+      }
       status = 400;
       jsonResponse(res, status, { status: 'error', error: 'invalid JSON' });
       return;
@@ -1790,11 +1814,21 @@ async function handleModHistory(req: IncomingMessage, res: ServerResponse): Prom
     await initCrypto();
 
     if ((req.method ?? '') === 'POST') {
-      const bodyStr = await readBody(req);
+      let bodyStr = '';
+      try {
+        bodyStr = await readBody(req);
+      } catch (err) {
+        if (respondBodyGuardError(res, req, err)) {
+          status = err instanceof BodyReadError ? err.status : status;
+          return;
+        }
+        throw err;
+      }
       if (bodyStr.trim().length > 0) {
         try {
           JSON.parse(bodyStr);
-        } catch {
+        } catch (err) {
+          if (respondBodyGuardError(res, req, err)) return;
           status = 400;
           jsonResponse(res, status, { status: 'error', error: 'invalid JSON' });
           return;
@@ -1839,11 +1873,12 @@ async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  const bodyStr = await readBody(req);
   let body: DenialRequestBody;
   try {
+    const bodyStr = await readBody(req);
     body = JSON.parse(bodyStr) as DenialRequestBody;
-  } catch {
+  } catch (err) {
+    if (respondBodyGuardError(res, req, err)) return;
     jsonResponse(res, 400, { status: 'error', error: 'invalid JSON' });
     return;
   }

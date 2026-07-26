@@ -1,7 +1,7 @@
 import { type IncomingMessage, type ServerResponse } from 'node:http';
 import { URL } from 'node:url';
 
-import { readBody } from '../http-body.js';
+import { BodyReadError, readBody } from '../http-body.js';
 import { loadIdentity } from '../key-store.js';
 import { fp, logOp } from '../logger.js';
 import { GstvEngine } from './engine.js';
@@ -193,6 +193,12 @@ export async function handleGstvSeal(req: IncomingMessage, res: ServerResponse):
     };
     jsonResponse(res, 200, response);
   } catch (error) {
+    if (error instanceof BodyReadError) {
+      logOp('gstv.seal', 'warn', { trace, phase: 'body_guard', reason: error.code, status: error.status });
+      jsonResponse(res, error.status, { status: 'error', code: error.code, error: error.message });
+      return;
+    }
+
     if (error instanceof SealError && (error.code === 'repo_not_bound' || error.code === 'predicate_file_missing')) {
       jsonResponse(res, 400, { status: 'error', code: error.code });
       return;

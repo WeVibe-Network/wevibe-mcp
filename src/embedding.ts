@@ -7,6 +7,9 @@ import {
 } from './config.js';
 import type { ResolvedEmbeddingConfig } from './embedding-config.js';
 
+/** Canonical embedding dimension — local nomic-embed-text:v1.5 (D-RECALL-ALIGNMENT). Query and document embeddings must share this model/dim. */
+export const EXPECTED_EMBEDDING_DIM = 768;
+
 export type EmbeddingRole = 'document' | 'query';
 
 function delay(ms: number): Promise<void> {

@@ -6,16 +6,19 @@ const {
   getOrgHubStateMock,
   setOrgHubStateMock,
   loadEmbeddingConfigMock,
+  logOpMock,
 } = vi.hoisted(() => {
   const mockFetch = vi.fn();
   const getOrgHubStateMock = vi.fn();
   const setOrgHubStateMock = vi.fn();
   const loadEmbeddingConfigMock = vi.fn();
+  const logOpMock = vi.fn();
   return {
     mockFetch,
     getOrgHubStateMock,
     setOrgHubStateMock,
     loadEmbeddingConfigMock,
+    logOpMock,
   };
 });
 
@@ -24,6 +27,11 @@ vi.stubGlobal('fetch', mockFetch);
 vi.mock('../src/identity-sidecar.js', () => ({
   getOrgHubState: getOrgHubStateMock,
   setOrgHubState: setOrgHubStateMock,
+}));
+
+vi.mock('../src/logger.js', async () => ({
+  ...(await vi.importActual('../src/logger.js')),
+  logOp: logOpMock,
 }));
 
 import { initCrypto, generateIdentity, sign } from '../src/crypto.js';
@@ -60,6 +68,7 @@ describe('hubFetchVerified', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockReset();
+    logOpMock.mockReset();
   });
 
   it('accepts valid hub signature and returns parsed JSON', async () => {
@@ -119,9 +128,8 @@ describe('hubFetchVerified', () => {
     ).rejects.toBeInstanceOf(HubSignatureError);
   });
 
-  it('fails open when no hub_response_pubkey is published and warns once per org', async () => {
+  it('fails open when no hub_response_pubkey is published and warns on every unverified acceptance', async () => {
     const orgId = 'org-no-pubkey-rollout';
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     getOrgHubStateMock.mockReturnValue({
       hubEndpoints: [],
@@ -141,10 +149,17 @@ describe('hubFetchVerified', () => {
 
     expect(first.json<{ pass: boolean }>().pass).toBe(true);
     expect(second.json<{ pass: boolean }>().pass).toBe(true);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy).toHaveBeenCalledWith(`hub response signature not verified for ${orgId}: no hub_response_pubkey published yet`);
-
-    warnSpy.mockRestore();
+    expect(logOpMock).toHaveBeenCalledTimes(2);
+    expect(logOpMock).toHaveBeenNthCalledWith(1, 'hub.sig_verify', 'warn', {
+      org: orgId,
+      phase: 'sig_verify_skipped',
+      reason: 'no_hub_response_pubkey',
+    });
+    expect(logOpMock).toHaveBeenNthCalledWith(2, 'hub.sig_verify', 'warn', {
+      org: orgId,
+      phase: 'sig_verify_skipped',
+      reason: 'no_hub_response_pubkey',
+    });
   });
 });
 
@@ -161,7 +176,7 @@ describe('retrieve failover on hub signature mismatch', () => {
     const dissectToKeywordsMock = vi.fn().mockReturnValue([
       { term: 'redis', weight: 1.0 },
     ]);
-    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue(new Array(768).fill(0.1));
 
     const pickActiveEndpointMock = vi.fn().mockResolvedValue('https://hub-b.example');
     const getActiveHubUrlForOrgMock = vi.fn().mockReturnValue('https://hub-a.example');
@@ -203,6 +218,7 @@ describe('retrieve failover on hub signature mismatch', () => {
 
     vi.doMock('../src/embedding.js', () => ({
       computeLocalEmbedding: computeLocalEmbeddingMock,
+      EXPECTED_EMBEDDING_DIM: 768,
     }));
 
     vi.doMock('../src/embedding-config.js', () => ({
@@ -465,7 +481,7 @@ describe('retrieve [recall] step logs include dur_ms', () => {
     const dissectToKeywordsMock = vi.fn().mockReturnValue([
       { term: 'redis', weight: 1.0 },
     ]);
-    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue(new Array(768).fill(0.1));
     const getOrgKeywordsMock = vi.fn().mockResolvedValue(['redis']);
     const queryOrgMemoriesMock = vi.fn().mockResolvedValue({ results: [] });
 
@@ -488,6 +504,7 @@ describe('retrieve [recall] step logs include dur_ms', () => {
 
     vi.doMock('../src/embedding.js', () => ({
       computeLocalEmbedding: computeLocalEmbeddingMock,
+      EXPECTED_EMBEDDING_DIM: 768,
     }));
 
     vi.doMock('../src/embedding-config.js', () => ({
