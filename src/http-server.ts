@@ -1360,6 +1360,13 @@ interface ReportRequestBody {
   note?: string;
 }
 
+interface DecisionNoteRequestBody {
+  org_id: string;
+  memory_hash: string;
+  action: string;
+  reason?: string;
+}
+
 const VALID_REASONS = ['incorrect', 'outdated', 'security_risk', 'malicious'] as const;
 type ValidReason = typeof VALID_REASONS[number];
 
@@ -1456,6 +1463,135 @@ export async function handleReports(req: IncomingMessage, res: ServerResponse): 
   }
 
   jsonResponse(res, hubResp.res.status, hubBodyJson);
+}
+
+export async function handleDecisionNotes(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const trace = getRequestTrace(req);
+  const t0 = Date.now();
+  let status = 500;
+  let org: string | undefined;
+  let action: string | undefined;
+  let reason_len: number | undefined;
+  let err: string | undefined;
+  logOp('http.decision_notes', 'info', { trace, phase: 'entry' });
+
+  try {
+    let body: DecisionNoteRequestBody;
+    try {
+      const bodyStr = await readBody(req);
+      body = JSON.parse(bodyStr) as DecisionNoteRequestBody;
+    } catch (readErr) {
+      if (respondBodyGuardError(res, req, readErr)) {
+        status = readErr instanceof BodyReadError ? readErr.status : status;
+        return;
+      }
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'invalid JSON' });
+      return;
+    }
+
+    org = body.org_id;
+    action = body.action;
+    reason_len = typeof body.reason === 'string' ? body.reason.length : undefined;
+
+    if (!body.org_id || typeof body.org_id !== 'string' || body.org_id.trim() === '') {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+      return;
+    }
+
+    if (!body.memory_hash || typeof body.memory_hash !== 'string' || body.memory_hash.trim() === '') {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'memory_hash is required and must be a non-empty string' });
+      return;
+    }
+
+    if (typeof body.action !== 'string' || body.action !== 'deny') {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: "action must be 'deny'" });
+      return;
+    }
+
+    if (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500)) {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'reason must be a string with max 500 characters' });
+      return;
+    }
+
+    const hubBody = {
+      memory_hash: body.memory_hash,
+      action: body.action,
+      reason: body.reason ?? '',
+    };
+
+    let authResult: { pubkeyHex: string; headers: Record<string, string> };
+    try {
+      authResult = await buildWeVibeSignedAuth();
+    } catch {
+      status = 500;
+      jsonResponse(res, status, { status: 'error', error: 'failed to build auth' });
+      return;
+    }
+
+    let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
+    try {
+      hubResp = await hubFetchVerified(body.org_id, `${HUB_URL}/v1/orgs/${body.org_id}/decision-notes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authResult.headers,
+          'X-WeVibe-Trace-Id': getRequestTrace(req) ?? '',
+        },
+        body: JSON.stringify(hubBody),
+      });
+    } catch (forwardErr) {
+      if (forwardErr instanceof HubSignatureError) {
+        status = 502;
+        jsonResponse(res, status, { error: 'upstream signature verification failed' });
+        return;
+      }
+      status = 502;
+      jsonResponse(res, status, { error: 'upstream error' });
+      return;
+    }
+
+    const hubBodyText = hubResp.bodyText;
+    let hubBodyJson: unknown;
+    try {
+      hubBodyJson = JSON.parse(hubBodyText);
+    } catch {
+      hubBodyJson = hubBodyText;
+    }
+
+    if (hubResp.res.status >= 200 && hubResp.res.status < 300) {
+      status = 200;
+      jsonResponse(res, status, hubBodyJson);
+      return;
+    }
+
+    status = hubResp.res.status;
+    jsonResponse(res, status, hubBodyJson);
+  } catch (e) {
+    status = 500;
+    err = e instanceof Error ? e.message : String(e);
+    jsonResponse(res, status, { status: 'error', error: err });
+  } finally {
+    logOp('http.decision_notes', err ? 'error' : 'info', {
+      trace,
+      phase: 'outcome',
+      status,
+      org,
+      org_fp: fp(org),
+      action,
+      reason_len,
+      dur_ms: Date.now() - t0,
+      ...(err ? { err } : {}),
+    });
+  }
 }
 
 interface DenialRequestBody {
@@ -1993,6 +2129,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     if (method === 'POST' && url === '/v1/reports') {
       await handleReports(req, res);
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/decision-notes') {
+      await handleDecisionNotes(req, res);
       return;
     }
 
