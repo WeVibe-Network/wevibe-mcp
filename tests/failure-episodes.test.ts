@@ -236,4 +236,73 @@ describe('failure episodes', () => {
     expect(secondEpisodes).toEqual(firstEpisodes);
     expect(secondBlock).toBe(firstBlock);
   });
+
+  it('resolves user-feedback verdict cycles with intervening edits (bench-shaped substrate)', () => {
+    const events: SubstrateEvent[] = [
+      {
+        kind: 'user',
+        time: 1,
+        seq: 0,
+        text: 'These are still failing — fix the implementation so they pass. Do not explain, just edit the code.\n\n- [G02] REQ-FOO: FAILING',
+      },
+      { kind: 'edit', time: 2, seq: 0, file: 'src/a.ts', detail: 'attempt edit A1' },
+      { kind: 'edit', time: 3, seq: 0, file: 'src/b.ts', detail: 'attempt edit A2' },
+      { kind: 'user', time: 4, seq: 0, text: 'That fixed it — [G02] REQ-FOO works now.' },
+      {
+        kind: 'user',
+        time: 5,
+        seq: 0,
+        text: 'The rest are still failing — fix the implementation so they pass. Do not explain, just edit the code.\n\n- [G05] REQ-BAR: FAILING',
+      },
+      { kind: 'edit', time: 6, seq: 0, file: 'src/c.ts', detail: 'attempt edit B1' },
+      { kind: 'user', time: 7, seq: 0, text: 'That fixed it — [G05] REQ-BAR works now.' },
+    ];
+
+    const episodes = segmentFailureEpisodes(events);
+    const block = renderFailureEpisodeBlock(episodes, events);
+
+    expect(episodes).toHaveLength(2);
+    expect(episodes[0]).toMatchObject({
+      signal: {
+        kind: 'user_feedback',
+        checkKey: 'user:feedback',
+      },
+      resolution: 'resolved',
+      validationIndex: 3,
+    });
+    expect(episodes[1]).toMatchObject({
+      signal: {
+        kind: 'user_feedback',
+        checkKey: 'user:feedback',
+        eventIndex: 4,
+      },
+      resolution: 'resolved',
+    });
+    expect(episodes[0]?.attemptEdits).toHaveLength(2);
+    expect(episodes[1]?.attemptEdits).toHaveLength(1);
+    expect(block).toContain('signal=user_feedback:user feedback check=user:feedback');
+    expect(block).not.toContain('COINCIDENTAL-FLIP DISCLOSURE');
+  });
+
+  it('marks user-feedback fail→pass without intervening edits as coincidental', () => {
+    const events: SubstrateEvent[] = [
+      { kind: 'user', time: 1, seq: 0, text: 'Tests are still failing. Please fix.' },
+      { kind: 'user', time: 2, seq: 0, text: 'That fixed it. Works now.' },
+    ];
+
+    const episodes = segmentFailureEpisodes(events);
+    const block = renderFailureEpisodeBlock(episodes, events);
+
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]).toMatchObject({
+      signal: {
+        kind: 'user_feedback',
+        checkKey: 'user:feedback',
+      },
+      resolution: 'coincidental',
+      validationIndex: 1,
+    });
+    expect(episodes[0]?.attemptEdits).toEqual([]);
+    expect(block).toContain('COINCIDENTAL-FLIP DISCLOSURE');
+  });
 });
