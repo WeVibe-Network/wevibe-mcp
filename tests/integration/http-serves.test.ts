@@ -110,7 +110,7 @@ function mockCurrentEpochFetch(epochId = CURRENT_EPOCH): void {
   vi.mocked(fetch).mockResolvedValueOnce({
     ok: true,
     status: 200,
-    text: async () => JSON.stringify({ org_id: 'org-123', epoch_id: epochId, umbral_pk: 'abcd' }),
+    text: async () => JSON.stringify({ epoch_id: epochId, epoch_identifier: 'wevibe_epoch' }),
   } as Response);
 }
 
@@ -166,7 +166,7 @@ describe('POST /v1/serves', () => {
     expect(fetch).toHaveBeenCalled();
 
     const epochFetchCall = vi.mocked(fetch).mock.calls[0];
-    expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/manifest');
+    expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
 
     const fetchCall = vi.mocked(fetch).mock.calls[1];
     expect(fetchCall).toBeTruthy();
@@ -308,7 +308,7 @@ describe('POST /v1/serves', () => {
     )).toBe(true);
   });
 
-  it('POST /v1/serves fails loudly when current epoch manifest fetch fails', async () => {
+  it('POST /v1/serves fails loudly when current chain epoch fetch fails', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: false,
       status: 503,
@@ -330,7 +330,7 @@ describe('POST /v1/serves', () => {
     expect(parsed.status).toBe(502);
     expect(parsed.body).toMatchObject({ status: 'error', error: 'failed to resolve current epoch' });
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/v1/orgs/org-123/epoch/current/manifest');
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
   });
 });
 
@@ -389,7 +389,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     expect(parsed.body).toMatchObject({ status: 'ok', fingerprint_first8: expect.stringMatching(/^[0-9a-f]{8}$/) });
 
     const epochFetchCall = vi.mocked(fetch).mock.calls[0];
-    expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/manifest');
+    expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
 
     const fetchCall = vi.mocked(fetch).mock.calls[1];
     expect(fetchCall?.[0]).toContain('/v1/orgs/org-123/events');

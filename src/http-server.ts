@@ -1222,7 +1222,7 @@ interface OutcomeEventRequestBody {
   session_id?: unknown;
 }
 
-interface CurrentEpochManifestResponse {
+interface CurrentChainEpochResponse {
   epoch_id?: unknown;
 }
 
@@ -1235,7 +1235,7 @@ async function currentServeEpochId(orgId: string, trace?: string): Promise<numbe
     const { headers } = await buildWeVibeSignedAuth();
     const response = await hubFetchVerified(
       orgId,
-      `${HUB_URL}/v1/orgs/${orgId}/epoch/current/manifest`,
+      `${HUB_URL}/v1/orgs/${orgId}/epoch/current/chain`,
       {
         headers: {
           ...headers,
@@ -1245,13 +1245,13 @@ async function currentServeEpochId(orgId: string, trace?: string): Promise<numbe
     );
 
     if (!response.res.ok) {
-      throw new Error(`failed to fetch current epoch manifest (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
+      throw new Error(`failed to fetch current chain epoch (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
     }
 
-    const manifest = response.json<CurrentEpochManifestResponse>();
+    const manifest = response.json<CurrentChainEpochResponse>();
     const epochId = manifest.epoch_id;
     if (typeof epochId !== 'number' || !Number.isInteger(epochId) || epochId < 0) {
-      throw new Error('current epoch manifest missing valid epoch_id');
+      throw new Error('current chain epoch response missing valid epoch_id');
     }
 
     logOp(op, 'info', {
