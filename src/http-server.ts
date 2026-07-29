@@ -61,6 +61,7 @@ import {
 import {
   buildCanonicalOutcomeEventBodyBytes,
   computeEventFingerprint,
+  deriveOutcomeNonceHex,
 } from './event-signing.js';
 import { BodyReadError, readBody } from './http-body.js';
 
@@ -1463,7 +1464,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
     }
 
     const epoch = currentServeEpochId();
-    const nonceHex = randomBytes(8).toString('hex');
+    const nonceHex = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, worked);
     let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
     try {
       orgServeKey = await deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, orgId);

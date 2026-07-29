@@ -16,6 +16,19 @@ export interface CanonicalOutcomeEventBodyInput {
   evidenceRef: string | Uint8Array;
 }
 
+// Deterministic nonce => identical CanonicalEventBody on retry => identical
+// chain fingerprint => hub unique-fingerprint dedup is idempotent. The
+// preimage is content-free (orgId + fingerprint-like refs); the output is opaque.
+export function deriveOutcomeNonceHex(
+  orgId: string,
+  memoryHashHex: string,
+  episodeRefHex: string,
+  worked: boolean,
+): string {
+  const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=${worked ? 'true' : 'false'}`;
+  return createHash('sha256').update(preimage).digest().subarray(0, 8).toString('hex');
+}
+
 function ensureOrgId(orgId: string): void {
   if (typeof orgId !== 'string' || orgId.length === 0) {
     throw new Error('org_id must be a non-empty string');

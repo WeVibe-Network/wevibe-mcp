@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCanonicalOutcomeEventBodyBytes,
   computeEventFingerprint,
+  deriveOutcomeNonceHex,
   signCanonicalBody,
 } from '../src/event-signing.js';
 
@@ -57,6 +58,23 @@ describe('event signing parity vectors', () => {
     const expected = createHash('sha256').update(body).digest('hex');
 
     expect(bytesToHex(computeEventFingerprint(body))).toBe(expected);
+  });
+
+  it('derives deterministic opaque outcome nonces from content-free event identity', () => {
+    const orgId = 'org-a';
+    const memoryHashHex = '01'.repeat(32);
+    const episodeRefHex = '1011';
+    const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=true`;
+    const expected = createHash('sha256').update(preimage).digest().subarray(0, 8).toString('hex');
+
+    const nonce = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true);
+    expect(nonce).toBe(expected);
+    expect(nonce).toMatch(/^[0-9a-f]{16}$/);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true)).toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, false)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex('org-b', memoryHashHex, episodeRefHex, true)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, '02'.repeat(32), episodeRefHex, true)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, '1012', true)).not.toBe(nonce);
   });
 
   it('rejects invalid canonical outcome sizes', () => {

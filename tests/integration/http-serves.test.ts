@@ -319,6 +319,10 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ status: 'recorded' }),
+    } as Response).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'recorded' }),
     } as Response);
 
     const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
@@ -381,6 +385,32 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     const expectedKey = await deriveOrgServeKey('org-123');
     expect(postedBody.signer_pubkey).toBe(expectedKey.pubHex);
     expect(String(postedBody.fingerprint).slice(0, 8)).toBe((parsed.body as { fingerprint_first8: string }).fingerprint_first8);
+
+    const retryReq = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+      'X-WeVibe-Trace-Id': 'trace-outcome-2',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
+      worked: true,
+      evidence_ref: EVIDENCE_REF_HEX,
+      session_id: 'session-1',
+    }));
+
+    const retryRes = createMockResponse();
+    await handleRequest(retryReq, retryRes);
+
+    const retryParsed = parseResponse(retryRes);
+    expect(retryParsed.status).toBe(200);
+    expect((retryParsed.body as { fingerprint_first8: string }).fingerprint_first8)
+      .toBe((parsed.body as { fingerprint_first8: string }).fingerprint_first8);
+
+    const retryInit = vi.mocked(fetch).mock.calls[1]![1] as RequestInit;
+    const retryPostedBody = JSON.parse(String(retryInit.body)) as Record<string, unknown>;
+    expect(retryPostedBody.nonce).toBe(postedBody.nonce);
+    expect(retryPostedBody.fingerprint).toBe(postedBody.fingerprint);
   });
 
   it.each([
