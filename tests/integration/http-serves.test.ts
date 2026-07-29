@@ -4,14 +4,19 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { SessionTokenStore, _setTokenStoreForTests } from '../../src/session-token.js';
 import { clearTestStore, storeIdentitySeed, generateIdentitySeed } from '../../src/key-store.js';
 import { handleRequest } from '../../src/http-server.js';
+import { buildCanonicalServeBodyBytes, deriveOrgServeKey } from '../../src/serve-signing.js';
+import { buildCanonicalOutcomeEventBodyBytes } from '../../src/event-signing.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { verifyAsync } from '@noble/ed25519';
 
 const testPath = join(tmpdir(), `wevibe-mcp-serves-test-${randomUUID()}`, 'mcp-session-token');
 const testStore = new SessionTokenStore(testPath);
 const MEMORY_HASH_HEX = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
+const EPISODE_REF_HEX = 'a1b2';
+const EVIDENCE_REF_HEX = 'c3';
 
 vi.stubGlobal('fetch', vi.fn());
 
@@ -249,21 +254,164 @@ describe('POST /v1/serves', () => {
     expect(parsed.status).toBe(502);
   });
 
-  it('rejects empty matched_keywords with 400', async () => {
+  it('accepts absent matched_keywords and signs serve v2 without keyword metadata', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'recorded' }),
+    } as Response);
+
     const req = createMockRequest('POST', '/v1/serves', {
       'Authorization': `Bearer ${validToken}`,
       'Content-Type': 'application/json',
     }, JSON.stringify({
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
-      matched_keywords: [],
     }));
 
     const res = createMockResponse();
     await handleRequest(req, res);
 
     const parsed = parseResponse(res);
+    expect(parsed.status).toBe(200);
+
+    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
+    const postedBody = JSON.parse(String(init.body)) as Record<string, string | number | string[]>;
+    expect(postedBody.matched_keywords).toEqual([]);
+
+    const canonicalBody = buildCanonicalServeBodyBytes({
+      orgId: 'org-123',
+      memoryContentHashHex: MEMORY_HASH_HEX,
+      epoch: 0,
+      serveKeyPubkeyHex: String(postedBody.serve_key_pubkey),
+      nonceHex: String(postedBody.nonce),
+    });
+    expect(await verifyAsync(
+      Buffer.from(String(postedBody.serve_sig), 'hex'),
+      canonicalBody,
+      Buffer.from(String(postedBody.serve_key_pubkey), 'hex'),
+    )).toBe(true);
+  });
+});
+
+describe('POST /v1/orgs/{org_id}/outcome-events', () => {
+  let validToken: string;
+
+  beforeEach(async () => {
+    _setTokenStoreForTests(testStore);
+    testStore._reset();
+    await testStore.init();
+    validToken = testStore.getToken()!;
+    clearTestStore();
+
+    await storeIdentitySeed(generateIdentitySeed());
+
+    vi.clearAllMocks();
+    vi.mocked(fetch).mockReset();
+  });
+
+  afterEach(() => {
+    clearTestStore();
+  });
+
+  it('emits a signed content-free outcome event to the hub', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'recorded' }),
+    } as Response);
+
+    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+      'X-WeVibe-Trace-Id': 'trace-outcome-1',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
+      worked: true,
+      evidence_ref: EVIDENCE_REF_HEX,
+      session_id: 'session-1',
+    }));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+
+    const parsed = parseResponse(res);
+    expect(parsed.status).toBe(200);
+    expect(parsed.body).toMatchObject({ status: 'ok', fingerprint_first8: expect.stringMatching(/^[0-9a-f]{8}$/) });
+
+    const fetchCall = vi.mocked(fetch).mock.calls[0];
+    expect(fetchCall?.[0]).toContain('/v1/orgs/org-123/events');
+    const init = fetchCall![1] as RequestInit;
+    expect((init.headers as Record<string, string>)['X-WeVibe-Trace-Id']).toBe('trace-outcome-1');
+    const postedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+
+    expect(postedBody).toMatchObject({
+      org_id: 'org-123',
+      epoch: 0,
+      event_type: 'outcome',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
+      worked: true,
+      evidence_ref: EVIDENCE_REF_HEX,
+      session_id: 'session-1',
+    });
+    expect(postedBody.signer_pubkey).toMatch(/^[0-9a-f]{64}$/);
+    expect(postedBody.nonce).toMatch(/^[0-9a-f]{16}$/);
+    expect(postedBody.signature).toMatch(/^[0-9a-f]{128}$/);
+    expect(postedBody.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+
+    const canonicalBody = buildCanonicalOutcomeEventBodyBytes({
+      orgId: 'org-123',
+      memoryHash: MEMORY_HASH_HEX,
+      epoch: 0,
+      signerPubkey: String(postedBody.signer_pubkey),
+      nonce: String(postedBody.nonce),
+      episodeRef: EPISODE_REF_HEX,
+      worked: true,
+      evidenceRef: EVIDENCE_REF_HEX,
+    });
+    expect(await verifyAsync(
+      Buffer.from(String(postedBody.signature), 'hex'),
+      canonicalBody,
+      Buffer.from(String(postedBody.signer_pubkey), 'hex'),
+    )).toBe(true);
+
+    const expectedKey = await deriveOrgServeKey('org-123');
+    expect(postedBody.signer_pubkey).toBe(expectedKey.pubHex);
+    expect(String(postedBody.fingerprint).slice(0, 8)).toBe((parsed.body as { fingerprint_first8: string }).fingerprint_first8);
+  });
+
+  it.each([
+    ['bad memory_hash', { memory_hash: 'zz' }, 'memory_hash'],
+    ['oversize episode_ref', { episode_ref: 'aa'.repeat(65) }, 'episode_ref'],
+    ['missing worked', { worked: undefined }, 'worked'],
+    ['plaintext forbidden', { plaintext: 'nope' }, 'plaintext'],
+  ])('rejects invalid outcome body: %s', async (_name, override, expectedError) => {
+    const body: Record<string, unknown> = {
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
+      worked: true,
+      evidence_ref: EVIDENCE_REF_HEX,
+      ...override,
+    };
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined) delete body[key];
+    }
+
+    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify(body));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+
+    const parsed = parseResponse(res);
     expect(parsed.status).toBe(400);
-    expect((parsed.body as { error: string }).error).toContain('matched_keywords');
+    expect((parsed.body as { error: string }).error).toContain(expectedError);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

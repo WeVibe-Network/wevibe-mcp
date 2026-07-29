@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createOrgMessage, inviteMemberMessage, rotateEpochMessage, removeMemberMessage, submitMemoryMessage, approveSubmissionMessage, denySubmissionMessage, feeModelHash, type FeeModel } from '../src/canonical.js';
+import { createOrgMessage, inviteMemberMessage, rotateEpochMessage, removeMemberMessage, submitMemoryMessage, denySubmissionMessage, feeModelHash, type FeeModel } from '../src/canonical.js';
 
 function sha256hex(data: string): string {
   return createHash('sha256').update(data, 'utf-8').digest('hex');
@@ -228,60 +228,6 @@ describe('canonical signing messages', () => {
         expect(got).toBe(v.sha256_hex);
       });
     }
-  });
-
-  describe('approveSubmissionMessage', () => {
-    it('matches Go test vector — deterministic with sorted keywords', () => {
-      const msg = new TextDecoder().decode(approveSubmissionMessage(
-        'org-test-1',
-        'abc123def456',
-        0,
-        'cid-approved-1',
-        'umbral_capsule_hex',
-        'umbral_ciphertext_hex',
-        'correct_implementation',
-        'moderator_pubkey_hex',
-        [
-          { keyword: 'token_b', weight: 0.5 },
-          { keyword: 'token_a', weight: 0.3 },
-          { keyword: 'token_c', weight: 0.2 },
-        ],
-      ));
-
-      const lines = msg.split('\n');
-      expect(lines).toHaveLength(10);
-      expect(lines[0]).toBe('wevibe.approve_submission.v1');
-      expect(lines[1]).toBe('approved_cid:cid-approved-1');
-      expect(lines[3]).toBe('epoch_id:0');
-      expect(lines[4]).toBe('memory_type:correct_implementation');
-      expect(lines[5]).toBe('org_id:org-test-1');
-      expect(lines[6]).toBe('signed_by:moderator_pubkey_hex');
-      expect(lines[7]).toBe('submission_hash:abc123def456');
-      expect(lines[8]).toBe('umbral_capsule:umbral_capsule_hex');
-      expect(lines[9]).toBe('umbral_ciphertext:umbral_ciphertext_hex');
-    });
-
-    it('is order-independent on keywords', () => {
-      const a = approveSubmissionMessage('o', 'h', 1, 'c', 'cap', 'ct', 'correct_implementation', 's', [
-        { keyword: 'b', weight: 0.5 },
-        { keyword: 'a', weight: 0.3 },
-        { keyword: 'c', weight: 0.2 },
-      ]);
-      const b = approveSubmissionMessage('o', 'h', 1, 'c', 'cap', 'ct', 'correct_implementation', 's', [
-        { keyword: 'c', weight: 0.2 },
-        { keyword: 'a', weight: 0.3 },
-        { keyword: 'b', weight: 0.5 },
-      ]);
-      expect(a).toEqual(b);
-    });
-
-    it('handles empty keywords', () => {
-      const msg = new TextDecoder().decode(approveSubmissionMessage(
-        'o', 'h', 0, 'c', 'cap', 'ct', 'negative_signal', 's', [],
-      ));
-      const lines = msg.split('\n');
-      expect(lines[2]).toBe('keywords_hash:' + sha256hex(''));
-    });
   });
 
   describe('denySubmissionMessage', () => {

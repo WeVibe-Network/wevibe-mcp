@@ -123,33 +123,6 @@ export function submitMemoryMessage(
   return new TextEncoder().encode(msg);
 }
 
-export function approveSubmissionMessage(
-  orgId: string,
-  submissionHash: string,
-  epochId: number,
-  approvedCid: string,
-  umbralCapsule: string,
-  umbralCiphertext: string,
-  memoryType: MemoryType,
-  signedBy: string,
-  keywords: { keyword: string; weight: number }[],
-): Uint8Array {
-  const keywordsHashStr = keywordsHash(keywords);
-  const msg = [
-    'wevibe.approve_submission.v1',
-    `approved_cid:${approvedCid}`,
-    `keywords_hash:${keywordsHashStr}`,
-    `epoch_id:${epochId}`,
-    `memory_type:${memoryType}`,
-    `org_id:${orgId}`,
-    `signed_by:${signedBy}`,
-    `submission_hash:${submissionHash}`,
-    `umbral_capsule:${umbralCapsule}`,
-    `umbral_ciphertext:${umbralCiphertext}`,
-  ].join('\n');
-  return new TextEncoder().encode(msg);
-}
-
 export function approveSubmissionMessageSimple(
   orgId: string,
   submissionHash: string,
@@ -182,13 +155,6 @@ export function denySubmissionMessage(
     `submission_hash:${submissionHash}`,
   ].join('\n');
   return new TextEncoder().encode(msg);
-}
-
-function keywordsHash(keywords: { keyword: string; weight: number }[]): string {
-  const sorted = [...keywords].sort((a, b) => a.keyword.localeCompare(b.keyword));
-  const entries = sorted.map(kw => `${kw.keyword}:${kw.weight.toFixed(6)}`);
-  const joined = entries.join('\n');
-  return createHash('sha256').update(joined, 'utf-8').digest('hex');
 }
 
 export function feeModelHash(feeModel: FeeModel | null): string {

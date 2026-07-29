@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getPublicKeyAsync, verifyAsync } from '@noble/ed25519';
 import {
   buildCanonicalDenialBody,
   buildCanonicalServeBody,
@@ -9,7 +10,6 @@ import {
 
 const MEMORY_HASH_HEX = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
 const VECTOR_PUBKEY_HEX = '8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c';
-const VECTOR_SERVE_SIG_HEX = '2a643b43c92e0771fa4a33e4c0ec62f3c1e2ef8be79738c77f7b5f6ba6fe98e5e80daf947daeb0cef8e46caa19cf133d550388acdbde2a287ddb80ba7990f30b';
 const VECTOR_SERVE_FINGERPRINT_HEX = '8263a2b548d3b39a40520711b89a21290d377782b9771f627a58f6ad2dccc666';
 const VECTOR_DENIAL_SIG_HEX = '19759827da0021606efba37de04a8e1272fac36cab55157f77890ac3d0151000ff799271af1394aab01a8151b9e55ee0694338219e6ffd81068628a78d94a00b';
 
@@ -24,22 +24,21 @@ describe('serve signing parity vectors', () => {
       memoryContentHashHex: MEMORY_HASH_HEX,
       epoch: 7,
       serveKeyPubkeyHex: keypair.pubHex,
-      matchedKeywords: ['beta', 'alpha'],
       nonceHex: 'deadbeef',
     });
 
     expect(canonicalServeBody).toBe(
-      'wevibe-serve-v1\n'
+      'wevibe-serve-v2\n'
       + 'org-test\n'
       + '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n'
       + '7\n'
       + '8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\n'
-      + 'alpha,beta\n'
       + 'deadbeef',
     );
 
-    const serveSigHex = await signCanonicalBody(new TextEncoder().encode(canonicalServeBody), keypair.priv);
-    expect(serveSigHex).toBe(VECTOR_SERVE_SIG_HEX);
+    const serveBodyBytes = new TextEncoder().encode(canonicalServeBody);
+    const serveSigHex = await signCanonicalBody(serveBodyBytes, keypair.priv);
+    expect(await verifyAsync(Buffer.from(serveSigHex, 'hex'), serveBodyBytes, keypair.pub)).toBe(true);
 
     const serveFingerprintHex = computeServeFingerprintHex({
       memoryContentHashHex: MEMORY_HASH_HEX,
@@ -58,5 +57,44 @@ describe('serve signing parity vectors', () => {
     });
     const denialSigHex = await signCanonicalBody(new TextEncoder().encode(canonicalDenialBody), keypair.priv);
     expect(denialSigHex).toBe(VECTOR_DENIAL_SIG_HEX);
+  });
+
+  it('matches chain serve v2 canonical body golden vector exactly', async () => {
+    const orgId = 'org-a';
+    const memoryHashHex = '01'.repeat(32);
+    const serveKeyPubkeyHex = '02'.repeat(32);
+    const nonceHex = '0304';
+
+    const body = buildCanonicalServeBody({
+      orgId,
+      memoryContentHashHex: memoryHashHex,
+      epoch: 7,
+      serveKeyPubkeyHex,
+      nonceHex,
+    });
+
+    expect(body).toBe(
+      'wevibe-serve-v2\norg-a\n'
+      + '01'.repeat(32)
+      + '\n7\n'
+      + '02'.repeat(32)
+      + '\n0304',
+    );
+    expect((body.match(/\n/g) ?? [])).toHaveLength(5);
+  });
+
+  it('signs and verifies the chain serve v2 golden body over raw bytes', async () => {
+    const seed = new Uint8Array(32).fill(0x09);
+    const pub = await getPublicKeyAsync(seed);
+    const bodyBytes = new TextEncoder().encode(
+      'wevibe-serve-v2\norg-a\n'
+      + '01'.repeat(32)
+      + '\n7\n'
+      + '02'.repeat(32)
+      + '\n0304',
+    );
+
+    const sigHex = await signCanonicalBody(bodyBytes, seed);
+    expect(await verifyAsync(Buffer.from(sigHex, 'hex'), bodyBytes, pub)).toBe(true);
   });
 });

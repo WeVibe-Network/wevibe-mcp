@@ -58,6 +58,10 @@ import {
   normalizeHex,
   signCanonicalBody,
 } from './serve-signing.js';
+import {
+  buildCanonicalOutcomeEventBodyBytes,
+  computeEventFingerprint,
+} from './event-signing.js';
 import { BodyReadError, readBody } from './http-body.js';
 
 const BUILD_STAMP = (() => {
@@ -1205,7 +1209,16 @@ interface ServeRequestBody {
   memory_hash: string;
   model_id?: string;
   turn_count?: number;
-  matched_keywords: string[];
+  matched_keywords?: string[];
+}
+
+interface OutcomeEventRequestBody {
+  org_id?: unknown;
+  memory_hash?: unknown;
+  episode_ref?: unknown;
+  worked?: unknown;
+  evidence_ref?: unknown;
+  session_id?: unknown;
 }
 
 function currentServeEpochId(): number {
@@ -1238,15 +1251,6 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
-  if (
-    !Array.isArray(body.matched_keywords)
-    || body.matched_keywords.length === 0
-    || body.matched_keywords.some(keyword => typeof keyword !== 'string')
-  ) {
-    jsonResponse(res, 400, { error: 'matched_keywords is required, non-empty (D-4.2 Implementation Clarifications)' });
-    return;
-  }
-
   const identity = await loadIdentity();
   if (!identity) {
     jsonResponse(res, 500, { status: 'error', error: 'identity not found' });
@@ -1255,7 +1259,9 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
 
   const contributorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
   const epochId = currentServeEpochId();
-  const sortedMatchedKeywords = [...body.matched_keywords].sort();
+  const sortedMatchedKeywords = Array.isArray(body.matched_keywords)
+    ? [...body.matched_keywords].filter(keyword => typeof keyword === 'string').sort()
+    : [];
 
   let memoryContentHashHex: string;
   try {
@@ -1286,7 +1292,6 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
       memoryContentHashHex,
       epoch: epochId,
       serveKeyPubkeyHex: orgServeKey.pubHex,
-      matchedKeywords: sortedMatchedKeywords,
       nonceHex,
     });
     serveSigHex = await signCanonicalBody(canonicalServeBody, orgServeKey.priv);
@@ -1351,6 +1356,223 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
   }
 
   jsonResponse(res, hubResp.res.status, hubBodyJson);
+}
+
+function validateOutcomeHexRef(value: unknown, fieldName: string): string {
+  const normalized = normalizeHex(value as string, fieldName);
+  const byteLength = Buffer.from(normalized, 'hex').length;
+  if (byteLength < 1 || byteLength > 64) {
+    throw new Error(`${fieldName} must be a 1-64 byte hex string`);
+  }
+  return normalized;
+}
+
+async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pathOrgId: string): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const trace = getRequestTrace(req);
+  const t0 = Date.now();
+  let status = 500;
+  let orgId: string | undefined;
+  let worked: boolean | undefined;
+  let fingerprintHex: string | undefined;
+  let err: string | undefined;
+  logOp('event.outcome.emit', 'info', { trace, phase: 'entry' });
+
+  try {
+    let body: OutcomeEventRequestBody;
+    try {
+      const bodyStr = await readBody(req);
+      body = JSON.parse(bodyStr) as OutcomeEventRequestBody;
+    } catch (readErr) {
+      if (respondBodyGuardError(res, req, readErr)) {
+        status = readErr instanceof BodyReadError ? readErr.status : status;
+        return;
+      }
+      status = 400;
+      err = 'invalid JSON';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
+    if (orgId.length === 0) {
+      status = 400;
+      err = 'org_id is required and must be a non-empty string';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    const decodedPathOrgId = decodeURIComponent(pathOrgId);
+    if (orgId !== decodedPathOrgId) {
+      status = 400;
+      err = 'org_id must match path org_id';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    const contentFields = ['text', 'content', 'plaintext', 'score', 'scores', 'verdict', 'verdicts'];
+    const forbiddenField = contentFields.find(field => Object.prototype.hasOwnProperty.call(body, field));
+    if (forbiddenField) {
+      status = 400;
+      err = `${forbiddenField} is not accepted; outcome events carry refs only`;
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    if (typeof body.worked !== 'boolean') {
+      status = 400;
+      err = 'worked is required and must be a boolean';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+    worked = body.worked;
+
+    if (body.session_id !== undefined && typeof body.session_id !== 'string') {
+      status = 400;
+      err = 'session_id must be a string';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    let memoryHashHex: string;
+    let episodeRefHex: string;
+    let evidenceRefHex: string;
+    try {
+      memoryHashHex = normalizeHex(body.memory_hash as string, 'memory_hash');
+      if (Buffer.from(memoryHashHex, 'hex').length !== 32) {
+        throw new Error('memory_hash must be a 32-byte hex string');
+      }
+      episodeRefHex = validateOutcomeHexRef(body.episode_ref, 'episode_ref');
+      evidenceRefHex = validateOutcomeHexRef(body.evidence_ref, 'evidence_ref');
+    } catch (validationErr) {
+      status = 400;
+      err = validationErr instanceof Error ? validationErr.message : String(validationErr);
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    const identity = await loadIdentity();
+    if (!identity) {
+      status = 500;
+      err = 'identity not found';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    const epoch = currentServeEpochId();
+    const nonceHex = randomBytes(8).toString('hex');
+    let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
+    try {
+      orgServeKey = await deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, orgId);
+    } catch {
+      status = 500;
+      err = 'failed to derive org serve key';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    let signatureHex: string;
+    try {
+      const canonicalBody = buildCanonicalOutcomeEventBodyBytes({
+        orgId,
+        memoryHash: memoryHashHex,
+        epoch,
+        signerPubkey: orgServeKey.pubHex,
+        nonce: nonceHex,
+        episodeRef: episodeRefHex,
+        worked,
+        evidenceRef: evidenceRefHex,
+      });
+      signatureHex = await signCanonicalBody(canonicalBody, orgServeKey.priv);
+      fingerprintHex = Buffer.from(computeEventFingerprint(canonicalBody)).toString('hex');
+    } catch (signErr) {
+      status = 400;
+      err = signErr instanceof Error ? signErr.message : 'failed to sign outcome event';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    const hubBody = {
+      org_id: orgId,
+      epoch,
+      event_type: 'outcome',
+      memory_hash: memoryHashHex,
+      signer_pubkey: orgServeKey.pubHex,
+      nonce: nonceHex,
+      signature: signatureHex,
+      episode_ref: episodeRefHex,
+      worked,
+      evidence_ref: evidenceRefHex,
+      fingerprint: fingerprintHex,
+      ...(body.session_id !== undefined ? { session_id: body.session_id } : {}),
+    };
+
+    let authResult: { pubkeyHex: string; headers: Record<string, string> };
+    try {
+      authResult = await buildWeVibeSignedAuth();
+    } catch {
+      status = 500;
+      err = 'failed to build auth';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
+    try {
+      hubResp = await hubFetchVerified(orgId, `${HUB_URL}/v1/orgs/${orgId}/events`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authResult.headers,
+          'X-WeVibe-Trace-Id': trace ?? '',
+        },
+        body: JSON.stringify(hubBody),
+      });
+    } catch (forwardErr) {
+      if (forwardErr instanceof HubSignatureError) {
+        status = 502;
+        err = 'upstream signature verification failed';
+        jsonResponse(res, status, { error: err });
+        return;
+      }
+      status = 502;
+      err = forwardErr instanceof Error ? forwardErr.message : String(forwardErr);
+      jsonResponse(res, status, { error: 'upstream error' });
+      return;
+    }
+
+    if (hubResp.res.status >= 500) {
+      status = 502;
+      err = `upstream status ${hubResp.res.status}`;
+      jsonResponse(res, status, { error: 'upstream error' });
+      return;
+    }
+
+    status = hubResp.res.status;
+    jsonResponse(res, status, {
+      status: status >= 200 && status < 300 ? 'ok' : 'error',
+      fingerprint_first8: fingerprintHex.slice(0, 8),
+    });
+  } catch (e) {
+    status = 500;
+    err = e instanceof Error ? e.message : String(e);
+    jsonResponse(res, status, { status: 'error', error: err });
+  } finally {
+    logOp('event.outcome.emit', err ? 'error' : 'info', {
+      trace,
+      phase: 'outcome',
+      status,
+      org_id: orgId,
+      org_fp: fp(orgId),
+      fingerprint_fp8: fp(fingerprintHex),
+      worked,
+      dur_ms: Date.now() - t0,
+      ...(err ? { err } : {}),
+    });
+  }
 }
 
 interface ReportRequestBody {
@@ -2124,6 +2346,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     if (method === 'POST' && url === '/v1/serves') {
       await handleServes(req, res);
+      return;
+    }
+
+    const outcomeEventsMatch = url.match(/^\/v1\/orgs\/([^/]+)\/outcome-events$/);
+    if (method === 'POST' && outcomeEventsMatch) {
+      await handleOutcomeEvents(req, res, outcomeEventsMatch[1]);
       return;
     }
 

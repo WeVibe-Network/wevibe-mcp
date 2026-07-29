@@ -9,7 +9,7 @@ const textEncoder = new TextEncoder();
 const ORG_SERVE_KEY_HKDF_SALT = textEncoder.encode('wevibe-org-serve-key-v1-salt');
 const ORG_SERVE_KEY_HKDF_INFO_PREFIX = 'wevibe-org-serve-key-v1:';
 
-const CANONICAL_SERVE_VERSION = 'wevibe-serve-v1';
+const CANONICAL_SERVE_VERSION = 'wevibe-serve-v2';
 const CANONICAL_DENIAL_VERSION = 'wevibe-denial-v1';
 
 export interface OrgServeKeypair {
@@ -23,7 +23,6 @@ export interface CanonicalServeBodyInput {
   memoryContentHashHex: string;
   epoch: number;
   serveKeyPubkeyHex: string;
-  matchedKeywords: string[];
   nonceHex: string;
 }
 
@@ -64,16 +63,6 @@ function epochToBigEndianUint64(epoch: number): Uint8Array {
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   view.setBigUint64(0, BigInt(epoch), false);
   return out;
-}
-
-function sortedKeywords(keywords: string[]): string[] {
-  if (!Array.isArray(keywords)) {
-    throw new Error('matched_keywords must be an array of strings');
-  }
-  if (keywords.some(keyword => typeof keyword !== 'string')) {
-    throw new Error('matched_keywords must contain only strings');
-  }
-  return [...keywords].sort();
 }
 
 export function normalizeHex(hexValue: string, fieldName: string): string {
@@ -137,18 +126,16 @@ export function buildCanonicalServeBody(input: CanonicalServeBodyInput): string 
   ensureFixedHexLength(serveKeyPubkeyHex, 32, 'serve_key_pubkey');
 
   const nonceBytes = Buffer.from(nonceHex, 'hex');
-  if (nonceBytes.length < 4 || nonceBytes.length > 16) {
-    throw new Error('nonce must be between 4 and 16 bytes');
+  if (nonceBytes.length < 1 || nonceBytes.length > 64) {
+    throw new Error('nonce must be between 1 and 64 bytes');
   }
 
-  const keywordsJoined = sortedKeywords(input.matchedKeywords).join(',');
   return [
     CANONICAL_SERVE_VERSION,
     input.orgId,
     memoryContentHashHex,
     String(input.epoch),
     serveKeyPubkeyHex,
-    keywordsJoined,
     nonceHex,
   ].join('\n');
 }
