@@ -102,7 +102,10 @@ export function loadEmbeddingConfig(): ResolvedEmbeddingConfig {
     apiKey = 'lm-studio';
     model = asStringOrEmpty(parsed.embedding_lmstudio_model);
   } else {
-    const ollamaBaseUrl = asStringOrEmpty(parsed.ollama_url) || 'http://localhost:11434';
+    // D-13.10: container deployments override Ollama reachability; dashboard.json remains provider/model/key SoT.
+    const ollamaBaseUrl = asStringOrEmpty(process.env.OLLAMA_HOST)
+      || asStringOrEmpty(parsed.ollama_url)
+      || 'http://localhost:11434';
     baseUrl = `${ollamaBaseUrl.replace(/\/$/, '')}/v1`;
     apiKey = 'ollama';
     model = asStringOrEmpty(parsed.embedding_ollama_model);

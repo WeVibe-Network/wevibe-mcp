@@ -17,6 +17,7 @@ const testStore = new SessionTokenStore(testPath);
 const MEMORY_HASH_HEX = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
 const EPISODE_REF_HEX = 'a1b2';
 const EVIDENCE_REF_HEX = 'c3';
+const CURRENT_EPOCH = 7;
 
 vi.stubGlobal('fetch', vi.fn());
 
@@ -105,6 +106,14 @@ function parseResponse(res: ServerResponse & { body: string }): { status: number
   return { status: res.statusCode, body: JSON.parse(res.body) };
 }
 
+function mockCurrentEpochFetch(epochId = CURRENT_EPOCH): void {
+  vi.mocked(fetch).mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ org_id: 'org-123', epoch_id: epochId, umbral_pk: 'abcd' }),
+  } as Response);
+}
+
 describe('POST /v1/serves', () => {
   let validToken: string;
 
@@ -130,6 +139,7 @@ describe('POST /v1/serves', () => {
       status: 'recorded',
       serve_fingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     };
+    mockCurrentEpochFetch();
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -155,14 +165,17 @@ describe('POST /v1/serves', () => {
     expect(parsed.body).toEqual(mockHubResponse);
     expect(fetch).toHaveBeenCalled();
 
-    const fetchCall = vi.mocked(fetch).mock.calls[0];
+    const epochFetchCall = vi.mocked(fetch).mock.calls[0];
+    expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/manifest');
+
+    const fetchCall = vi.mocked(fetch).mock.calls[1];
     expect(fetchCall).toBeTruthy();
     const init = fetchCall![1] as RequestInit;
     const postedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
 
     expect(postedBody).toMatchObject({
       org_id: 'org-123',
-      epoch_id: 0,
+      epoch_id: CURRENT_EPOCH,
       memory_content_hash: MEMORY_HASH_HEX,
       model_id: 'test-model',
       turn_count: 5,
@@ -232,6 +245,7 @@ describe('POST /v1/serves', () => {
   });
 
   it('POST /v1/serves when hub returns 5xx → 502', async () => {
+    mockCurrentEpochFetch();
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -255,6 +269,7 @@ describe('POST /v1/serves', () => {
   });
 
   it('accepts absent matched_keywords and signs serve v2 without keyword metadata', async () => {
+    mockCurrentEpochFetch();
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -275,14 +290,14 @@ describe('POST /v1/serves', () => {
     const parsed = parseResponse(res);
     expect(parsed.status).toBe(200);
 
-    const init = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
+    const init = vi.mocked(fetch).mock.calls[1]![1] as RequestInit;
     const postedBody = JSON.parse(String(init.body)) as Record<string, string | number | string[]>;
     expect(postedBody.matched_keywords).toEqual([]);
 
     const canonicalBody = buildCanonicalServeBodyBytes({
       orgId: 'org-123',
       memoryContentHashHex: MEMORY_HASH_HEX,
-      epoch: 0,
+      epoch: CURRENT_EPOCH,
       serveKeyPubkeyHex: String(postedBody.serve_key_pubkey),
       nonceHex: String(postedBody.nonce),
     });
@@ -291,6 +306,31 @@ describe('POST /v1/serves', () => {
       canonicalBody,
       Buffer.from(String(postedBody.serve_key_pubkey), 'hex'),
     )).toBe(true);
+  });
+
+  it('POST /v1/serves fails loudly when current epoch manifest fetch fails', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: async () => 'manifest unavailable',
+    } as Response);
+
+    const req = createMockRequest('POST', '/v1/serves', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+    }));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+
+    const parsed = parseResponse(res);
+    expect(parsed.status).toBe(502);
+    expect(parsed.body).toMatchObject({ status: 'error', error: 'failed to resolve current epoch' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/v1/orgs/org-123/epoch/current/manifest');
   });
 });
 
@@ -315,11 +355,14 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
   });
 
   it('emits a signed content-free outcome event to the hub', async () => {
+    mockCurrentEpochFetch();
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ status: 'recorded' }),
-    } as Response).mockResolvedValueOnce({
+    } as Response);
+    mockCurrentEpochFetch();
+    vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ status: 'recorded' }),
@@ -345,7 +388,10 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     expect(parsed.status).toBe(200);
     expect(parsed.body).toMatchObject({ status: 'ok', fingerprint_first8: expect.stringMatching(/^[0-9a-f]{8}$/) });
 
-    const fetchCall = vi.mocked(fetch).mock.calls[0];
+    const epochFetchCall = vi.mocked(fetch).mock.calls[0];
+    expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/manifest');
+
+    const fetchCall = vi.mocked(fetch).mock.calls[1];
     expect(fetchCall?.[0]).toContain('/v1/orgs/org-123/events');
     const init = fetchCall![1] as RequestInit;
     expect((init.headers as Record<string, string>)['X-WeVibe-Trace-Id']).toBe('trace-outcome-1');
@@ -353,7 +399,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 
     expect(postedBody).toMatchObject({
       org_id: 'org-123',
-      epoch: 0,
+      epoch: CURRENT_EPOCH,
       event_type: 'outcome',
       memory_hash: MEMORY_HASH_HEX,
       episode_ref: EPISODE_REF_HEX,
@@ -369,7 +415,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     const canonicalBody = buildCanonicalOutcomeEventBodyBytes({
       orgId: 'org-123',
       memoryHash: MEMORY_HASH_HEX,
-      epoch: 0,
+      epoch: CURRENT_EPOCH,
       signerPubkey: String(postedBody.signer_pubkey),
       nonce: String(postedBody.nonce),
       episodeRef: EPISODE_REF_HEX,
@@ -407,7 +453,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     expect((retryParsed.body as { fingerprint_first8: string }).fingerprint_first8)
       .toBe((parsed.body as { fingerprint_first8: string }).fingerprint_first8);
 
-    const retryInit = vi.mocked(fetch).mock.calls[1]![1] as RequestInit;
+    const retryInit = vi.mocked(fetch).mock.calls[3]![1] as RequestInit;
     const retryPostedBody = JSON.parse(String(retryInit.body)) as Record<string, unknown>;
     expect(retryPostedBody.nonce).toBe(postedBody.nonce);
     expect(retryPostedBody.fingerprint).toBe(postedBody.fingerprint);

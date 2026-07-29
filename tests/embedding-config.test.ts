@@ -27,6 +27,7 @@ describe('loadEmbeddingConfig', () => {
     readFileSyncMock.mockReset();
     homedirMock.mockReset();
     homedirMock.mockReturnValue(TEST_HOME);
+    delete process.env.OLLAMA_HOST;
   });
 
   it('resolves OpenRouter dashboard settings', () => {
@@ -92,6 +93,37 @@ describe('loadEmbeddingConfig', () => {
   });
 
   it('resolves Ollama dashboard settings and strips trailing slash', () => {
+    mockDashboardJson({
+      embedding_provider: 'ollama',
+      embedding_ollama_model: 'nomic-embed-text-v1.5',
+      ollama_url: 'http://localhost:11434/',
+    });
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: 'ollama',
+      model: 'nomic-embed-text-v1.5',
+      usePrefix: true,
+    });
+  });
+
+  it('uses OLLAMA_HOST for Ollama base URL when set', () => {
+    process.env.OLLAMA_HOST = 'http://host.docker.internal:11434/';
+    mockDashboardJson({
+      embedding_provider: 'ollama',
+      embedding_ollama_model: 'nomic-embed-text-v1.5',
+      ollama_url: 'http://localhost:11434/',
+    });
+
+    expect(loadEmbeddingConfig()).toEqual({
+      baseUrl: 'http://host.docker.internal:11434/v1',
+      apiKey: 'ollama',
+      model: 'nomic-embed-text-v1.5',
+      usePrefix: true,
+    });
+  });
+
+  it('uses dashboard Ollama URL when OLLAMA_HOST is unset', () => {
     mockDashboardJson({
       embedding_provider: 'ollama',
       embedding_ollama_model: 'nomic-embed-text-v1.5',

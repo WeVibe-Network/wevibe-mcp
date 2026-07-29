@@ -1222,9 +1222,61 @@ interface OutcomeEventRequestBody {
   session_id?: unknown;
 }
 
-function currentServeEpochId(): number {
-  // Current MCP serve epoch source: fixed epoch 0 (existing behavior).
-  return 0;
+interface CurrentEpochManifestResponse {
+  epoch_id?: unknown;
+}
+
+async function currentServeEpochId(orgId: string, trace?: string): Promise<number> {
+  const t0 = Date.now();
+  const op = 'serve.epoch.resolve';
+  logOp(op, 'info', { trace, phase: 'entry', org_id: orgId, org_fp: fp(orgId) });
+
+  try {
+    const { headers } = await buildWeVibeSignedAuth();
+    const response = await hubFetchVerified(
+      orgId,
+      `${HUB_URL}/v1/orgs/${orgId}/epoch/current/manifest`,
+      {
+        headers: {
+          ...headers,
+          'X-WeVibe-Trace-Id': trace ?? '',
+        },
+      },
+    );
+
+    if (!response.res.ok) {
+      throw new Error(`failed to fetch current epoch manifest (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
+    }
+
+    const manifest = response.json<CurrentEpochManifestResponse>();
+    const epochId = manifest.epoch_id;
+    if (typeof epochId !== 'number' || !Number.isInteger(epochId) || epochId < 0) {
+      throw new Error('current epoch manifest missing valid epoch_id');
+    }
+
+    logOp(op, 'info', {
+      trace,
+      phase: 'outcome',
+      status: 'ok',
+      org_id: orgId,
+      org_fp: fp(orgId),
+      epoch: epochId,
+      dur_ms: Date.now() - t0,
+    });
+    return epochId;
+  } catch (error) {
+    const err = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    logOp(op, 'error', {
+      trace,
+      phase: 'outcome',
+      status: 'err',
+      org_id: orgId,
+      org_fp: fp(orgId),
+      dur_ms: Date.now() - t0,
+      err,
+    });
+    throw error;
+  }
 }
 
 async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1258,8 +1310,16 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  const trace = getRequestTrace(req);
   const contributorPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
-  const epochId = currentServeEpochId();
+  let epochId: number;
+  try {
+    epochId = await currentServeEpochId(body.org_id, trace);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jsonResponse(res, 502, { status: 'error', error: 'failed to resolve current epoch', detail: message });
+    return;
+  }
   const sortedMatchedKeywords = Array.isArray(body.matched_keywords)
     ? [...body.matched_keywords].filter(keyword => typeof keyword === 'string').sort()
     : [];
@@ -1330,7 +1390,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
       headers: {
         'Content-Type': 'application/json',
         ...authResult.headers,
-        'X-WeVibe-Trace-Id': getRequestTrace(req) ?? '',
+        'X-WeVibe-Trace-Id': trace ?? '',
       },
       body: JSON.stringify(hubBody),
     });
@@ -1463,7 +1523,15 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       return;
     }
 
-    const epoch = currentServeEpochId();
+    let epoch: number;
+    try {
+      epoch = await currentServeEpochId(orgId, trace);
+    } catch (epochErr) {
+      status = 502;
+      err = epochErr instanceof Error ? epochErr.message : String(epochErr);
+      jsonResponse(res, status, { status: 'error', error: 'failed to resolve current epoch', detail: err });
+      return;
+    }
     const nonceHex = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, worked);
     let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
     try {
@@ -2264,9 +2332,18 @@ async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  let epochId: number;
+  try {
+    epochId = await currentServeEpochId(body.org_id, getRequestTrace(req));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    jsonResponse(res, 502, { status: 'error', error: 'failed to resolve current epoch', detail: message });
+    return;
+  }
+
   addDenial({
     org_id: body.org_id,
-    epoch_id: currentServeEpochId(),
+    epoch_id: epochId,
     memory_hash: memoryHashHex,
     reason: body.reason,
   });
