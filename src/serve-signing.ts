@@ -57,11 +57,22 @@ function ensureFixedHexLength(normalizedHex: string, expectedBytes: number, fiel
   }
 }
 
-function epochToBigEndianUint64(epoch: number): Uint8Array {
+function ensureEpochUint64(epoch: number | bigint): bigint {
+  const maxUint64 = (1n << 64n) - 1n;
+  if (typeof epoch === 'bigint') {
+    if (epoch < 0n || epoch > maxUint64) {
+      throw new Error('epoch must be a non-negative integer <= uint64 max');
+    }
+    return epoch;
+  }
   ensureEpoch(epoch);
+  return BigInt(epoch);
+}
+
+function epochToBigEndianUint64Wide(epoch: number | bigint): Uint8Array {
   const out = new Uint8Array(8);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
-  view.setBigUint64(0, BigInt(epoch), false);
+  view.setBigUint64(0, ensureEpochUint64(epoch), false);
   return out;
 }
 
@@ -144,25 +155,67 @@ export function buildCanonicalServeBodyBytes(input: CanonicalServeBodyInput): Ui
   return textEncoder.encode(buildCanonicalServeBody(input));
 }
 
+/**
+ * Mirrors chain x/serve/types/canonical.go ComputeServeFingerprint:
+ * sha256(memory_hash_bytes || serve_pubkey_bytes || BigEndian_uint64(epoch)).
+ */
+export function computeServeFingerprint(
+  memoryHash: string | Uint8Array,
+  servePubkey: string | Uint8Array,
+  epoch: number | bigint,
+): Uint8Array {
+  const memoryContentHashHex = memoryHash instanceof Uint8Array
+    ? bytesToHex(memoryHash)
+    : normalizeHex(memoryHash, 'memory_hash');
+  const serveKeyPubkeyHex = servePubkey instanceof Uint8Array
+    ? bytesToHex(servePubkey)
+    : normalizeHex(servePubkey, 'serve_pubkey');
+
+  ensureFixedHexLength(memoryContentHashHex, 32, 'memory_hash');
+  ensureFixedHexLength(serveKeyPubkeyHex, 32, 'serve_pubkey');
+
+  return createHash('sha256')
+    .update(Buffer.from(memoryContentHashHex, 'hex'))
+    .update(Buffer.from(serveKeyPubkeyHex, 'hex'))
+    .update(Buffer.from(epochToBigEndianUint64Wide(epoch)))
+    .digest();
+}
+
+/**
+ * Hex form of computeServeFingerprint, mirroring chain
+ * x/serve/types/canonical.go ComputeServeFingerprint.
+ */
 export function computeServeFingerprintHex(input: {
   memoryContentHashHex: string;
   serveKeyPubkeyHex: string;
   epoch: number;
-}): string {
-  ensureEpoch(input.epoch);
-  const memoryContentHashHex = normalizeHex(input.memoryContentHashHex, 'memory_content_hash');
-  const serveKeyPubkeyHex = normalizeHex(input.serveKeyPubkeyHex, 'serve_key_pubkey');
-
-  ensureFixedHexLength(memoryContentHashHex, 32, 'memory_content_hash');
-  ensureFixedHexLength(serveKeyPubkeyHex, 32, 'serve_key_pubkey');
-
-  const digest = createHash('sha256')
-    .update(Buffer.from(memoryContentHashHex, 'hex'))
-    .update(Buffer.from(serveKeyPubkeyHex, 'hex'))
-    .update(Buffer.from(epochToBigEndianUint64(input.epoch)))
-    .digest();
-
-  return digest.toString('hex');
+}): string;
+export function computeServeFingerprintHex(
+  memoryHash: string | Uint8Array,
+  servePubkey: string | Uint8Array,
+  epoch: number | bigint,
+): string;
+export function computeServeFingerprintHex(
+  memoryHashOrInput: string | Uint8Array | {
+    memoryContentHashHex: string;
+    serveKeyPubkeyHex: string;
+    epoch: number;
+  },
+  servePubkey?: string | Uint8Array,
+  epoch?: number | bigint,
+): string {
+  if (typeof memoryHashOrInput === 'object' && !(memoryHashOrInput instanceof Uint8Array)) {
+    return bytesToHex(computeServeFingerprint(
+      memoryHashOrInput.memoryContentHashHex,
+      memoryHashOrInput.serveKeyPubkeyHex,
+      memoryHashOrInput.epoch,
+    ));
+  }
+  if (servePubkey === undefined || epoch === undefined) {
+    throw new Error('serve_pubkey and epoch are required');
+  }
+  const memoryHash = memoryHashOrInput;
+  return bytesToHex(computeServeFingerprint(memoryHash, servePubkey, epoch));
 }
 
 export function buildCanonicalDenialBody(input: CanonicalDenialBodyInput): string {

@@ -14,18 +14,21 @@ export interface CanonicalOutcomeEventBodyInput {
   episodeRef: string | Uint8Array;
   worked: boolean;
   evidenceRef: string | Uint8Array;
+  serveRef: string | Uint8Array;
 }
 
 // Deterministic nonce => identical CanonicalEventBody on retry => identical
 // chain fingerprint => hub unique-fingerprint dedup is idempotent. The
-// preimage is content-free (orgId + fingerprint-like refs); the output is opaque.
+// preimage is content-free (orgId + fingerprint-like refs, including the
+// serve_ref pairing handle); the output is opaque.
 export function deriveOutcomeNonceHex(
   orgId: string,
   memoryHashHex: string,
   episodeRefHex: string,
   worked: boolean,
+  serveRefHex: string,
 ): string {
-  const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=${worked ? 'true' : 'false'}`;
+  const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=${worked ? 'true' : 'false'}\n${serveRefHex}`;
   return createHash('sha256').update(preimage).digest().subarray(0, 8).toString('hex');
 }
 
@@ -74,12 +77,14 @@ export function buildCanonicalOutcomeEventBodyBytes(input: CanonicalOutcomeEvent
   const nonceHex = normalizeHexOrBytes(input.nonce, 'nonce');
   const episodeRefHex = normalizeHexOrBytes(input.episodeRef, 'episode_ref');
   const evidenceRefHex = normalizeHexOrBytes(input.evidenceRef, 'evidence_ref');
+  const serveRefHex = normalizeHexOrBytes(input.serveRef, 'serve_ref');
 
   ensureFixedBytes(memoryHashHex, 32, 'memory_hash');
   ensureFixedBytes(signerPubkeyHex, 32, 'signer_pubkey');
   ensureVarBytes(nonceHex, 1, 64, 'nonce');
   ensureVarBytes(episodeRefHex, 1, 64, 'episode_ref');
   ensureVarBytes(evidenceRefHex, 1, 64, 'evidence_ref');
+  ensureFixedBytes(serveRefHex, 32, 'serve_ref');
 
   const body = [
     CANONICAL_EVENT_VERSION,
@@ -91,6 +96,7 @@ export function buildCanonicalOutcomeEventBodyBytes(input: CanonicalOutcomeEvent
     episodeRefHex,
     `worked=${input.worked ? 'true' : 'false'}`,
     evidenceRefHex,
+    serveRefHex,
     nonceHex,
   ].join('\n');
 

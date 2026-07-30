@@ -54,6 +54,7 @@ import {
 } from './moderation.js';
 import {
   buildCanonicalServeBodyBytes,
+  computeServeFingerprintHex,
   deriveOrgServeKeyFromIdentitySeed,
   normalizeHex,
   signCanonicalBody,
@@ -64,6 +65,7 @@ import {
   deriveOutcomeNonceHex,
 } from './event-signing.js';
 import { BodyReadError, readBody } from './http-body.js';
+import { consumeServeRef, recordServeRef } from './serve-ref-store.js';
 
 const BUILD_STAMP = (() => {
   try {
@@ -1361,6 +1363,24 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  const serveRefHex = computeServeFingerprintHex(memoryContentHashHex, orgServeKey.pubHex, epochId);
+  recordServeRef({
+    orgId: body.org_id,
+    memoryHashHex: memoryContentHashHex,
+    epoch: epochId,
+    serveRefHex,
+  });
+  logOp('serve.ref.record', 'info', {
+    trace,
+    phase: 'outcome',
+    status: 'ok',
+    org_id: body.org_id,
+    org_fp: fp(body.org_id),
+    epoch: epochId,
+    serve_ref_first8: serveRefHex.slice(0, 8),
+    memory_hash_first8: memoryContentHashHex.slice(0, 8),
+  });
+
   const hubBody = {
     org_id: body.org_id,
     session_id: body.session_id ?? '',
@@ -1416,6 +1436,15 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     hubBodyJson = hubBodyText;
   }
 
+  if (hubResp.res.status >= 200 && hubResp.res.status < 300) {
+    jsonResponse(res, hubResp.res.status, {
+      ...(typeof hubBodyJson === 'object' && hubBodyJson !== null ? hubBodyJson : { upstream_body: hubBodyJson }),
+      serve_ref: serveRefHex,
+      epoch: epochId,
+    });
+    return;
+  }
+
   jsonResponse(res, hubResp.res.status, hubBodyJson);
 }
 
@@ -1439,6 +1468,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
   let orgId: string | undefined;
   let worked: boolean | undefined;
   let fingerprintHex: string | undefined;
+  let serveRefHex: string | undefined;
   let err: string | undefined;
   logOp('event.outcome.emit', 'info', { trace, phase: 'entry' });
 
@@ -1523,16 +1553,40 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       return;
     }
 
-    let epoch: number;
-    try {
-      epoch = await currentServeEpochId(orgId, trace);
-    } catch (epochErr) {
-      status = 502;
-      err = epochErr instanceof Error ? epochErr.message : String(epochErr);
-      jsonResponse(res, status, { status: 'error', error: 'failed to resolve current epoch', detail: err });
+    const pendingServeRef = consumeServeRef(orgId, memoryHashHex);
+    if (!pendingServeRef) {
+      status = 409;
+      err = 'no pending serve to pair for this memory';
+      logOp('event.outcome.emit', 'warn', {
+        trace,
+        phase: 'pairing',
+        status,
+        reason: err,
+        org_id: orgId,
+        org_fp: fp(orgId),
+        memory_hash_first8: memoryHashHex.slice(0, 8),
+      });
+      jsonResponse(res, status, { error: err });
       return;
     }
-    const nonceHex = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, worked);
+    const epoch = pendingServeRef.epoch;
+    const pairedServeRefHex = pendingServeRef.serveRefHex;
+    serveRefHex = pairedServeRefHex;
+    const restorePendingServeRef = (reason: string): void => {
+      recordServeRef({ orgId: orgId!, memoryHashHex, epoch, serveRefHex: pairedServeRefHex });
+      logOp('event.outcome.emit', 'warn', {
+        trace,
+        phase: 'pairing_restore',
+        status: 'restored',
+        reason,
+        org_id: orgId,
+        org_fp: fp(orgId),
+        epoch,
+        serve_ref_first8: pairedServeRefHex.slice(0, 8),
+        memory_hash_first8: memoryHashHex.slice(0, 8),
+      });
+    };
+    const nonceHex = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, worked, pairedServeRefHex);
     let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
     try {
       orgServeKey = await deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, orgId);
@@ -1554,6 +1608,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
         episodeRef: episodeRefHex,
         worked,
         evidenceRef: evidenceRefHex,
+        serveRef: serveRefHex,
       });
       signatureHex = await signCanonicalBody(canonicalBody, orgServeKey.priv);
       fingerprintHex = Buffer.from(computeEventFingerprint(canonicalBody)).toString('hex');
@@ -1575,6 +1630,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       episode_ref: episodeRefHex,
       worked,
       evidence_ref: evidenceRefHex,
+      serve_ref: serveRefHex,
       fingerprint: fingerprintHex,
       ...(body.session_id !== undefined ? { session_id: body.session_id } : {}),
     };
@@ -1601,6 +1657,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
         body: JSON.stringify(hubBody),
       });
     } catch (forwardErr) {
+      restorePendingServeRef('hub transport error');
       if (forwardErr instanceof HubSignatureError) {
         status = 502;
         err = 'upstream signature verification failed';
@@ -1611,6 +1668,10 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       err = forwardErr instanceof Error ? forwardErr.message : String(forwardErr);
       jsonResponse(res, status, { error: 'upstream error' });
       return;
+    }
+
+    if (hubResp.res.status < 200 || hubResp.res.status >= 300) {
+      restorePendingServeRef(`hub non-2xx status ${hubResp.res.status}`);
     }
 
     if (hubResp.res.status >= 500) {
@@ -1624,6 +1685,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
     jsonResponse(res, status, {
       status: status >= 200 && status < 300 ? 'ok' : 'error',
       fingerprint_first8: fingerprintHex.slice(0, 8),
+      serve_ref_first8: serveRefHex.slice(0, 8),
     });
   } catch (e) {
     status = 500;
@@ -1637,6 +1699,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       org_id: orgId,
       org_fp: fp(orgId),
       fingerprint_fp8: fp(fingerprintHex),
+      serve_ref_first8: serveRefHex?.slice(0, 8),
       worked,
       dur_ms: Date.now() - t0,
       ...(err ? { err } : {}),

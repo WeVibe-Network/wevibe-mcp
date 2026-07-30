@@ -3,6 +3,7 @@ import { getPublicKeyAsync, verifyAsync } from '@noble/ed25519';
 import {
   buildCanonicalDenialBody,
   buildCanonicalServeBody,
+  computeServeFingerprint,
   computeServeFingerprintHex,
   ed25519KeypairFromSeed,
   signCanonicalBody,
@@ -40,11 +41,7 @@ describe('serve signing parity vectors', () => {
     const serveSigHex = await signCanonicalBody(serveBodyBytes, keypair.priv);
     expect(await verifyAsync(Buffer.from(serveSigHex, 'hex'), serveBodyBytes, keypair.pub)).toBe(true);
 
-    const serveFingerprintHex = computeServeFingerprintHex({
-      memoryContentHashHex: MEMORY_HASH_HEX,
-      serveKeyPubkeyHex: keypair.pubHex,
-      epoch: 7,
-    });
+    const serveFingerprintHex = computeServeFingerprintHex(MEMORY_HASH_HEX, keypair.pubHex, 7);
     expect(serveFingerprintHex).toBe(VECTOR_SERVE_FINGERPRINT_HEX);
 
     const canonicalDenialBody = buildCanonicalDenialBody({
@@ -96,5 +93,24 @@ describe('serve signing parity vectors', () => {
 
     const sigHex = await signCanonicalBody(bodyBytes, seed);
     expect(await verifyAsync(Buffer.from(sigHex, 'hex'), bodyBytes, pub)).toBe(true);
+  });
+
+  it('matches chain ComputeServeFingerprint golden vector exactly', () => {
+    const memoryHashHex = '11'.repeat(32);
+    const servePubkeyHex = '22'.repeat(32);
+    const epoch = 9n;
+    const expectedHex = '0110cf7a038bf89511ceb003349200a874b15394005a28da66d03e0c1c7e7df9';
+
+    expect(Buffer.from(computeServeFingerprint(memoryHashHex, servePubkeyHex, epoch)).toString('hex'))
+      .toBe(expectedHex);
+    expect(computeServeFingerprintHex(memoryHashHex, servePubkeyHex, epoch)).toBe(expectedHex);
+  });
+
+  it('binds serve fingerprints to the serve pubkey', () => {
+    const memoryHashHex = '11'.repeat(32);
+    const epoch = 9;
+
+    expect(computeServeFingerprintHex(memoryHashHex, '22'.repeat(32), epoch))
+      .not.toBe(computeServeFingerprintHex(memoryHashHex, '23'.repeat(32), epoch));
   });
 });

@@ -24,6 +24,7 @@ describe('event signing parity vectors', () => {
       episodeRef: new Uint8Array([0x10, 0x11]),
       worked: true,
       evidenceRef: new Uint8Array([0x12]),
+      serveRef: new Uint8Array(32).fill(0x13),
       nonce: new Uint8Array([0x03, 0x04]),
     });
 
@@ -33,9 +34,12 @@ describe('event signing parity vectors', () => {
       + '01'.repeat(32)
       + '\n7\n'
       + '02'.repeat(32)
-      + '\n1011\nworked=true\n12\n0304',
+      + '\n1011\nworked=true\n12\n'
+      + '13'.repeat(32)
+      + '\n0304',
     );
-    expect((body.match(/\n/g) ?? [])).toHaveLength(9);
+    expect((body.match(/\n/g) ?? [])).toHaveLength(10);
+    expect(body.split('\n')[9]).toBe('13'.repeat(32));
   });
 
   it('formats worked=false exactly', () => {
@@ -47,6 +51,7 @@ describe('event signing parity vectors', () => {
       episodeRef: '1011',
       worked: false,
       evidenceRef: '12',
+      serveRef: '13'.repeat(32),
       nonce: '0304',
     }));
 
@@ -64,17 +69,19 @@ describe('event signing parity vectors', () => {
     const orgId = 'org-a';
     const memoryHashHex = '01'.repeat(32);
     const episodeRefHex = '1011';
-    const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=true`;
+    const serveRefHex = '13'.repeat(32);
+    const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=true\n${serveRefHex}`;
     const expected = createHash('sha256').update(preimage).digest().subarray(0, 8).toString('hex');
 
-    const nonce = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true);
+    const nonce = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true, serveRefHex);
     expect(nonce).toBe(expected);
     expect(nonce).toMatch(/^[0-9a-f]{16}$/);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true)).toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, false)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex('org-b', memoryHashHex, episodeRefHex, true)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, '02'.repeat(32), episodeRefHex, true)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, '1012', true)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true, serveRefHex)).toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, false, serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex('org-b', memoryHashHex, episodeRefHex, true, serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, '02'.repeat(32), episodeRefHex, true, serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, '1012', true, serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true, '14'.repeat(32))).not.toBe(nonce);
   });
 
   it('rejects invalid canonical outcome sizes', () => {
@@ -86,6 +93,7 @@ describe('event signing parity vectors', () => {
       episodeRef: '10',
       worked: true,
       evidenceRef: '12',
+      serveRef: '13'.repeat(32),
       nonce: '03',
     };
 
@@ -105,6 +113,12 @@ describe('event signing parity vectors', () => {
       .toThrow('evidence_ref must be lowercase hex');
     expect(() => buildCanonicalOutcomeEventBodyBytes({ ...valid, evidenceRef: '12'.repeat(65) }))
       .toThrow('evidence_ref must be between 1 and 64 bytes');
+    expect(() => buildCanonicalOutcomeEventBodyBytes({ ...valid, serveRef: '' }))
+      .toThrow('serve_ref must be lowercase hex');
+    expect(() => buildCanonicalOutcomeEventBodyBytes({ ...valid, serveRef: '13'.repeat(31) }))
+      .toThrow('serve_ref must be 32 bytes');
+    expect(() => buildCanonicalOutcomeEventBodyBytes({ ...valid, serveRef: '13'.repeat(33) }))
+      .toThrow('serve_ref must be 32 bytes');
   });
 
   it('signs and verifies ed25519 over raw event body bytes', async () => {
@@ -118,6 +132,7 @@ describe('event signing parity vectors', () => {
       episodeRef: '1011',
       worked: true,
       evidenceRef: '12',
+      serveRef: '13'.repeat(32),
       nonce: '0304',
     });
 
