@@ -5,6 +5,9 @@ import { homedir } from 'node:os';
 /**
  * Non-secret identity sidecar at ~/.wevibe/identity.json.
  *
+ * Set WEVIBE_HOME for isolated bench/smoke identities; when unset, the default
+ * remains the real user's home WeVibe directory.
+ *
  * This file NEVER contains the seed or any private key — only public keys and
  * lifecycle flags. Its purpose is to let the opencode TUI plugin (and the
  * `identity-status` command) report identity state WITHOUT triggering a
@@ -38,14 +41,21 @@ export interface OrgHubState {
   updatedAt: string | null;
 }
 
-const WEVIBE_DIR = join(homedir(), '.wevibe');
-const SIDECAR_PATH = join(WEVIBE_DIR, 'identity.json');
+function wevibeDir(): string {
+  const override = process.env.WEVIBE_HOME;
+  return override?.trim() ? override : join(homedir(), '.wevibe');
+}
+
+function sidecarPath(): string {
+  return join(wevibeDir(), 'identity.json');
+}
 
 function ensureDir(): void {
-  if (!existsSync(WEVIBE_DIR)) {
-    mkdirSync(WEVIBE_DIR, { recursive: true });
+  const dir = wevibeDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
     try {
-      chmodSync(WEVIBE_DIR, 0o700);
+      chmodSync(dir, 0o700);
     } catch {
       /* best-effort on platforms without POSIX perms */
     }
@@ -78,9 +88,10 @@ function defaultOrgHubState(): OrgHubState {
 }
 
 export function readIdentitySidecar(): IdentitySidecar | null {
-  if (!existsSync(SIDECAR_PATH)) return null;
+  const path = sidecarPath();
+  if (!existsSync(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(SIDECAR_PATH, 'utf-8')) as Partial<IdentitySidecar>;
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<IdentitySidecar>;
     return { ...defaults(), ...parsed, version: 1 };
   } catch {
     return null;
@@ -91,7 +102,8 @@ export function writeIdentitySidecar(patch: Partial<IdentitySidecar>): IdentityS
   ensureDir();
   const current = readIdentitySidecar() ?? defaults();
   const next: IdentitySidecar = { ...current, ...patch, version: 1 };
-  const tmp = `${SIDECAR_PATH}.${process.pid}.tmp`;
+  const path = sidecarPath();
+  const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8');
   try {
     chmodSync(tmp, 0o600);
@@ -99,7 +111,7 @@ export function writeIdentitySidecar(patch: Partial<IdentitySidecar>): IdentityS
     /* best-effort */
   }
   // Atomic replace (same directory) — safe across concurrent writers.
-  renameSync(tmp, SIDECAR_PATH);
+  renameSync(tmp, path);
   return next;
 }
 
@@ -129,5 +141,5 @@ export function setOrgHubState(orgId: string, patch: Partial<OrgHubState>): Iden
 }
 
 export function getSidecarPath(): string {
-  return SIDECAR_PATH;
+  return sidecarPath();
 }
