@@ -66,6 +66,7 @@ import {
 } from './event-signing.js';
 import { BodyReadError, readBody } from './http-body.js';
 import { consumeServeRef, recordServeRef } from './serve-ref-store.js';
+import { assertMemoryApproved } from './memory-admission.js';
 
 const BUILD_STAMP = (() => {
   try {
@@ -1338,6 +1339,28 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  try {
+    await assertMemoryApproved(body.org_id, memoryContentHashHex, trace ?? '');
+  } catch (error) {
+    const admissionError = error as { code?: unknown; status?: unknown; message?: unknown };
+    if (typeof admissionError.code === 'string' && typeof admissionError.status === 'number') {
+      jsonResponse(res, admissionError.status, {
+        status: 'error',
+        code: admissionError.code,
+        error: admissionError.code,
+        detail: typeof admissionError.message === 'string' ? admissionError.message : undefined,
+      });
+      return;
+    }
+    jsonResponse(res, 503, {
+      status: 'error',
+      code: 'memory_check_unavailable',
+      error: 'memory_check_unavailable',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
   let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
   try {
     orgServeKey = await deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, body.org_id);
@@ -1542,6 +1565,32 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       status = 400;
       err = validationErr instanceof Error ? validationErr.message : String(validationErr);
       jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+
+    try {
+      await assertMemoryApproved(orgId, memoryHashHex, trace ?? '');
+    } catch (admissionErr) {
+      const admissionError = admissionErr as { code?: unknown; status?: unknown; message?: unknown };
+      if (typeof admissionError.code === 'string' && typeof admissionError.status === 'number') {
+        status = admissionError.status;
+        err = admissionError.code;
+        jsonResponse(res, status, {
+          status: 'error',
+          code: admissionError.code,
+          error: admissionError.code,
+          detail: typeof admissionError.message === 'string' ? admissionError.message : undefined,
+        });
+        return;
+      }
+      status = 503;
+      err = 'memory_check_unavailable';
+      jsonResponse(res, status, {
+        status: 'error',
+        code: err,
+        error: err,
+        detail: admissionErr instanceof Error ? admissionErr.message : String(admissionErr),
+      });
       return;
     }
 

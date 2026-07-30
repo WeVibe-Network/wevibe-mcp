@@ -16,6 +16,7 @@ import { verifyAsync } from '@noble/ed25519';
 const testPath = join(tmpdir(), `wevibe-mcp-serves-test-${randomUUID()}`, 'mcp-session-token');
 const testStore = new SessionTokenStore(testPath);
 const MEMORY_HASH_HEX = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
+const BOGUS_MEMORY_HASH_HEX = '741930bf00000000000000000000000000000000000000000000000000000000';
 const EPISODE_REF_HEX = 'a1b2';
 const EVIDENCE_REF_HEX = 'c3';
 const CURRENT_EPOCH = 7;
@@ -115,8 +116,23 @@ function mockCurrentEpochFetch(epochId = CURRENT_EPOCH): void {
   } as Response);
 }
 
+function mockMemoryAdmissionFetch(status = 200, body: unknown = { status: 'ok' }): void {
+  vi.mocked(fetch).mockResolvedValueOnce({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => typeof body === 'string' ? body : JSON.stringify(body),
+  } as Response);
+}
+
+function expectWeVibeSignedAdmissionCall(callIndex: number): void {
+  const init = vi.mocked(fetch).mock.calls[callIndex]?.[1] as RequestInit | undefined;
+  const headers = init?.headers as Record<string, string> | undefined;
+  expect(headers?.Authorization).toMatch(/^WeVibe-Signed /);
+}
+
 async function postServe(validToken: string, memoryHash = MEMORY_HASH_HEX): Promise<{ body: Record<string, unknown>; serveRef: string }> {
   mockCurrentEpochFetch();
+  mockMemoryAdmissionFetch();
   vi.mocked(fetch).mockResolvedValueOnce({
     ok: true,
     status: 200,
@@ -162,13 +178,14 @@ describe('POST /v1/serves', () => {
     clearTestStore();
   });
 
-  it('POST /v1/serves with valid token + valid body → hub returns 200 → 200', async () => {
+	  it('POST /v1/serves with valid token + valid body → hub returns 200 → 200', async () => {
     const mockHubResponse = {
       status: 'recorded',
       serve_fingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-    };
-    mockCurrentEpochFetch();
-    vi.mocked(fetch).mockResolvedValueOnce({
+	    };
+	    mockCurrentEpochFetch();
+	    mockMemoryAdmissionFetch();
+	    vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
       text: async () => JSON.stringify(mockHubResponse),
@@ -197,7 +214,11 @@ describe('POST /v1/serves', () => {
     const epochFetchCall = vi.mocked(fetch).mock.calls[0];
     expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
 
-    const fetchCall = vi.mocked(fetch).mock.calls[1];
+	    const admissionFetchCall = vi.mocked(fetch).mock.calls[1];
+	    expect(admissionFetchCall?.[0]).toContain(`/v1/orgs/org-123/memories/${MEMORY_HASH_HEX}`);
+	    expectWeVibeSignedAdmissionCall(1);
+
+	    const fetchCall = vi.mocked(fetch).mock.calls[2];
     expect(fetchCall).toBeTruthy();
     const init = fetchCall![1] as RequestInit;
     const postedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -278,9 +299,10 @@ describe('POST /v1/serves', () => {
     expect((parsed.body as { error: string }).error).toContain('org_id');
   });
 
-  it('POST /v1/serves when hub returns 5xx → 502', async () => {
-    mockCurrentEpochFetch();
-    vi.mocked(fetch).mockResolvedValueOnce({
+	  it('POST /v1/serves when hub returns 5xx → 502', async () => {
+	    mockCurrentEpochFetch();
+	    mockMemoryAdmissionFetch();
+	    vi.mocked(fetch).mockResolvedValueOnce({
       ok: false,
       status: 500,
       text: async () => 'Internal Server Error',
@@ -302,9 +324,10 @@ describe('POST /v1/serves', () => {
     expect(parsed.status).toBe(502);
   });
 
-  it('accepts absent matched_keywords and signs serve v2 without keyword metadata', async () => {
-    mockCurrentEpochFetch();
-    vi.mocked(fetch).mockResolvedValueOnce({
+	  it('accepts absent matched_keywords and signs serve v2 without keyword metadata', async () => {
+	    mockCurrentEpochFetch();
+	    mockMemoryAdmissionFetch();
+	    vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ status: 'recorded' }),
@@ -324,7 +347,7 @@ describe('POST /v1/serves', () => {
     const parsed = parseResponse(res);
     expect(parsed.status).toBe(200);
 
-    const init = vi.mocked(fetch).mock.calls[1]![1] as RequestInit;
+	    const init = vi.mocked(fetch).mock.calls[2]![1] as RequestInit;
     const postedBody = JSON.parse(String(init.body)) as Record<string, string | number | string[]>;
     expect(postedBody.matched_keywords).toEqual([]);
 
@@ -342,7 +365,7 @@ describe('POST /v1/serves', () => {
     )).toBe(true);
   });
 
-  it('POST /v1/serves fails loudly when current chain epoch fetch fails', async () => {
+	  it('POST /v1/serves fails loudly when current chain epoch fetch fails', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: false,
       status: 503,
@@ -364,9 +387,88 @@ describe('POST /v1/serves', () => {
     expect(parsed.status).toBe(502);
     expect(parsed.body).toMatchObject({ status: 'error', error: 'failed to resolve current epoch' });
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
-  });
-});
+	    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
+	  });
+
+	  it('POST /v1/serves rejects an unapproved memory before signing', async () => {
+	    mockCurrentEpochFetch();
+	    mockMemoryAdmissionFetch(404, { status: 'error', error: 'not found' });
+
+	    const req = createMockRequest('POST', '/v1/serves', {
+	      'Authorization': `Bearer ${validToken}`,
+	      'Content-Type': 'application/json',
+	    }, JSON.stringify({
+	      org_id: 'org-123',
+	      memory_hash: BOGUS_MEMORY_HASH_HEX,
+	      model_id: 'test-model',
+	    }));
+
+	    const res = createMockResponse();
+	    await handleRequest(req, res);
+
+	    const parsed = parseResponse(res);
+	    expect(parsed.status).toBe(422);
+	    expect(parsed.body).toMatchObject({ status: 'error', code: 'memory_not_approved', error: 'memory_not_approved' });
+	    expect(fetch).toHaveBeenCalledTimes(2);
+	    expect(vi.mocked(fetch).mock.calls[1]?.[0]).toContain(`/v1/orgs/org-123/memories/${BOGUS_MEMORY_HASH_HEX}`);
+	    expectWeVibeSignedAdmissionCall(1);
+	    for (const call of vi.mocked(fetch).mock.calls) {
+	      const init = call[1] as RequestInit | undefined;
+	      if (init?.body) {
+	        expect(String(init.body)).not.toContain('serve_sig');
+	      }
+	    }
+	  });
+
+	  it('POST /v1/serves fails closed when memory approval check is unavailable', async () => {
+	    mockCurrentEpochFetch();
+	    vi.mocked(fetch).mockRejectedValueOnce(new Error('hub offline'));
+
+	    const req = createMockRequest('POST', '/v1/serves', {
+	      'Authorization': `Bearer ${validToken}`,
+	      'Content-Type': 'application/json',
+	    }, JSON.stringify({
+	      org_id: 'org-123',
+	      memory_hash: MEMORY_HASH_HEX,
+	    }));
+
+	    const res = createMockResponse();
+	    await handleRequest(req, res);
+
+	    const parsed = parseResponse(res);
+	    expect(parsed.status).toBe(503);
+	    expect(parsed.body).toMatchObject({ status: 'error', code: 'memory_check_unavailable', error: 'memory_check_unavailable' });
+	    expect(fetch).toHaveBeenCalledTimes(2);
+	    expectWeVibeSignedAdmissionCall(1);
+	  });
+
+	  it('POST /v1/serves fails closed when signed admission auth cannot be built', async () => {
+	    vi.mocked(fetch).mockResolvedValueOnce({
+	      ok: true,
+	      status: 200,
+	      text: async () => {
+	        clearTestStore();
+	        return JSON.stringify({ epoch_id: CURRENT_EPOCH, epoch_identifier: 'wevibe_epoch' });
+	      },
+	    } as Response);
+
+	    const req = createMockRequest('POST', '/v1/serves', {
+	      'Authorization': `Bearer ${validToken}`,
+	      'Content-Type': 'application/json',
+	    }, JSON.stringify({
+	      org_id: 'org-123',
+	      memory_hash: MEMORY_HASH_HEX,
+	    }));
+
+	    const res = createMockResponse();
+	    await handleRequest(req, res);
+
+	    const parsed = parseResponse(res);
+	    expect(parsed.status).toBe(503);
+	    expect(parsed.body).toMatchObject({ status: 'error', code: 'memory_check_unavailable', error: 'memory_check_unavailable' });
+	    expect(fetch).toHaveBeenCalledTimes(1);
+	  });
+	});
 
 describe('POST /v1/orgs/{org_id}/outcome-events', () => {
   let validToken: string;
@@ -388,9 +490,10 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     clearTestStore();
   });
 
-  it('emits a signed content-free outcome event to the hub', async () => {
-    const serve = await postServe(validToken);
-    vi.mocked(fetch).mockResolvedValueOnce({
+	  it('emits a signed content-free outcome event to the hub', async () => {
+	    const serve = await postServe(validToken);
+	    mockMemoryAdmissionFetch();
+	    vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ status: 'recorded' }),
@@ -419,7 +522,11 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     const epochFetchCall = vi.mocked(fetch).mock.calls[0];
     expect(epochFetchCall?.[0]).toContain('/v1/orgs/org-123/epoch/current/chain');
 
-    const fetchCall = vi.mocked(fetch).mock.calls[2];
+	    const outcomeAdmissionCall = vi.mocked(fetch).mock.calls[3];
+	    expect(outcomeAdmissionCall?.[0]).toContain(`/v1/orgs/org-123/memories/${MEMORY_HASH_HEX}`);
+	    expectWeVibeSignedAdmissionCall(3);
+
+	    const fetchCall = vi.mocked(fetch).mock.calls[4];
     expect(fetchCall?.[0]).toContain('/v1/orgs/org-123/events');
     const init = fetchCall![1] as RequestInit;
     expect((init.headers as Record<string, string>)['X-WeVibe-Trace-Id']).toBe('trace-outcome-1');
@@ -462,9 +569,10 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     expect(postedBody.signer_pubkey).toBe(expectedKey.pubHex);
     expect(String(postedBody.fingerprint).slice(0, 8)).toBe((parsed.body as { fingerprint_first8: string }).fingerprint_first8);
     expect((parsed.body as { serve_ref_first8: string }).serve_ref_first8).toBe(serve.serveRef.slice(0, 8));
-    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+	    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
 
-    const retryReq = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+	    mockMemoryAdmissionFetch();
+	    const retryReq = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
       'Authorization': `Bearer ${validToken}`,
       'Content-Type': 'application/json',
       'X-WeVibe-Trace-Id': 'trace-outcome-2',
@@ -481,12 +589,13 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     await handleRequest(retryReq, retryRes);
 
     const retryParsed = parseResponse(retryRes);
-    expect(retryParsed.status).toBe(409);
-    expect(retryParsed.body).toEqual({ error: 'no pending serve to pair for this memory' });
-  });
+	    expect(retryParsed.status).toBe(409);
+	    expect(retryParsed.body).toEqual({ error: 'no pending serve to pair for this memory' });
+	  });
 
-	  it('returns 409 when no serve memo exists for the outcome', async () => {
-	    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+		  it('returns 409 when no serve memo exists for the outcome', async () => {
+		    mockMemoryAdmissionFetch();
+		    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
 	      'Authorization': `Bearer ${validToken}`,
 	      'Content-Type': 'application/json',
 	    }, JSON.stringify({
@@ -500,15 +609,18 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	    const res = createMockResponse();
 	    await handleRequest(req, res);
 
-	    const parsed = parseResponse(res);
-	    expect(parsed.status).toBe(409);
+		    const parsed = parseResponse(res);
+		    expect(parsed.status).toBe(409);
 	    expect(parsed.body).toEqual({ error: 'no pending serve to pair for this memory' });
-	    expect(fetch).not.toHaveBeenCalled();
+	    expect(fetch).toHaveBeenCalledTimes(1);
+	    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain(`/v1/orgs/org-123/memories/${MEMORY_HASH_HEX}`);
+	    expectWeVibeSignedAdmissionCall(0);
 	  });
 
-	  it('restores the serve memo when the hub rejects an outcome', async () => {
-	    const serve = await postServe(validToken);
-	    vi.mocked(fetch).mockResolvedValueOnce({
+		  it('restores the serve memo when the hub rejects an outcome', async () => {
+		    const serve = await postServe(validToken);
+		    mockMemoryAdmissionFetch();
+		    vi.mocked(fetch).mockResolvedValueOnce({
 	      ok: false,
 	      status: 503,
 	      text: async () => 'hub unavailable',
@@ -529,10 +641,11 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	    await handleRequest(req, res);
 
 	    const parsed = parseResponse(res);
-	    expect(parsed.status).toBe(502);
-	    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
+		    expect(parsed.status).toBe(502);
+		    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
 
-	    vi.mocked(fetch).mockResolvedValueOnce({
+		    mockMemoryAdmissionFetch();
+		    vi.mocked(fetch).mockResolvedValueOnce({
 	      ok: true,
 	      status: 200,
 	      text: async () => JSON.stringify({ status: 'recorded' }),
@@ -553,9 +666,36 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	    await handleRequest(retryReq, retryRes);
 
 	    const retryParsed = parseResponse(retryRes);
-	    expect(retryParsed.status).toBe(200);
-	    expect((retryParsed.body as { serve_ref_first8: string }).serve_ref_first8).toBe(serve.serveRef.slice(0, 8));
-	    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+		    expect(retryParsed.status).toBe(200);
+		    expect((retryParsed.body as { serve_ref_first8: string }).serve_ref_first8).toBe(serve.serveRef.slice(0, 8));
+		    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+		  });
+
+	  it('rejects an unapproved outcome memory before consuming the pending serve ref', async () => {
+	    const serve = await postServe(validToken);
+	    mockMemoryAdmissionFetch(404, { status: 'error', error: 'not found' });
+
+	    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+	      'Authorization': `Bearer ${validToken}`,
+	      'Content-Type': 'application/json',
+	    }, JSON.stringify({
+	      org_id: 'org-123',
+	      memory_hash: MEMORY_HASH_HEX,
+	      episode_ref: EPISODE_REF_HEX,
+	      worked: true,
+	      evidence_ref: EVIDENCE_REF_HEX,
+	    }));
+
+	    const res = createMockResponse();
+	    await handleRequest(req, res);
+
+	    const parsed = parseResponse(res);
+	    expect(parsed.status).toBe(422);
+	    expect(parsed.body).toMatchObject({ status: 'error', code: 'memory_not_approved', error: 'memory_not_approved' });
+	    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
+	    expect(vi.mocked(fetch).mock.calls[3]?.[0]).toContain(`/v1/orgs/org-123/memories/${MEMORY_HASH_HEX}`);
+	    expectWeVibeSignedAdmissionCall(3);
+	    expect(vi.mocked(fetch).mock.calls).toHaveLength(4);
 	  });
 
   it.each([
