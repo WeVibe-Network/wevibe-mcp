@@ -9,6 +9,8 @@ type ResponseFormat =
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const ERROR_BODY_SNIPPET_LIMIT = 500;
+const STREAMING_PROMPT_CHAR_THRESHOLD = 64000;
+const STREAMING_CHUNK_IDLE_TIMEOUT_MS = 180000;
 const FREE_SUFFIX_RE = /:free$/i;
 const NO_ENDPOINTS_RE = /no endpoints?/i;
 const NOT_A_VALID_MODEL_RE = /not a valid model/i;
@@ -164,6 +166,157 @@ function isResponseFormatRejection(status: number, body: string): boolean {
   return lower.includes('response_format');
 }
 
+type StreamingChunk = {
+  choices?: Array<{
+    delta?: { content?: string | null; reasoning_content?: string | null };
+    finish_reason?: string | null;
+  }>;
+  error?: { code?: string | number; message?: string };
+};
+
+function extractStreamErrorMessage(payload: StreamingChunk): string | undefined {
+  if (!payload.error) {
+    return undefined;
+  }
+  if (typeof payload.error.message === 'string' && payload.error.message.trim().length > 0) {
+    return payload.error.message;
+  }
+  return JSON.stringify(payload.error);
+}
+
+async function readSseChatCompletion(
+  resp: Response,
+  controller: AbortController,
+  idleTimeoutMs: number,
+): Promise<{ content: string; reasoningContent: string; finishReason: string | null; chunkCount: number; totalChars: number }> {
+  if (!resp.body) {
+    throw new LlmHttpError(resp.status, 'streaming response missing body');
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+  let idleReject: ((err: Error) => void) | null = null;
+
+  const resetIdleGuard = () => {
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+    idleTimeout = setTimeout(() => {
+      const err = new Error(`OpenAI-compatible streaming response idle for ${idleTimeoutMs}ms`);
+      controller.abort();
+      if (idleReject) {
+        idleReject(err);
+      }
+    }, idleTimeoutMs);
+  };
+
+  let streamBuffer = '';
+  let contentParts = '';
+  let reasoningParts = '';
+  let finishReason: string | null = null;
+  let chunkCount = 0;
+  let done = false;
+
+  const processLine = (line: string) => {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith(':')) {
+      return;
+    }
+    if (!trimmed.startsWith('data:')) {
+      return;
+    }
+
+    const payloadText = trimmed.slice('data:'.length).trim();
+    if (payloadText.length === 0) {
+      return;
+    }
+    if (payloadText === '[DONE]') {
+      done = true;
+      return;
+    }
+
+    let payload: StreamingChunk;
+    try {
+      payload = JSON.parse(payloadText) as StreamingChunk;
+    } catch {
+      throw new LlmHttpError(resp.status, truncateBodySnippet(payloadText));
+    }
+
+    const streamError = extractStreamErrorMessage(payload);
+    if (streamError) {
+      throw new LlmHttpError(resp.status, truncateBodySnippet(JSON.stringify(payload.error)));
+    }
+
+    const delta = payload.choices?.[0]?.delta;
+    const chunkFinishReason = payload.choices?.[0]?.finish_reason;
+    if (typeof chunkFinishReason === 'string' && chunkFinishReason.length > 0) {
+      finishReason = chunkFinishReason;
+    } else if (chunkFinishReason === null) {
+      finishReason = null;
+    }
+
+    if (typeof delta?.content === 'string' && delta.content.length > 0) {
+      contentParts += delta.content;
+    }
+    if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+      reasoningParts += delta.reasoning_content;
+    }
+
+    chunkCount += 1;
+  };
+
+  resetIdleGuard();
+
+  try {
+    while (!done) {
+      const idlePromise: Promise<never> = new Promise((_, reject) => {
+        idleReject = reject;
+      });
+
+      const readResult = await Promise.race<ReadableStreamReadResult<Uint8Array>>([
+        reader.read(),
+        idlePromise,
+      ]);
+
+      resetIdleGuard();
+      idleReject = null;
+
+      if (readResult.done) {
+        break;
+      }
+
+      streamBuffer += decoder.decode(readResult.value, { stream: true });
+      const lines = streamBuffer.split(/\r?\n/);
+      streamBuffer = lines.pop() ?? '';
+      for (const line of lines) {
+        processLine(line);
+        if (done) {
+          break;
+        }
+      }
+    }
+
+    if (streamBuffer.length > 0 && !done) {
+      processLine(streamBuffer);
+    }
+
+    return {
+      content: contentParts,
+      reasoningContent: reasoningParts,
+      finishReason,
+      chunkCount,
+      totalChars: contentParts.length + reasoningParts.length,
+    };
+  } finally {
+    if (idleTimeout) {
+      clearTimeout(idleTimeout);
+    }
+    idleReject = null;
+    reader.releaseLock();
+  }
+}
+
 export function createOpenAICompatibleProvider(baseUrl: string, model: string, apiKey: string): LlmProvider {
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
   const provider: LlmProvider & { model: string } = {
@@ -171,6 +324,8 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
     async chat(systemPrompt: string, userMessage: string, options?: LlmChatOptions): Promise<string> {
       const timeoutMs = options?.timeoutMs ?? 600000;
       const cascade = buildFormatCascade(options);
+      const promptChars = systemPrompt.length + userMessage.length;
+      const shouldUseStreaming = promptChars > STREAMING_PROMPT_CHAR_THRESHOLD;
 
       const runSingleAttempt = async (): Promise<string> => {
         let lastError: Error | null = null;
@@ -178,6 +333,11 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
           const responseFormat = cascade[formatAttempt];
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), timeoutMs);
+          const streamStart = Date.now();
+          let streamChunks = 0;
+          let streamChars = 0;
+          let streamFinishReason: string | null = null;
+          let streamOutcome: 'success' | 'empty' | 'error' = 'success';
 
           try {
             const reqBody: Record<string, unknown> = {
@@ -188,6 +348,9 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
               ],
               temperature: options?.temperature ?? 0.2,
             };
+            if (shouldUseStreaming) {
+              reqBody.stream = true;
+            }
             if (responseFormat) {
               reqBody.response_format = responseFormat;
             }
@@ -212,6 +375,28 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
                 continue;
               }
               throw requestError;
+            }
+
+            if (shouldUseStreaming) {
+              const streamResult = await readSseChatCompletion(resp, controller, STREAMING_CHUNK_IDLE_TIMEOUT_MS);
+              streamChunks = streamResult.chunkCount;
+              streamChars = streamResult.totalChars;
+              streamFinishReason = streamResult.finishReason;
+              const streamResponseText = streamResult.content.trim().length > 0
+                ? streamResult.content
+                : streamResult.reasoningContent.trim().length > 0
+                  ? streamResult.reasoningContent
+                  : null;
+              if (streamResponseText === null) {
+                streamOutcome = 'empty';
+                throw new LlmEmptyResponseError(
+                  streamResult.finishReason,
+                  streamResult.totalChars,
+                  undefined,
+                );
+              }
+
+              return streamResponseText;
             }
 
             const data = await resp.json() as {
@@ -239,8 +424,27 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
             }
 
             return responseText;
+          } catch (err) {
+            if (shouldUseStreaming) {
+              streamOutcome = err instanceof LlmEmptyResponseError ? 'empty' : 'error';
+            }
+            throw err;
           } finally {
             clearTimeout(timeout);
+            if (shouldUseStreaming) {
+              logOp('extract', streamOutcome === 'success' ? 'info' : 'warn', {
+                trace: options?.traceId,
+                label: options?.logLabel,
+                event: 'llm.stream',
+                model,
+                prompt_chars: promptChars,
+                chunks: streamChunks,
+                content_chars: streamChars,
+                finish_reason: streamFinishReason,
+                dur_ms: Date.now() - streamStart,
+                outcome: streamOutcome,
+              });
+            }
           }
         }
 

@@ -12,6 +12,10 @@ global.fetch = mockFetch;
 const providerBaseUrl = 'https://openrouter.ai/api/v1';
 const providerModel = 'moonshotai/kimi-k2.6';
 const providerApiKey = 'test-key';
+const smallSystemPrompt = 'sys';
+const smallUserMessage = 'user';
+const streamingSystemPrompt = 's'.repeat(40001);
+const streamingUserMessage = 'u'.repeat(24000);
 
 const retryingJsonOptions = {
   retry: { maxAttempts: 3, backoffMs: [600, 1500] },
@@ -30,6 +34,27 @@ function mockChatSuccess(content = '{"candidates":[]}'): void {
     json: async () => ({
       choices: [{ message: { content } }],
     }),
+  });
+}
+
+function createSseBody(lines: string[], options?: { close?: boolean }): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const payload = lines.map((line) => `${line}\n`).join('');
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(payload));
+      if (options?.close ?? true) {
+        controller.close();
+      }
+    },
+  });
+}
+
+function mockStreamingSuccess(lines: string[], options?: { close?: boolean }): void {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    body: createSseBody(lines, options),
   });
 }
 
@@ -171,6 +196,93 @@ describe('createOpenAICompatibleProvider retry behavior', () => {
         finish_reason: 'length',
       }),
     );
+    spy.mockRestore();
+  });
+
+  it('small prompt stays on non-streaming path and omits stream key', async () => {
+    mockChatSuccess('{"candidates":["small"]}');
+
+    const provider = buildProvider();
+    const result = await provider.chat(smallSystemPrompt, smallUserMessage);
+
+    expect(result).toBe('{"candidates":["small"]}');
+    const sentBody = JSON.parse(String(mockFetch.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(Object.hasOwn(sentBody, 'stream')).toBe(false);
+  });
+
+  it('large prompt uses streaming and accumulates delta content to final string', async () => {
+    mockStreamingSuccess([
+      'data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}',
+      ': keepalive',
+      'data: {"choices":[{"delta":{"content":"{\\"candidates\\":"},"finish_reason":null}]}',
+      'data: {"choices":[{"delta":{"content":"[]}"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ]);
+
+    const provider = buildProvider();
+    const result = await provider.chat(streamingSystemPrompt, streamingUserMessage, { jsonFormat: true });
+
+    expect(result).toBe('{"candidates":[]}');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const sentBody = JSON.parse(String(mockFetch.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(sentBody.stream).toBe(true);
+  });
+
+  it('stream idle watchdog aborts stalled chunk stream', async () => {
+    vi.useFakeTimers();
+
+    const stalledBody = {
+      getReader() {
+        return {
+          read: () => new Promise<ReadableStreamReadResult<Uint8Array>>(() => {}),
+          releaseLock: () => undefined,
+        };
+      },
+    };
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: stalledBody,
+    });
+
+    const provider = buildProvider();
+    const promise = provider.chat('x'.repeat(64001), 'user');
+    const capturedError = promise.catch((err) => err);
+    await vi.advanceTimersByTimeAsync(180001);
+
+    const error = await capturedError;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('idle for 180000ms');
+  });
+
+  it('streaming outcome log records counts and no content', async () => {
+    const spy = vi.spyOn(logger, 'logOp');
+    mockStreamingSuccess([
+      'data: {"choices":[{"delta":{"content":"secret-output"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ]);
+
+    const provider = buildProvider();
+    await expect(provider.chat(streamingSystemPrompt, streamingUserMessage, { traceId: 'trace-1' })).resolves.toBe('secret-output');
+
+    expect(spy).toHaveBeenCalledWith(
+      'extract',
+      'info',
+      expect.objectContaining({
+        event: 'llm.stream',
+        trace: 'trace-1',
+        prompt_chars: streamingSystemPrompt.length + streamingUserMessage.length,
+        chunks: 1,
+        content_chars: 'secret-output'.length,
+        finish_reason: 'stop',
+        outcome: 'success',
+      }),
+    );
+    const loggedFields = spy.mock.calls.find((call) => call[2]?.event === 'llm.stream')?.[2] as Record<string, unknown>;
+    expect(JSON.stringify(loggedFields)).not.toContain('secret-output');
+    expect(JSON.stringify(loggedFields)).not.toContain(streamingSystemPrompt);
+    expect(JSON.stringify(loggedFields)).not.toContain(streamingUserMessage);
     spy.mockRestore();
   });
 });
