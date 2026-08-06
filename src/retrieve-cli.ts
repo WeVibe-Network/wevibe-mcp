@@ -327,17 +327,6 @@ export async function retrieve(input: RetrieveInput): Promise<Output> {
   const keywordMs = Date.now() - keywordStart;
   console.error('[recall] keywords extracted count=%d terms=%s dur_ms=%d trace=%s', keywords.length, keywordTerms.join(','), keywordMs, trace);
 
-  if (keywords.length === 0) {
-    console.error('[recall] retrieve no extractable keywords — graceful empty reason_code=no_keywords dur_ms=%d trace=%s', keywordMs, trace);
-    return {
-      status: 'ok',
-      memories: [],
-      org_allowed_providers: [],
-      reason_code: 'no_keywords',
-      reason: 'query produced no extractable keywords',
-    };
-  }
-
   let queryVector: number[];
   let embeddingModelId = '';
   const embeddingStart = Date.now();

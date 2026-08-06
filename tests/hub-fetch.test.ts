@@ -401,7 +401,7 @@ describe('retrieve no-membership lifecycle handling', () => {
     });
   });
 
-  it('returns graceful empty no_keywords when query yields zero extractable keywords', async () => {
+  it('proceeds past empty keywords: computes the embedding and reaches the hub (no no_keywords stop)', async () => {
     const loadMembershipsMock = vi.fn().mockResolvedValue([
       {
         orgId: 'org-1',
@@ -409,12 +409,39 @@ describe('retrieve no-membership lifecycle handling', () => {
         egressMode: 'unrestricted',
       },
     ]);
+    const dissectToKeywordsMock = vi.fn().mockReturnValue([]);
+    const knownVector = new Array(768).fill(0.25);
+    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue(knownVector);
+    const queryOrgMemoriesMock = vi.fn().mockResolvedValue({ results: [] });
+
     mockRetrieveDeps(loadMembershipsMock);
 
-    const dissectToKeywordsMock = vi.fn().mockReturnValue([]);
+    vi.doMock('../src/org-client.js', () => ({
+      loadMemberships: loadMembershipsMock,
+      queryOrgMemories: queryOrgMemoriesMock,
+      decryptMemoryBlob: vi.fn(),
+    }));
     vi.doMock('../src/session.js', () => ({
       dissect_to_keywords: dissectToKeywordsMock,
     }));
+    vi.doMock('../src/embedding.js', () => ({
+      computeLocalEmbedding: computeLocalEmbeddingMock,
+      EXPECTED_EMBEDDING_DIM: 768,
+    }));
+    vi.doMock('../src/embedding-config.js', () => ({
+      loadEmbeddingConfig: loadEmbeddingConfigMock,
+    }));
+    vi.doMock('../src/hub-resolver.js', () => ({
+      getActiveHubUrlForOrg: vi.fn().mockReturnValue('https://hub-default.example'),
+      pickActiveEndpoint: vi.fn(),
+    }));
+
+    loadEmbeddingConfigMock.mockReturnValue({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test',
+      model: 'test-embedding-model',
+      usePrefix: false,
+    });
 
     const { retrieve } = await import('../src/retrieve-cli.js');
     const result = await retrieve({
@@ -430,14 +457,87 @@ describe('retrieve no-membership lifecycle handling', () => {
     }
 
     expect(dissectToKeywordsMock).toHaveBeenCalledTimes(1);
-    expect(result.reason_code).toBe('no_keywords');
+    expect(computeLocalEmbeddingMock).toHaveBeenCalledTimes(1);
+    expect(queryOrgMemoriesMock).toHaveBeenCalledTimes(1);
+
+    const hubPayload = queryOrgMemoriesMock.mock.calls[0][0] as {
+      vector: number[];
+      keywordWeights: { keyword: string; weight: number }[];
+    };
+    expect(hubPayload.vector).toEqual(knownVector);
+    expect(hubPayload.keywordWeights).toEqual([]);
+
+    // The obsolete no_keywords stop is gone: the request now PROCEEDS to the hub
+    // on the vector alone and returns a successful recall result.
+    expect((result as { reason_code?: string }).reason_code).toBeUndefined();
     expect(result).toMatchObject({
       status: 'ok',
       memories: [],
-      org_allowed_providers: [],
-      reason_code: 'no_keywords',
-      reason: 'query produced no extractable keywords',
+      org_allowed_providers: ['openai'],
     });
+  });
+
+  it('reaches the hub with a vector-only query when keywords are empty', async () => {
+    const loadMembershipsMock = vi.fn().mockResolvedValue([
+      {
+        orgId: 'org-1',
+        allowedProviders: ['openai'],
+        egressMode: 'unrestricted',
+      },
+    ]);
+    const dissectToKeywordsMock = vi.fn().mockReturnValue([]);
+    const knownVector = new Array(768).fill(0.5);
+    const computeLocalEmbeddingMock = vi.fn().mockResolvedValue(knownVector);
+    const queryOrgMemoriesMock = vi.fn().mockResolvedValue({ results: [] });
+
+    mockRetrieveDeps(loadMembershipsMock);
+
+    vi.doMock('../src/org-client.js', () => ({
+      loadMemberships: loadMembershipsMock,
+      queryOrgMemories: queryOrgMemoriesMock,
+      decryptMemoryBlob: vi.fn(),
+    }));
+    vi.doMock('../src/session.js', () => ({
+      dissect_to_keywords: dissectToKeywordsMock,
+    }));
+    vi.doMock('../src/embedding.js', () => ({
+      computeLocalEmbedding: computeLocalEmbeddingMock,
+      EXPECTED_EMBEDDING_DIM: 768,
+    }));
+    vi.doMock('../src/embedding-config.js', () => ({
+      loadEmbeddingConfig: loadEmbeddingConfigMock,
+    }));
+    vi.doMock('../src/hub-resolver.js', () => ({
+      getActiveHubUrlForOrg: vi.fn().mockReturnValue('https://hub-default.example'),
+      pickActiveEndpoint: vi.fn(),
+    }));
+
+    loadEmbeddingConfigMock.mockReturnValue({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test',
+      model: 'test-embedding-model',
+      usePrefix: false,
+    });
+
+    const { retrieve } = await import('../src/retrieve-cli.js');
+    const result = await retrieve({
+      query: 'now fix it.',
+      org_id: 'org-1',
+      technologies: ['redis', 'typescript'],
+      recentActivity: ['ECONNREFUSED'],
+    });
+
+    expect(result.status).toBe('ok');
+
+    // Empty keywords must still reach the hub, exactly once, on the vector alone.
+    expect(queryOrgMemoriesMock).toHaveBeenCalledTimes(1);
+    const hubPayload = queryOrgMemoriesMock.mock.calls[0][0] as {
+      vector: number[];
+      keywordWeights: { keyword: string; weight: number }[];
+    };
+    expect(hubPayload.vector).toEqual(knownVector);
+    expect(hubPayload.keywordWeights).toEqual([]);
+    expect(hubPayload.keywordWeights.length).toBe(0);
   });
 
   it('keeps loadMemberships transport failures loud as status=error', async () => {
