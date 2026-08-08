@@ -1489,6 +1489,92 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
   jsonResponse(res, hubResp.res.status, hubBodyJson);
 }
 
+async function handleServesConfirm(req: IncomingMessage, res: ServerResponse, pathOrgId: string): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const trace = getRequestTrace(req);
+  const t0 = Date.now();
+  const url = req.url ?? '';
+  const queryIndex = url.indexOf('?');
+  const queryStr = queryIndex >= 0 ? url.slice(queryIndex + 1) : '';
+  const params = new URLSearchParams(queryStr);
+  logOp('serve.confirm', 'info', { trace, phase: 'entry' });
+
+  const orgId = decodeURIComponent(pathOrgId);
+  const episodeRef = params.get('episode_ref');
+  if (!episodeRef || episodeRef.trim() === '') {
+    jsonResponse(res, 400, { status: 'error', error: 'episode_ref is required' });
+    return;
+  }
+  const memoryHash = params.get('memory_hash') ?? undefined;
+
+  let authResult: { pubkeyHex: string; headers: Record<string, string> };
+  try {
+    authResult = await buildWeVibeSignedAuth();
+  } catch {
+    jsonResponse(res, 500, { status: 'error', error: 'failed to build auth' });
+    return;
+  }
+
+  const hubQuery = new URLSearchParams({ episode_ref: episodeRef });
+  if (memoryHash) {
+    hubQuery.set('memory_hash', memoryHash);
+  }
+  const hubUrl = `${HUB_URL}/v1/orgs/${orgId}/serves/confirm?${hubQuery.toString()}`;
+
+  let hubResp: Awaited<ReturnType<typeof hubFetchVerified>>;
+  try {
+    hubResp = await hubFetchVerified(orgId, hubUrl, {
+      method: 'GET',
+      headers: {
+        ...authResult.headers,
+        'X-WeVibe-Trace-Id': trace ?? '',
+      },
+    });
+  } catch (error) {
+    logOp('serve.confirm', 'error', {
+      trace,
+      phase: 'upstream_fetch',
+      status: 'error',
+      org_id: orgId,
+      org_fp: fp(orgId),
+      err: error instanceof Error ? error.message : String(error),
+    });
+    if (error instanceof HubSignatureError) {
+      jsonResponse(res, 502, { error: 'upstream signature verification failed' });
+      return;
+    }
+    jsonResponse(res, 502, { error: 'upstream error' });
+    return;
+  }
+
+  if (hubResp.res.status >= 500) {
+    jsonResponse(res, 502, { error: 'upstream error' });
+    return;
+  }
+
+  const hubBodyText = hubResp.bodyText;
+  let hubBodyJson: unknown;
+  try {
+    hubBodyJson = JSON.parse(hubBodyText);
+  } catch {
+    hubBodyJson = hubBodyText;
+  }
+
+  jsonResponse(res, hubResp.res.status, hubBodyJson);
+  logOp('serve.confirm', 'info', {
+    trace,
+    phase: 'outcome',
+    status: 'ok',
+    org_id: orgId,
+    org_fp: fp(orgId),
+    upstream_status: hubResp.res.status,
+    dur_ms: Date.now() - t0,
+  });
+}
+
 function validateOutcomeHexRef(value: unknown, fieldName: string): string {
   const normalized = normalizeHex(value as string, fieldName);
   const byteLength = Buffer.from(normalized, 'hex').length;
@@ -2572,6 +2658,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     if (method === 'POST' && url === '/v1/serves') {
       await handleServes(req, res);
+      return;
+    }
+
+    const servesConfirmMatch = url.match(/^\/v1\/orgs\/([^/]+)\/serves\/confirm(?:\?|$)/);
+    if (method === 'GET' && servesConfirmMatch) {
+      await handleServesConfirm(req, res, servesConfirmMatch[1]);
       return;
     }
 
