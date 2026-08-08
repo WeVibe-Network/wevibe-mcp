@@ -1213,6 +1213,7 @@ interface ServeRequestBody {
   org_id: string;
   session_id?: string;
   memory_hash: string;
+  episode_ref?: string;
   model_id?: string;
   turn_count?: number;
   matched_keywords?: string[];
@@ -1342,6 +1343,17 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     return;
   }
 
+  let episodeRefHex: string;
+  try {
+    episodeRefHex = validateOutcomeHexRef(body.episode_ref, 'episode_ref');
+  } catch (episodeRefErr) {
+    jsonResponse(res, 400, {
+      status: 'error',
+      error: episodeRefErr instanceof Error ? episodeRefErr.message : 'episode_ref must be a 1-64 byte hex string',
+    });
+    return;
+  }
+
   try {
     await assertMemoryApproved(body.org_id, memoryContentHashHex, trace ?? '');
   } catch (error) {
@@ -1379,6 +1391,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     const canonicalServeBody = buildCanonicalServeBodyBytes({
       orgId: body.org_id,
       memoryContentHashHex,
+      episodeRef: episodeRefHex,
       epoch: epochId,
       serveKeyPubkeyHex: orgServeKey.pubHex,
       nonceHex,
@@ -1392,6 +1405,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
   const serveRefHex = computeServeFingerprintHex(memoryContentHashHex, orgServeKey.pubHex, epochId);
   recordServeRef({
     orgId: body.org_id,
+    episodeRef: episodeRefHex,
     memoryHashHex: memoryContentHashHex,
     epoch: epochId,
     serveRefHex,
@@ -1412,6 +1426,7 @@ async function handleServes(req: IncomingMessage, res: ServerResponse): Promise<
     session_id: body.session_id ?? '',
     epoch_id: epochId,
     memory_content_hash: memoryContentHashHex,
+    episode_ref: episodeRefHex,
     serve_key_pubkey: orgServeKey.pubHex,
     serve_sig: serveSigHex,
     nonce: nonceHex,
@@ -1616,8 +1631,8 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
     // UNOBSERVED is non-claiming (WO-ATTRIB 2026-08-07): it must not consume
     // the pending serve ref, so a later worked/didnt_work outcome can pair.
     const pendingServeRef = resolution === 'unobserved'
-      ? peekServeRef(orgId, memoryHashHex)
-      : consumeServeRef(orgId, memoryHashHex);
+      ? peekServeRef(orgId, episodeRefHex)
+      : consumeServeRef(orgId, episodeRefHex);
     if (!pendingServeRef) {
       status = 409;
       err = 'no pending serve to pair for this memory';
@@ -1640,7 +1655,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       if (resolution === 'unobserved') {
         return;
       }
-      recordServeRef({ orgId: orgId!, memoryHashHex, epoch, serveRefHex: pairedServeRefHex });
+      recordServeRef({ orgId: orgId!, episodeRef: episodeRefHex, memoryHashHex, epoch, serveRefHex: pairedServeRefHex });
       logOp('event.outcome.emit', 'warn', {
         trace,
         phase: 'pairing_restore',

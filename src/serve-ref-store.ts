@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 
 export interface PendingServeRefEntry {
   orgId: string;
+  episodeRef: string;
   memoryHashHex: string;
   epoch: number;
   serveRefHex: string;
@@ -60,17 +61,18 @@ function _writeStore(entries: PendingServeRefEntry[]): void {
   renameSync(tmpPath, path);
 }
 
-function keyMatches(entry: PendingServeRefEntry, orgId: string, memoryHashHex: string): boolean {
-  return entry.orgId === orgId && entry.memoryHashHex === memoryHashHex;
+function keyMatches(entry: PendingServeRefEntry, orgId: string, episodeRef: string): boolean {
+  return entry.orgId === orgId && entry.episodeRef === episodeRef;
 }
 
 /**
- * Durable memo for serves awaiting an outcome. Stores only non-content-bearing
- * pairing identifiers: org id, memory hash hex, epoch, and serve_ref hex.
+ * Durable memo for serves awaiting an outcome, keyed by episode. Stores only
+ * non-content-bearing pairing identifiers: org id, episode ref, memory hash
+ * hex, epoch, and serve_ref hex.
  */
 export function recordServeRef(entry: PendingServeRefEntry): void {
   const entries = _readStore();
-  const existingIndex = entries.findIndex(candidate => keyMatches(candidate, entry.orgId, entry.memoryHashHex));
+  const existingIndex = entries.findIndex(candidate => keyMatches(candidate, entry.orgId, entry.episodeRef));
   if (existingIndex === -1) {
     entries.push(entry);
   } else if (entry.epoch >= entries[existingIndex].epoch) {
@@ -79,9 +81,9 @@ export function recordServeRef(entry: PendingServeRefEntry): void {
   _writeStore(entries);
 }
 
-export function consumeServeRef(orgId: string, memoryHashHex: string): { epoch: number; serveRefHex: string } | undefined {
+export function consumeServeRef(orgId: string, episodeRef: string): { epoch: number; serveRefHex: string } | undefined {
   const entries = _readStore();
-  const existingIndex = entries.findIndex(candidate => keyMatches(candidate, orgId, memoryHashHex));
+  const existingIndex = entries.findIndex(candidate => keyMatches(candidate, orgId, episodeRef));
   if (existingIndex === -1) {
     return undefined;
   }
@@ -90,7 +92,7 @@ export function consumeServeRef(orgId: string, memoryHashHex: string): { epoch: 
   return { epoch: entry.epoch, serveRefHex: entry.serveRefHex };
 }
 
-export function peekServeRef(orgId: string, memoryHashHex: string): { epoch: number; serveRefHex: string } | undefined {
-  const entry = _readStore().find(candidate => keyMatches(candidate, orgId, memoryHashHex));
+export function peekServeRef(orgId: string, episodeRef: string): { epoch: number; serveRefHex: string } | undefined {
+  const entry = _readStore().find(candidate => keyMatches(candidate, orgId, episodeRef));
   return entry ? { epoch: entry.epoch, serveRefHex: entry.serveRefHex } : undefined;
 }

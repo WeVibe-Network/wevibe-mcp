@@ -130,7 +130,7 @@ function expectWeVibeSignedAdmissionCall(callIndex: number): void {
   expect(headers?.Authorization).toMatch(/^WeVibe-Signed /);
 }
 
-async function postServe(validToken: string, memoryHash = MEMORY_HASH_HEX): Promise<{ body: Record<string, unknown>; serveRef: string }> {
+async function postServe(validToken: string, memoryHash = MEMORY_HASH_HEX, episodeRef = EPISODE_REF_HEX): Promise<{ body: Record<string, unknown>; serveRef: string }> {
   mockCurrentEpochFetch();
   mockMemoryAdmissionFetch();
   vi.mocked(fetch).mockResolvedValueOnce({
@@ -146,6 +146,7 @@ async function postServe(validToken: string, memoryHash = MEMORY_HASH_HEX): Prom
     org_id: 'org-123',
     memory_hash: memoryHash,
     model_id: 'test-model',
+    episode_ref: episodeRef,
   }));
 
   const res = createMockResponse();
@@ -200,6 +201,7 @@ describe('POST /v1/serves', () => {
       model_id: 'test-model',
       turn_count: 5,
       matched_keywords: ['some-kw'],
+      episode_ref: EPISODE_REF_HEX,
     }));
 
     const res = createMockResponse();
@@ -227,6 +229,7 @@ describe('POST /v1/serves', () => {
       org_id: 'org-123',
       epoch_id: CURRENT_EPOCH,
       memory_content_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
       model_id: 'test-model',
       turn_count: 5,
       matched_keywords: ['some-kw'],
@@ -314,6 +317,7 @@ describe('POST /v1/serves', () => {
     }, JSON.stringify({
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
       matched_keywords: ['some-kw'],
     }));
 
@@ -324,7 +328,7 @@ describe('POST /v1/serves', () => {
     expect(parsed.status).toBe(502);
   });
 
-	  it('accepts absent matched_keywords and signs serve v2 without keyword metadata', async () => {
+	  it('accepts absent matched_keywords and signs serve v3 without keyword metadata', async () => {
 	    mockCurrentEpochFetch();
 	    mockMemoryAdmissionFetch();
 	    vi.mocked(fetch).mockResolvedValueOnce({
@@ -339,6 +343,7 @@ describe('POST /v1/serves', () => {
     }, JSON.stringify({
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
     }));
 
     const res = createMockResponse();
@@ -350,6 +355,7 @@ describe('POST /v1/serves', () => {
 	    const init = vi.mocked(fetch).mock.calls[2]![1] as RequestInit;
     const postedBody = JSON.parse(String(init.body)) as Record<string, string | number | string[]>;
     expect(postedBody.matched_keywords).toEqual([]);
+    expect(postedBody.episode_ref).toBe(EPISODE_REF_HEX);
 
     const canonicalBody = buildCanonicalServeBodyBytes({
       orgId: 'org-123',
@@ -357,6 +363,7 @@ describe('POST /v1/serves', () => {
       epoch: CURRENT_EPOCH,
       serveKeyPubkeyHex: String(postedBody.serve_key_pubkey),
       nonceHex: String(postedBody.nonce),
+      episodeRef: String(postedBody.episode_ref),
     });
     expect(await verifyAsync(
       Buffer.from(String(postedBody.serve_sig), 'hex'),
@@ -378,6 +385,7 @@ describe('POST /v1/serves', () => {
     }, JSON.stringify({
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
     }));
 
     const res = createMockResponse();
@@ -401,6 +409,7 @@ describe('POST /v1/serves', () => {
 	      org_id: 'org-123',
 	      memory_hash: BOGUS_MEMORY_HASH_HEX,
 	      model_id: 'test-model',
+	      episode_ref: EPISODE_REF_HEX,
 	    }));
 
 	    const res = createMockResponse();
@@ -430,6 +439,7 @@ describe('POST /v1/serves', () => {
 	    }, JSON.stringify({
 	      org_id: 'org-123',
 	      memory_hash: MEMORY_HASH_HEX,
+	      episode_ref: EPISODE_REF_HEX,
 	    }));
 
 	    const res = createMockResponse();
@@ -458,6 +468,7 @@ describe('POST /v1/serves', () => {
 	    }, JSON.stringify({
 	      org_id: 'org-123',
 	      memory_hash: MEMORY_HASH_HEX,
+	      episode_ref: EPISODE_REF_HEX,
 	    }));
 
 	    const res = createMockResponse();
@@ -468,6 +479,77 @@ describe('POST /v1/serves', () => {
 	    expect(parsed.body).toMatchObject({ status: 'error', code: 'memory_check_unavailable', error: 'memory_check_unavailable' });
 	    expect(fetch).toHaveBeenCalledTimes(1);
 	  });
+
+  it.each([
+    ['missing', { episode_ref: undefined }, 'episode_ref'],
+    ['empty', { episode_ref: '' }, 'episode_ref'],
+    ['non-hex', { episode_ref: 'zz' }, 'episode_ref'],
+    ['0x-prefixed', { episode_ref: '0x' + EPISODE_REF_HEX }, 'episode_ref'],
+    ['oversize >64 bytes', { episode_ref: 'aa'.repeat(65) }, 'episode_ref'],
+  ])('rejects invalid episode_ref on POST /v1/serves fail-closed: %s', async (_name, override, expectedError) => {
+    const body: Record<string, unknown> = {
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      model_id: 'test-model',
+      ...override,
+    };
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined) delete body[key];
+    }
+
+    // episode_ref validation runs AFTER epoch resolution, so succeed the epoch
+    // fetch; the fail-closed 400 must fire before any admission/hub serve call.
+    mockCurrentEpochFetch();
+
+    const req = createMockRequest('POST', '/v1/serves', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify(body));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+
+    const parsed = parseResponse(res);
+    expect(parsed.status).toBe(400);
+    expect((parsed.body as { error: string }).error).toContain(expectedError);
+    // Only the epoch-resolution call ran — never the admission or serve relay.
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys serve-ref store lookups by episode_ref (same memory_hash, distinct episodes)', async () => {
+    const serveA = await postServe(validToken, MEMORY_HASH_HEX, 'aa');
+    const serveB = await postServe(validToken, MEMORY_HASH_HEX, 'bb');
+
+    // Same memory_hash, DIFFERENT episode_ref → distinct, independent entries.
+    expect(peekServeRef('org-123', 'aa')).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serveA.serveRef });
+    expect(peekServeRef('org-123', 'bb')).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serveB.serveRef });
+
+    // Consuming episode 'aa' must NOT disturb episode 'bb'.
+    mockMemoryAdmissionFetch();
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'recorded' }),
+    } as Response);
+
+    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: 'aa',
+      resolution: 'worked', source: 'harvested',
+      evidence_ref: 'c3',
+    }));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+    expect(parseResponse(res).status).toBe(200);
+
+    expect(peekServeRef('org-123', 'aa')).toBeUndefined();
+    expect(peekServeRef('org-123', 'bb')).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serveB.serveRef });
+  });
 	});
 
 describe('POST /v1/orgs/{org_id}/outcome-events', () => {
@@ -569,7 +651,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     expect(postedBody.signer_pubkey).toBe(expectedKey.pubHex);
     expect(String(postedBody.fingerprint).slice(0, 8)).toBe((parsed.body as { fingerprint_first8: string }).fingerprint_first8);
     expect((parsed.body as { serve_ref_first8: string }).serve_ref_first8).toBe(serve.serveRef.slice(0, 8));
-	    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+	    expect(peekServeRef('org-123', EPISODE_REF_HEX)).toBeUndefined();
 
 	    mockMemoryAdmissionFetch();
 	    const retryReq = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
@@ -642,7 +724,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 
 	    const parsed = parseResponse(res);
 		    expect(parsed.status).toBe(502);
-		    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
+		    expect(peekServeRef('org-123', EPISODE_REF_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
 
 		    mockMemoryAdmissionFetch();
 		    vi.mocked(fetch).mockResolvedValueOnce({
@@ -668,7 +750,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	    const retryParsed = parseResponse(retryRes);
 		    expect(retryParsed.status).toBe(200);
 		    expect((retryParsed.body as { serve_ref_first8: string }).serve_ref_first8).toBe(serve.serveRef.slice(0, 8));
-		    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+		    expect(peekServeRef('org-123', EPISODE_REF_HEX)).toBeUndefined();
 		  });
 
 	  it('unobserved outcome does not consume the pending serve ref', async () => {
@@ -697,7 +779,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 
     const parsed = parseResponse(res);
     expect(parsed.status).toBe(200);
-    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
+    expect(peekServeRef('org-123', EPISODE_REF_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
 
     mockMemoryAdmissionFetch();
     vi.mocked(fetch).mockResolvedValueOnce({
@@ -722,7 +804,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
     await handleRequest(followUp, followUpRes);
 
     expect(parseResponse(followUpRes).status).toBe(200);
-    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+    expect(peekServeRef('org-123', EPISODE_REF_HEX)).toBeUndefined();
   });
 
   it('rejects an unapproved outcome memory before consuming the pending serve ref', async () => {
@@ -746,7 +828,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	    const parsed = parseResponse(res);
 	    expect(parsed.status).toBe(422);
 	    expect(parsed.body).toMatchObject({ status: 'error', code: 'memory_not_approved', error: 'memory_not_approved' });
-	    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
+	    expect(peekServeRef('org-123', EPISODE_REF_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
 	    expect(vi.mocked(fetch).mock.calls[3]?.[0]).toContain(`/v1/orgs/org-123/memories/${MEMORY_HASH_HEX}`);
 	    expectWeVibeSignedAdmissionCall(3);
 	    expect(vi.mocked(fetch).mock.calls).toHaveLength(4);

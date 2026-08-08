@@ -9,7 +9,7 @@ const textEncoder = new TextEncoder();
 const ORG_SERVE_KEY_HKDF_SALT = textEncoder.encode('wevibe-org-serve-key-v1-salt');
 const ORG_SERVE_KEY_HKDF_INFO_PREFIX = 'wevibe-org-serve-key-v1:';
 
-const CANONICAL_SERVE_VERSION = 'wevibe-serve-v2';
+const CANONICAL_SERVE_VERSION = 'wevibe-serve-v3';
 const CANONICAL_DENIAL_VERSION = 'wevibe-denial-v1';
 
 export interface OrgServeKeypair {
@@ -24,6 +24,8 @@ export interface CanonicalServeBodyInput {
   epoch: number;
   serveKeyPubkeyHex: string;
   nonceHex: string;
+  /** hex-encoded episode_ref (v3+), emitted as the 7th/last preimage line */
+  episodeRef: string;
 }
 
 export interface CanonicalDenialBodyInput {
@@ -125,6 +127,23 @@ export async function deriveOrgServeKey(orgId: string): Promise<OrgServeKeypair>
   return deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, orgId);
 }
 
+/**
+ * Canonical serve preimage (v3), fields joined with a single `\n`, NO trailing
+ * newline, hex-encoded bytes:
+ *
+ *   wevibe-serve-v3
+ *   <org_id>
+ *   <hex(memory_content_hash)>
+ *   <epoch>
+ *   <hex(serve_key_pubkey)>
+ *   <hex(nonce)>
+ *   <hex(episode_ref)>
+ *
+ * episode_ref is the 7th/last line, hex-encoded. Signed with the org serve key.
+ *
+ * v2 -> v3: `wevibe-serve-v2` -> `wevibe-serve-v3` and `hex(episode_ref)` added
+ * as line 7. (A3 chain-serve-v3 contract.)
+ */
 export function buildCanonicalServeBody(input: CanonicalServeBodyInput): string {
   ensureOrgId(input.orgId);
   ensureEpoch(input.epoch);
@@ -148,6 +167,7 @@ export function buildCanonicalServeBody(input: CanonicalServeBodyInput): string 
     String(input.epoch),
     serveKeyPubkeyHex,
     nonceHex,
+    input.episodeRef,
   ].join('\n');
 }
 

@@ -10,6 +10,9 @@ import {
 } from '../src/serve-signing.js';
 
 const MEMORY_HASH_HEX = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20';
+// 32-byte 0xAB-repeated episodeRef hex — mirrors the A3 chain golden vector
+// (x/serve/types TestCanonicalServeBodyV3_GoldenVector uses 32x 0xAB).
+const GOLDEN_EPISODE_REF_HEX = 'ab'.repeat(32);
 const VECTOR_PUBKEY_HEX = '8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c';
 const VECTOR_SERVE_FINGERPRINT_HEX = '8263a2b548d3b39a40520711b89a21290d377782b9771f627a58f6ad2dccc666';
 const VECTOR_DENIAL_SIG_HEX = '19759827da0021606efba37de04a8e1272fac36cab55157f77890ac3d0151000ff799271af1394aab01a8151b9e55ee0694338219e6ffd81068628a78d94a00b';
@@ -26,16 +29,20 @@ describe('serve signing parity vectors', () => {
       epoch: 7,
       serveKeyPubkeyHex: keypair.pubHex,
       nonceHex: 'deadbeef',
+      episodeRef: GOLDEN_EPISODE_REF_HEX,
     });
 
     expect(canonicalServeBody).toBe(
-      'wevibe-serve-v2\n'
+      'wevibe-serve-v3\n'
       + 'org-test\n'
       + '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20\n'
       + '7\n'
       + '8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\n'
-      + 'deadbeef',
+      + 'deadbeef\n'
+      + GOLDEN_EPISODE_REF_HEX,
     );
+
+    expect(canonicalServeBody.endsWith('\n')).toBe(false);
 
     const serveBodyBytes = new TextEncoder().encode(canonicalServeBody);
     const serveSigHex = await signCanonicalBody(serveBodyBytes, keypair.priv);
@@ -56,7 +63,7 @@ describe('serve signing parity vectors', () => {
     expect(denialSigHex).toBe(VECTOR_DENIAL_SIG_HEX);
   });
 
-  it('matches chain serve v2 canonical body golden vector exactly', async () => {
+  it('matches chain serve v3 canonical body golden vector exactly (A3)', async () => {
     const orgId = 'org-a';
     const memoryHashHex = '01'.repeat(32);
     const serveKeyPubkeyHex = '02'.repeat(32);
@@ -68,27 +75,35 @@ describe('serve signing parity vectors', () => {
       epoch: 7,
       serveKeyPubkeyHex,
       nonceHex,
+      episodeRef: GOLDEN_EPISODE_REF_HEX,
     });
 
+    // 7 lines, joined with a single `\n`, NO trailing newline, episode_ref hex last.
     expect(body).toBe(
-      'wevibe-serve-v2\norg-a\n'
+      'wevibe-serve-v3\norg-a\n'
       + '01'.repeat(32)
       + '\n7\n'
       + '02'.repeat(32)
-      + '\n0304',
+      + '\n0304\n'
+      + GOLDEN_EPISODE_REF_HEX,
     );
-    expect((body.match(/\n/g) ?? [])).toHaveLength(5);
+    expect(body.split('\n')).toHaveLength(7);
+    expect((body.match(/\n/g) ?? [])).toHaveLength(6);
+    expect(body.endsWith('\n')).toBe(false);
+    expect(body.split('\n')[0]).toBe('wevibe-serve-v3');
+    expect(body.split('\n')[6]).toBe(GOLDEN_EPISODE_REF_HEX);
   });
 
-  it('signs and verifies the chain serve v2 golden body over raw bytes', async () => {
+  it('signs and verifies the chain serve v3 golden body over raw bytes', async () => {
     const seed = new Uint8Array(32).fill(0x09);
     const pub = await getPublicKeyAsync(seed);
     const bodyBytes = new TextEncoder().encode(
-      'wevibe-serve-v2\norg-a\n'
+      'wevibe-serve-v3\norg-a\n'
       + '01'.repeat(32)
       + '\n7\n'
       + '02'.repeat(32)
-      + '\n0304',
+      + '\n0304\n'
+      + GOLDEN_EPISODE_REF_HEX,
     );
 
     const sigHex = await signCanonicalBody(bodyBytes, seed);
