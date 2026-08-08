@@ -5,6 +5,15 @@ const textEncoder = new TextEncoder();
 const CANONICAL_EVENT_VERSION = 'wevibe-event-v1';
 const OUTCOME_EVENT_TOKEN = 'outcome';
 
+// E3 tri-state (WO-ATTRIB 2026-08-07): an unobserved use is recordable as
+// unobserved — silence is not a vote. Source distinguishes harvested tool
+// signals from the consumer's explicit report (the fallback/dispute path).
+export type OutcomeResolutionToken = 'worked' | 'didnt_work' | 'unobserved';
+export type OutcomeSourceToken = 'harvested' | 'user';
+
+const OUTCOME_RESOLUTIONS: readonly OutcomeResolutionToken[] = ['worked', 'didnt_work', 'unobserved'];
+const OUTCOME_SOURCES: readonly OutcomeSourceToken[] = ['harvested', 'user'];
+
 export interface CanonicalOutcomeEventBodyInput {
   orgId: string;
   memoryHash: string | Uint8Array;
@@ -12,7 +21,8 @@ export interface CanonicalOutcomeEventBodyInput {
   signerPubkey: string | Uint8Array;
   nonce: string | Uint8Array;
   episodeRef: string | Uint8Array;
-  worked: boolean;
+  resolution: OutcomeResolutionToken;
+  source: OutcomeSourceToken;
   evidenceRef: string | Uint8Array;
   serveRef: string | Uint8Array;
 }
@@ -25,10 +35,10 @@ export function deriveOutcomeNonceHex(
   orgId: string,
   memoryHashHex: string,
   episodeRefHex: string,
-  worked: boolean,
+  resolution: OutcomeResolutionToken,
   serveRefHex: string,
 ): string {
-  const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=${worked ? 'true' : 'false'}\n${serveRefHex}`;
+  const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nresolution=${resolution}\n${serveRefHex}`;
   return createHash('sha256').update(preimage).digest().subarray(0, 8).toString('hex');
 }
 
@@ -71,6 +81,12 @@ function ensureVarBytes(hexValue: string, minBytes: number, maxBytes: number, fi
 export function buildCanonicalOutcomeEventBodyBytes(input: CanonicalOutcomeEventBodyInput): Uint8Array {
   ensureOrgId(input.orgId);
   ensureEpoch(input.epoch);
+  if (!OUTCOME_RESOLUTIONS.includes(input.resolution)) {
+    throw new Error(`resolution must be one of ${OUTCOME_RESOLUTIONS.join(', ')}`);
+  }
+  if (!OUTCOME_SOURCES.includes(input.source)) {
+    throw new Error(`source must be one of ${OUTCOME_SOURCES.join(', ')}`);
+  }
 
   const memoryHashHex = normalizeHexOrBytes(input.memoryHash, 'memory_hash');
   const signerPubkeyHex = normalizeHexOrBytes(input.signerPubkey, 'signer_pubkey');
@@ -94,9 +110,10 @@ export function buildCanonicalOutcomeEventBodyBytes(input: CanonicalOutcomeEvent
     String(input.epoch),
     signerPubkeyHex,
     episodeRefHex,
-    `worked=${input.worked ? 'true' : 'false'}`,
     evidenceRefHex,
     serveRefHex,
+    `resolution=${input.resolution}`,
+    `source=${input.source}`,
     nonceHex,
   ].join('\n');
 

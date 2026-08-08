@@ -507,7 +507,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
       episode_ref: EPISODE_REF_HEX,
-      worked: true,
+      resolution: 'worked', source: 'harvested',
       evidence_ref: EVIDENCE_REF_HEX,
       session_id: 'session-1',
     }));
@@ -538,7 +538,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
       event_type: 'outcome',
       memory_hash: MEMORY_HASH_HEX,
       episode_ref: EPISODE_REF_HEX,
-      worked: true,
+      resolution: 'worked', source: 'harvested',
       evidence_ref: EVIDENCE_REF_HEX,
       serve_ref: serve.serveRef,
       session_id: 'session-1',
@@ -555,7 +555,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
       signerPubkey: String(postedBody.signer_pubkey),
       nonce: String(postedBody.nonce),
       episodeRef: EPISODE_REF_HEX,
-      worked: true,
+      resolution: 'worked', source: 'harvested',
       evidenceRef: EVIDENCE_REF_HEX,
       serveRef: serve.serveRef,
     });
@@ -580,7 +580,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
       episode_ref: EPISODE_REF_HEX,
-      worked: true,
+      resolution: 'worked', source: 'harvested',
       evidence_ref: EVIDENCE_REF_HEX,
       session_id: 'session-1',
     }));
@@ -602,7 +602,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	      org_id: 'org-123',
 	      memory_hash: MEMORY_HASH_HEX,
 	      episode_ref: EPISODE_REF_HEX,
-	      worked: true,
+	      resolution: 'worked', source: 'harvested',
 	      evidence_ref: EVIDENCE_REF_HEX,
 	    }));
 
@@ -633,7 +633,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	      org_id: 'org-123',
 	      memory_hash: MEMORY_HASH_HEX,
 	      episode_ref: EPISODE_REF_HEX,
-	      worked: true,
+	      resolution: 'worked', source: 'harvested',
 	      evidence_ref: EVIDENCE_REF_HEX,
 	    }));
 
@@ -658,7 +658,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	      org_id: 'org-123',
 	      memory_hash: MEMORY_HASH_HEX,
 	      episode_ref: EPISODE_REF_HEX,
-	      worked: true,
+	      resolution: 'worked', source: 'harvested',
 	      evidence_ref: EVIDENCE_REF_HEX,
 	    }));
 
@@ -671,7 +671,61 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 		    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
 		  });
 
-	  it('rejects an unapproved outcome memory before consuming the pending serve ref', async () => {
+	  it('unobserved outcome does not consume the pending serve ref', async () => {
+    const serve = await postServe(validToken);
+    mockMemoryAdmissionFetch();
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'recorded' }),
+    } as Response);
+
+    const req = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
+      resolution: 'unobserved',
+      source: 'harvested',
+      evidence_ref: EVIDENCE_REF_HEX,
+    }));
+
+    const res = createMockResponse();
+    await handleRequest(req, res);
+
+    const parsed = parseResponse(res);
+    expect(parsed.status).toBe(200);
+    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toEqual({ epoch: CURRENT_EPOCH, serveRefHex: serve.serveRef });
+
+    mockMemoryAdmissionFetch();
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'recorded' }),
+    } as Response);
+
+    const followUp = createMockRequest('POST', '/v1/orgs/org-123/outcome-events', {
+      'Authorization': `Bearer ${validToken}`,
+      'Content-Type': 'application/json',
+    }, JSON.stringify({
+      org_id: 'org-123',
+      memory_hash: MEMORY_HASH_HEX,
+      episode_ref: EPISODE_REF_HEX,
+      resolution: 'worked',
+      source: 'user',
+      evidence_ref: EVIDENCE_REF_HEX,
+    }));
+
+    const followUpRes = createMockResponse();
+    await handleRequest(followUp, followUpRes);
+
+    expect(parseResponse(followUpRes).status).toBe(200);
+    expect(peekServeRef('org-123', MEMORY_HASH_HEX)).toBeUndefined();
+  });
+
+  it('rejects an unapproved outcome memory before consuming the pending serve ref', async () => {
 	    const serve = await postServe(validToken);
 	    mockMemoryAdmissionFetch(404, { status: 'error', error: 'not found' });
 
@@ -682,7 +736,7 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
 	      org_id: 'org-123',
 	      memory_hash: MEMORY_HASH_HEX,
 	      episode_ref: EPISODE_REF_HEX,
-	      worked: true,
+	      resolution: 'worked', source: 'harvested',
 	      evidence_ref: EVIDENCE_REF_HEX,
 	    }));
 
@@ -701,14 +755,15 @@ describe('POST /v1/orgs/{org_id}/outcome-events', () => {
   it.each([
     ['bad memory_hash', { memory_hash: 'zz' }, 'memory_hash'],
     ['oversize episode_ref', { episode_ref: 'aa'.repeat(65) }, 'episode_ref'],
-    ['missing worked', { worked: undefined }, 'worked'],
+    ['missing resolution', { resolution: undefined }, 'resolution'],
+    ['bad source', { source: 'auto' }, 'source'],
     ['plaintext forbidden', { plaintext: 'nope' }, 'plaintext'],
   ])('rejects invalid outcome body: %s', async (_name, override, expectedError) => {
     const body: Record<string, unknown> = {
       org_id: 'org-123',
       memory_hash: MEMORY_HASH_HEX,
       episode_ref: EPISODE_REF_HEX,
-      worked: true,
+      resolution: 'worked', source: 'harvested',
       evidence_ref: EVIDENCE_REF_HEX,
       ...override,
     };

@@ -22,7 +22,8 @@ describe('event signing parity vectors', () => {
       epoch: 7,
       signerPubkey: new Uint8Array(32).fill(0x02),
       episodeRef: new Uint8Array([0x10, 0x11]),
-      worked: true,
+      resolution: 'worked',
+      source: 'harvested',
       evidenceRef: new Uint8Array([0x12]),
       serveRef: new Uint8Array(32).fill(0x13),
       nonce: new Uint8Array([0x03, 0x04]),
@@ -34,28 +35,50 @@ describe('event signing parity vectors', () => {
       + '01'.repeat(32)
       + '\n7\n'
       + '02'.repeat(32)
-      + '\n1011\nworked=true\n12\n'
+      + '\n1011\n12\n'
       + '13'.repeat(32)
-      + '\n0304',
+      + '\nresolution=worked\nsource=harvested\n0304',
     );
-    expect((body.match(/\n/g) ?? [])).toHaveLength(10);
-    expect(body.split('\n')[9]).toBe('13'.repeat(32));
+    expect((body.match(/\n/g) ?? [])).toHaveLength(11);
+    expect(body.split('\n')[8]).toBe('13'.repeat(32));
   });
 
-  it('formats worked=false exactly', () => {
-    const body = textDecoder.decode(buildCanonicalOutcomeEventBodyBytes({
+  it('formats each resolution token exactly', () => {
+    const base = {
       orgId: 'org-a',
       memoryHash: '01'.repeat(32),
       epoch: 7,
       signerPubkey: '02'.repeat(32),
       episodeRef: '1011',
-      worked: false,
+      source: 'harvested' as const,
       evidenceRef: '12',
       serveRef: '13'.repeat(32),
       nonce: '0304',
-    }));
+    };
 
-    expect(body.split('\n')[7]).toBe('worked=false');
+    for (const resolution of ['worked', 'didnt_work', 'unobserved'] as const) {
+      const body = textDecoder.decode(buildCanonicalOutcomeEventBodyBytes({ ...base, resolution }));
+      expect(body.split('\n')[9]).toBe(`resolution=${resolution}`);
+      expect(body.split('\n')[10]).toBe('source=harvested');
+    }
+  });
+
+  it('rejects unknown resolution and source tokens', () => {
+    const base = {
+      orgId: 'org-a',
+      memoryHash: '01'.repeat(32),
+      epoch: 7,
+      signerPubkey: '02'.repeat(32),
+      episodeRef: '1011',
+      evidenceRef: '12',
+      serveRef: '13'.repeat(32),
+      nonce: '0304',
+    };
+
+    expect(() => buildCanonicalOutcomeEventBodyBytes({ ...base, resolution: 'failed' as never, source: 'harvested' }))
+      .toThrow('resolution must be one of worked, didnt_work, unobserved');
+    expect(() => buildCanonicalOutcomeEventBodyBytes({ ...base, resolution: 'worked', source: 'auto' as never }))
+      .toThrow('source must be one of harvested, user');
   });
 
   it('computes event fingerprint as sha256(raw body)', () => {
@@ -70,18 +93,19 @@ describe('event signing parity vectors', () => {
     const memoryHashHex = '01'.repeat(32);
     const episodeRefHex = '1011';
     const serveRefHex = '13'.repeat(32);
-    const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nworked=true\n${serveRefHex}`;
+    const preimage = `wevibe-event-nonce-v1\n${orgId}\n${memoryHashHex}\n${episodeRefHex}\nresolution=worked\n${serveRefHex}`;
     const expected = createHash('sha256').update(preimage).digest().subarray(0, 8).toString('hex');
 
-    const nonce = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true, serveRefHex);
+    const nonce = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, 'worked', serveRefHex);
     expect(nonce).toBe(expected);
     expect(nonce).toMatch(/^[0-9a-f]{16}$/);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true, serveRefHex)).toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, false, serveRefHex)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex('org-b', memoryHashHex, episodeRefHex, true, serveRefHex)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, '02'.repeat(32), episodeRefHex, true, serveRefHex)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, '1012', true, serveRefHex)).not.toBe(nonce);
-    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, true, '14'.repeat(32))).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, 'worked', serveRefHex)).toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, 'didnt_work', serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, 'unobserved', serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex('org-b', memoryHashHex, episodeRefHex, 'worked', serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, '02'.repeat(32), episodeRefHex, 'worked', serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, '1012', 'worked', serveRefHex)).not.toBe(nonce);
+    expect(deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, 'worked', '14'.repeat(32))).not.toBe(nonce);
   });
 
   it('rejects invalid canonical outcome sizes', () => {
@@ -91,7 +115,8 @@ describe('event signing parity vectors', () => {
       epoch: 7,
       signerPubkey: '02'.repeat(32),
       episodeRef: '10',
-      worked: true,
+      resolution: 'worked' as const,
+      source: 'harvested' as const,
       evidenceRef: '12',
       serveRef: '13'.repeat(32),
       nonce: '03',
@@ -130,7 +155,8 @@ describe('event signing parity vectors', () => {
       epoch: 7,
       signerPubkey: Buffer.from(pub).toString('hex'),
       episodeRef: '1011',
-      worked: true,
+      resolution: 'worked',
+      source: 'harvested',
       evidenceRef: '12',
       serveRef: '13'.repeat(32),
       nonce: '0304',

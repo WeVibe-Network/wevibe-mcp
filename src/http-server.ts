@@ -63,9 +63,11 @@ import {
   buildCanonicalOutcomeEventBodyBytes,
   computeEventFingerprint,
   deriveOutcomeNonceHex,
+  type OutcomeResolutionToken,
+  type OutcomeSourceToken,
 } from './event-signing.js';
 import { BodyReadError, readBody } from './http-body.js';
-import { consumeServeRef, recordServeRef } from './serve-ref-store.js';
+import { consumeServeRef, peekServeRef, recordServeRef } from './serve-ref-store.js';
 import { assertMemoryApproved } from './memory-admission.js';
 
 const BUILD_STAMP = (() => {
@@ -1220,7 +1222,8 @@ interface OutcomeEventRequestBody {
   org_id?: unknown;
   memory_hash?: unknown;
   episode_ref?: unknown;
-  worked?: unknown;
+  resolution?: unknown;
+  source?: unknown;
   evidence_ref?: unknown;
   session_id?: unknown;
 }
@@ -1489,7 +1492,8 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
   const t0 = Date.now();
   let status = 500;
   let orgId: string | undefined;
-  let worked: boolean | undefined;
+  let resolution: OutcomeResolutionToken | undefined;
+  let source: OutcomeSourceToken | undefined;
   let fingerprintHex: string | undefined;
   let serveRefHex: string | undefined;
   let err: string | undefined;
@@ -1536,13 +1540,20 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       return;
     }
 
-    if (typeof body.worked !== 'boolean') {
+    if (body.resolution !== 'worked' && body.resolution !== 'didnt_work' && body.resolution !== 'unobserved') {
       status = 400;
-      err = 'worked is required and must be a boolean';
+      err = 'resolution is required and must be one of worked, didnt_work, unobserved';
       jsonResponse(res, status, { status: 'error', error: err });
       return;
     }
-    worked = body.worked;
+    resolution = body.resolution;
+    if (body.source !== 'harvested' && body.source !== 'user') {
+      status = 400;
+      err = 'source is required and must be one of harvested, user';
+      jsonResponse(res, status, { status: 'error', error: err });
+      return;
+    }
+    source = body.source;
 
     if (body.session_id !== undefined && typeof body.session_id !== 'string') {
       status = 400;
@@ -1602,7 +1613,11 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       return;
     }
 
-    const pendingServeRef = consumeServeRef(orgId, memoryHashHex);
+    // UNOBSERVED is non-claiming (WO-ATTRIB 2026-08-07): it must not consume
+    // the pending serve ref, so a later worked/didnt_work outcome can pair.
+    const pendingServeRef = resolution === 'unobserved'
+      ? peekServeRef(orgId, memoryHashHex)
+      : consumeServeRef(orgId, memoryHashHex);
     if (!pendingServeRef) {
       status = 409;
       err = 'no pending serve to pair for this memory';
@@ -1622,6 +1637,9 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
     const pairedServeRefHex = pendingServeRef.serveRefHex;
     serveRefHex = pairedServeRefHex;
     const restorePendingServeRef = (reason: string): void => {
+      if (resolution === 'unobserved') {
+        return;
+      }
       recordServeRef({ orgId: orgId!, memoryHashHex, epoch, serveRefHex: pairedServeRefHex });
       logOp('event.outcome.emit', 'warn', {
         trace,
@@ -1635,7 +1653,7 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
         memory_hash_first8: memoryHashHex.slice(0, 8),
       });
     };
-    const nonceHex = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, worked, pairedServeRefHex);
+    const nonceHex = deriveOutcomeNonceHex(orgId, memoryHashHex, episodeRefHex, resolution, pairedServeRefHex);
     let orgServeKey: Awaited<ReturnType<typeof deriveOrgServeKeyFromIdentitySeed>>;
     try {
       orgServeKey = await deriveOrgServeKeyFromIdentitySeed(identity.edPrivkey, orgId);
@@ -1655,7 +1673,8 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
         signerPubkey: orgServeKey.pubHex,
         nonce: nonceHex,
         episodeRef: episodeRefHex,
-        worked,
+        resolution,
+        source,
         evidenceRef: evidenceRefHex,
         serveRef: serveRefHex,
       });
@@ -1677,7 +1696,8 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       nonce: nonceHex,
       signature: signatureHex,
       episode_ref: episodeRefHex,
-      worked,
+      resolution,
+      source,
       evidence_ref: evidenceRefHex,
       serve_ref: serveRefHex,
       fingerprint: fingerprintHex,
@@ -1749,7 +1769,8 @@ async function handleOutcomeEvents(req: IncomingMessage, res: ServerResponse, pa
       org_fp: fp(orgId),
       fingerprint_fp8: fp(fingerprintHex),
       serve_ref_first8: serveRefHex?.slice(0, 8),
-      worked,
+      resolution,
+      source,
       dur_ms: Date.now() - t0,
       ...(err ? { err } : {}),
     });
