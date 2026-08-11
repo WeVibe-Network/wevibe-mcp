@@ -35,6 +35,11 @@ import { exportIdentityPairing } from './pairing-export.js';
 import { fp, logOp, resolveTraceId, TRACE_HEADER } from './logger.js';
 import { emitExtractionIntegrity, type ExtractionEpisodeCounts } from './extraction-integrity.js';
 import { buildSessionSubstrate, type SubstrateEvent } from './session-substrate.js';
+import {
+  SessionSubstrateReadError,
+  readSessionEventsFromDb,
+  resolveSoleSessionId,
+} from './session-db-substrate.js';
 import { renderFailureEpisodeBlock, segmentFailureEpisodes } from './failure-episodes.js';
 import {
   appendGoalEpisodeIndex,
@@ -173,6 +178,7 @@ interface MemoryWithGuard {
 
 interface ExtractRequestBody {
   events?: SubstrateEvent[];
+  session_db_path?: unknown;
   model?: unknown;
   ollama_url?: unknown;
   prompt?: unknown;
@@ -243,11 +249,58 @@ function detectProvider(input: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Provider selection has TWO INDEPENDENT axes. Conflating them is a defect:
+ *
+ *   1. `isLocalProvider` — COST/CONTEXT semantics. A local engine is unmetered,
+ *      so extraction may trust a `num_ctx` hint instead of the OpenRouter
+ *      catalog, runs chunks serially, and skips reroute-retry.
+ *   2. `usesOllamaWireProtocol` — the WIRE PROTOCOL. Ollama speaks its own
+ *      `/api/chat`; LM Studio, oMLX and the local relay proxy all speak
+ *      OpenAI-compatible `/v1/chat/completions`.
+ *
+ * "Local" NEVER implied "speaks Ollama". Deriving the transport from the cost
+ * axis sent every local engine to `/api/chat` and produced a 404 on any
+ * OpenAI-compatible local server (LM Studio, oMLX, the relay proxy) while
+ * silently ignoring the caller's `base_url`.
+ */
 function isLocalProvider(provider: string): boolean {
   const normalized = provider.toLowerCase();
   if (normalized === 'local' || normalized === 'localhost') return true;
   if (normalized === 'ollama' || normalized === 'lm_studio' || normalized === 'lmstudio') return true;
-  return normalized.startsWith('local:') || normalized.startsWith('ollama:') || normalized.startsWith('lmstudio:');
+  if (normalized === 'local-llm-proxy' || normalized === 'omlx') return true;
+  return normalized.startsWith('local:')
+    || normalized.startsWith('ollama:')
+    || normalized.startsWith('lmstudio:')
+    || normalized.startsWith('local-llm-proxy:');
+}
+
+/** ONLY Ollama speaks the native `/api/chat` protocol. Everything else is OpenAI-compatible. */
+function usesOllamaWireProtocol(provider: string | undefined): boolean {
+  if (provider === undefined) {
+    // No provider named: preserve the legacy default (dashboard Ollama path,
+    // selected by sending `ollama_url` or nothing at all).
+    return true;
+  }
+  const normalized = provider.toLowerCase();
+  return normalized === 'ollama' || normalized.startsWith('ollama:');
+}
+
+/**
+ * Base URL for an OpenAI-compatible provider. A local engine MUST carry an
+ * explicit `base_url`: silently falling back to the OpenRouter endpoint would
+ * send a local, unmetered request to a paid remote API.
+ */
+function resolveOpenAiCompatibleBaseUrl(baseUrlOverride: string | undefined, isLocal: boolean, provider: string | undefined): string {
+  if (baseUrlOverride !== undefined && baseUrlOverride.trim().length > 0) {
+    return baseUrlOverride.trim();
+  }
+  if (isLocal) {
+    throw new Error(
+      `local provider "${provider ?? '(unnamed)'}" requires an explicit base_url (OpenAI-compatible endpoint); refusing to fall back to a remote paid API`,
+    );
+  }
+  return 'https://openrouter.ai/api/v1';
 }
 
 function providerAllowedByPolicy(
@@ -518,41 +571,98 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     ? body.base_url
     : undefined;
 
-  const eventsCandidate = body.events as unknown;
-  if (!Array.isArray(eventsCandidate) || eventsCandidate.length === 0) {
+  // Substrate resolution. Exactly ONE source is accepted per request:
+  //   - `session_db_path`: the product reads the OpenCode session DB and builds
+  //     the substrate itself (D-SESSION-SUBSTRATE §2 — one builder, shared by
+  //     the dashboard Extract path and any benchmark harness).
+  //   - `events`: a pre-built substrate array (the dashboard's in-process path).
+  // Accepting both would let two substrates disagree silently, which is the
+  // exact divergence that broke benchmark extraction; it is a hard 400.
+  const sessionDbPathRaw = typeof body.session_db_path === 'string' ? body.session_db_path.trim() : '';
+  const hasSessionDbPath = sessionDbPathRaw.length > 0;
+  const hasEventsField = body.events !== undefined;
+
+  if (hasSessionDbPath && hasEventsField) {
     jsonResponse(res, 400, {
-      error: 'events is required and must be a non-empty SubstrateEvent array',
-      code: 'invalid_events',
+      error: 'provide exactly one substrate source: session_db_path or events, never both',
+      code: 'ambiguous_substrate_source',
     });
     return;
   }
 
-  const hasInvalidEvent = eventsCandidate.some((event): boolean => {
-    if (typeof event !== 'object' || event === null) {
-      return true;
+  let events: SubstrateEvent[];
+  let resolvedSessionId = sessionId;
+
+  if (hasSessionDbPath) {
+    try {
+      if (!resolvedSessionId) {
+        resolvedSessionId = resolveSoleSessionId(sessionDbPathRaw);
+      }
+      events = readSessionEventsFromDb(sessionDbPathRaw, resolvedSessionId);
+    } catch (error) {
+      const code = error instanceof SessionSubstrateReadError ? error.code : 'session_db_read_failed';
+      const message = error instanceof Error ? error.message : String(error);
+      logOp('extract', 'error', {
+        trace,
+        phase: 'substrate.session_db',
+        session_id: resolvedSessionId,
+        code,
+        err: message,
+      });
+      jsonResponse(res, 400, { error: message, code });
+      return;
     }
 
-    const candidate = event as Record<string, unknown>;
-    const kind = candidate.kind;
-    const isValidKind = kind === 'user'
-      || kind === 'assistant'
-      || kind === 'reasoning'
-      || kind === 'tool'
-      || kind === 'edit';
+    if (events.length === 0) {
+      logOp('extract', 'error', {
+        trace,
+        phase: 'substrate.session_db',
+        session_id: resolvedSessionId,
+        code: 'session_events_empty',
+      });
+      jsonResponse(res, 400, {
+        error: `session ${resolvedSessionId} produced zero substrate events`,
+        code: 'session_events_empty',
+      });
+      return;
+    }
+  } else {
+    const eventsCandidate = body.events as unknown;
+    if (!Array.isArray(eventsCandidate) || eventsCandidate.length === 0) {
+      jsonResponse(res, 400, {
+        error: 'events is required and must be a non-empty SubstrateEvent array',
+        code: 'invalid_events',
+      });
+      return;
+    }
 
-    return !isValidKind
-      || typeof candidate.time !== 'number'
-      || !Number.isFinite(candidate.time)
-      || typeof candidate.seq !== 'number'
-      || !Number.isFinite(candidate.seq);
-  });
+    const hasInvalidEvent = eventsCandidate.some((event): boolean => {
+      if (typeof event !== 'object' || event === null) {
+        return true;
+      }
 
-  if (hasInvalidEvent) {
-    jsonResponse(res, 400, { error: 'events must include kind,time,seq for every event', code: 'invalid_events' });
-    return;
+      const candidate = event as Record<string, unknown>;
+      const kind = candidate.kind;
+      const isValidKind = kind === 'user'
+        || kind === 'assistant'
+        || kind === 'reasoning'
+        || kind === 'tool'
+        || kind === 'edit';
+
+      return !isValidKind
+        || typeof candidate.time !== 'number'
+        || !Number.isFinite(candidate.time)
+        || typeof candidate.seq !== 'number'
+        || !Number.isFinite(candidate.seq);
+    });
+
+    if (hasInvalidEvent) {
+      jsonResponse(res, 400, { error: 'events must include kind,time,seq for every event', code: 'invalid_events' });
+      return;
+    }
+
+    events = eventsCandidate as SubstrateEvent[];
   }
-
-  const events = eventsCandidate as SubstrateEvent[];
 
   let evidenceBlock: string | undefined;
   const substrateStart = Date.now();
@@ -561,7 +671,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   logOp('extract', 'info', {
     trace,
     phase: 'substrate',
-    session_id: sessionId,
+    session_id: resolvedSessionId,
     events: events.length,
     user: substrate.stats.user,
     assistant: substrate.stats.assistant,
@@ -579,12 +689,12 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     episodes = segmentFailureEpisodes(events);
     const episodeTrace = trace ?? '-';
     const enrichedEpisodes = enrichEpisodes(episodes, events);
-    emitEpisodeOps(enrichedEpisodes, sessionId ? { trace: episodeTrace, session_id: sessionId } : { trace: episodeTrace });
-    if (sessionId) {
-      const goalDirPath = getGstvEngine().goalDirForSession(sessionId);
+    emitEpisodeOps(enrichedEpisodes, resolvedSessionId ? { trace: episodeTrace, session_id: resolvedSessionId } : { trace: episodeTrace });
+    if (resolvedSessionId) {
+      const goalDirPath = getGstvEngine().goalDirForSession(resolvedSessionId);
       if (goalDirPath) {
         const ts = new Date().toISOString();
-        const records = enrichedEpisodes.map((episode) => episodeIndexRecord(episode, sessionId, ts));
+        const records = enrichedEpisodes.map((episode) => episodeIndexRecord(episode, resolvedSessionId, ts));
         try {
           await appendGoalEpisodeIndex(goalDirPath, records);
         } catch (error) {
@@ -592,7 +702,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
           logOp('extract', 'error', {
             trace,
             phase: 'episodes.index_append',
-            session_id: sessionId,
+            session_id: resolvedSessionId,
             err: message,
           });
         }
@@ -605,13 +715,13 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     logOp('extract', 'error', {
       trace,
       phase: 'episodes',
-      session_id: sessionId,
+      session_id: resolvedSessionId,
       err: message,
     });
     emitExtractionIntegrity({
       jobId,
       trace,
-      sessionId,
+      sessionId: resolvedSessionId,
       outcome: 'failed',
       emptyReason: 'segmentation_error',
     });
@@ -625,7 +735,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   logOp('extract', 'info', {
     trace,
     phase: 'episodes',
-    session_id: sessionId,
+    session_id: resolvedSessionId,
     episodes: episodes.length,
     resolved,
     unresolved,
@@ -650,27 +760,41 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     base_url: baseUrlOverride,
     ollama_url: ollamaUrlOverride,
     org_id: orgId,
-    session_id: sessionId,
+    session_id: resolvedSessionId,
     num_ctx: numCtxOverride,
     prompt: systemPromptOverride,
     ...(evidenceBlock ? { evidence_block: evidenceBlock } : {}),
   };
 
   const isLocal = providerOverride ? isLocalProvider(providerOverride) : true;
-  const provider = isLocal
-    ? createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, extractionModel)
-    : createOpenAICompatibleProvider(
-      baseUrlOverride ?? 'https://openrouter.ai/api/v1',
-      extractionModel,
-      apiKeyOverride ?? '',
-    );
+  let provider;
+  try {
+    provider = usesOllamaWireProtocol(providerOverride)
+      ? createOllamaProvider(ollamaUrlOverride ?? OLLAMA_URL, extractionModel)
+      : createOpenAICompatibleProvider(
+        resolveOpenAiCompatibleBaseUrl(baseUrlOverride, isLocal, providerOverride),
+        extractionModel,
+        apiKeyOverride ?? '',
+      );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logOp('extract', 'error', {
+      trace,
+      phase: 'provider_select',
+      session_id: resolvedSessionId,
+      code: 'provider_misconfigured',
+      err: message,
+    });
+    jsonResponse(res, 400, { error: message, code: 'provider_misconfigured' });
+    return;
+  }
 
   const extractOptions = {
     provider,
     isLocal,
     systemPrompt: systemPromptOverride,
     numCtx: numCtxOverride,
-    sessionId,
+    sessionId: resolvedSessionId,
     orgContext: orgId
       ? { orgId, hubUrl: HUB_URL }
       : undefined,
@@ -686,7 +810,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
       trace,
       phase: 'zero_progress',
       job_id: jobId,
-      session_id: sessionId,
+      session_id: resolvedSessionId,
       resolved,
       unresolved,
       coincidental,
@@ -700,7 +824,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     emitExtractionIntegrity({
       jobId,
       trace,
-      sessionId,
+      sessionId: resolvedSessionId,
       outcome: 'completed',
       episodes: { resolved, unresolved, coincidental },
       emittedMemoryCount: 0,
@@ -737,7 +861,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
       emitExtractionIntegrity({
         jobId,
         trace,
-        sessionId,
+        sessionId: resolvedSessionId,
         outcome: 'parked',
         episodes: { resolved, unresolved, coincidental },
       });
@@ -753,7 +877,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
     extractOptions,
     extractionModel,
     trace,
-    sessionId,
+    resolvedSessionId,
     { resolved, unresolved, coincidental },
   );
 
@@ -887,13 +1011,28 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
     : undefined;
 
   const isLocal = providerOverride ? isLocalProvider(providerOverride) : true;
-  const provider = isLocal
-    ? createOllamaProvider(ollamaUrlOverride ?? job.resume.ollama_url ?? OLLAMA_URL, model)
-    : createOpenAICompatibleProvider(
-      baseUrlOverride ?? job.resume.base_url ?? 'https://openrouter.ai/api/v1',
-      model,
-      apiKeyOverride ?? '',
-    );
+  const resumeOllamaUrl = ollamaUrlOverride ?? job.resume.ollama_url;
+  let provider;
+  try {
+    provider = usesOllamaWireProtocol(providerOverride)
+      ? createOllamaProvider(resumeOllamaUrl ?? OLLAMA_URL, model)
+      : createOpenAICompatibleProvider(
+        resolveOpenAiCompatibleBaseUrl(baseUrlOverride ?? job.resume.base_url, isLocal, providerOverride),
+        model,
+        apiKeyOverride ?? '',
+      );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logOp('extract', 'error', {
+      trace: getRequestTrace(req),
+      phase: 'provider_select',
+      job_id: jobId,
+      code: 'provider_misconfigured',
+      err: message,
+    });
+    jsonResponse(res, 400, { error: message, code: 'provider_misconfigured' });
+    return;
+  }
 
   const trace = getRequestTrace(req);
   const resumeWithEvidence = job.resume as ExtractResumeInputs & { evidence_block?: string };

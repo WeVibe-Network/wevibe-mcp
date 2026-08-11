@@ -57,7 +57,7 @@
     "wevibe-biometric": "^0.1.0"
   },
   "devDependencies": {
-    "@types/node": "^20.19.42",
+    "@types/node": "22.20.1",
     "tsx": "^4.22.4",
     "typescript": "^5.4.0",
     "vitest": "^1.4.0"
