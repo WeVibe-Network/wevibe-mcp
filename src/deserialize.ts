@@ -39,11 +39,8 @@ interface RawMemoryResult {
   };
 }
 
-function requireStringField(value: unknown, fieldName: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`memory result missing ${fieldName}`);
-  }
-  return value;
+function lenientHex(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function requireMemoryType(value: unknown): MemoryType {
@@ -59,9 +56,16 @@ export function deserializeMemoryResult(raw: RawMemoryResult): MemoryResult {
     orgId: raw.org_id,
     epochId: raw.epoch_id,
     memoryType: requireMemoryType(raw.memory_type),
-    capsule: requireStringField(raw.capsule, 'capsule'),
-    cfrag: requireStringField(raw.cfrag, 'cfrag'),
-    umbralCiphertext: requireStringField(raw.umbral_ciphertext, 'umbral_ciphertext'),
+    // D1 invariant (DECISIONS.md §28): the leader MUST be able to recall its own
+    // org's memories. The hub returns undecryptable results INLINE with empty
+    // capsule/cfrag/umbral_ciphertext (+ listed in requires_reencryption), so
+    // absent/empty PRE fields pass through as '' — one undecryptable sibling
+    // must NOT abort the whole recall. Empty fields are rejected per-memory by
+    // the decrypt guard in org-client.ts decryptMemoryBlob, and retrieve-cli
+    // skips that memory only (capturing the decrypt failure reason).
+    capsule: lenientHex(raw.capsule),
+    cfrag: lenientHex(raw.cfrag),
+    umbralCiphertext: lenientHex(raw.umbral_ciphertext),
     contentFlags: (raw.content_flags ?? []) as ContentFlag[],
     freshnessScore: raw.freshness_score ?? 0,
     retrievalCount: raw.retrieval_count ?? 0,
