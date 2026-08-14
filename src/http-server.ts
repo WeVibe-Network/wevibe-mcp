@@ -7,7 +7,7 @@ import type { RetrieveInput } from './retrieve-types.js';
 import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
 import { loadIdentity } from './key-store.js';
-import { buildWeVibeSignedAuth } from './auth.js';
+import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { initCrypto } from './crypto.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
@@ -74,6 +74,8 @@ import {
 import { BodyReadError, readBody } from './http-body.js';
 import { consumeServeRef, peekServeRef, recordServeRef } from './serve-ref-store.js';
 import { assertMemoryApproved } from './memory-admission.js';
+import { submitMemory } from './contribution.js';
+import { MC_VERSION } from './mc1/schema.js';
 
 const BUILD_STAMP = (() => {
   try {
@@ -86,6 +88,7 @@ const BUILD_STAMP = (() => {
 let httpServerInstance: import('node:http').Server | null = null;
 let denialFlushTimer: NodeJS.Timeout | null = null;
 let recallModeWarningEmitted = false;
+const BENCH_ENDPOINTS_ENABLED = process.env.WEVIBE_BENCH_ENDPOINTS === '1';
 
 interface PendingOrgSetup {
   masterKeyHex: string;
@@ -219,6 +222,22 @@ interface ProvisionRecallRequestBody {
   org_id?: unknown;
 }
 
+interface SubmitRequestBody {
+  org_id?: unknown;
+  plaintext?: unknown;
+  text?: unknown;
+  memory_type?: unknown;
+  epoch_id?: unknown;
+  stack_hint?: unknown;
+  keywords?: unknown;
+  mc_version?: unknown;
+}
+
+type SubmitKeywordMetadata = {
+  classified: Array<{ keyword: string; weight: number; base_weight: number }>;
+  suggestions: Array<{ keyword: string; weight: number; base_weight: number; rationale: string }>;
+};
+
 interface MemoryStats {
   retrieval_count: number;
   acceptance_count: number;
@@ -327,6 +346,28 @@ function providerAllowedByPolicy(
 
 function sanitizeRecallLogValue(value: string): string {
   return value.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
+/**
+ * Normalize an optional flat string[] (the bench wire shape) into the canonical
+ * MemoryKeywordMetadata shape consumed by submitMemory: every keyword lands as
+ * a classified entry with weight/base_weight 1; no suggestions.
+ */
+function parseSubmitKeywords(rawKeywords: unknown): SubmitKeywordMetadata {
+  if (rawKeywords === undefined) {
+    return { classified: [], suggestions: [] };
+  }
+
+  if (!Array.isArray(rawKeywords) || rawKeywords.some(keyword => typeof keyword !== 'string')) {
+    throw new Error('keywords must be an array of strings when provided');
+  }
+
+  const classified = rawKeywords
+    .map(keyword => keyword.trim())
+    .filter(keyword => keyword.length > 0)
+    .map(keyword => ({ keyword, weight: 1, base_weight: 1 }));
+
+  return { classified, suggestions: [] };
 }
 
 function getRequestTrace(req: IncomingMessage): string | undefined {
@@ -1185,6 +1226,195 @@ async function handleIdentityExportPairing(req: IncomingMessage, res: ServerResp
     }
 
     jsonResponse(res, 500, { status: 'error', code: 'internal_error', error: message, detail: message });
+  }
+}
+
+async function handleIdentityPubkeys(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const trace = getRequestTrace(req);
+  const t0 = Date.now();
+  let status = 500;
+  let err: string | undefined;
+  let ed25519 = '';
+  let x25519 = '';
+  let pre_pubkey = '';
+
+  try {
+    const identity = await loadIdentity();
+    if (!identity) {
+      jsonResponse(res, 500, { status: 'error', error: 'identity not found' });
+      return;
+    }
+
+    ed25519 = Buffer.from(identity.edPubkey).toString('hex');
+    x25519 = Buffer.from(identity.xPubkey).toString('hex');
+
+    await getOrCreatePreIdentity();
+    pre_pubkey = getPrePublicKeyHex();
+
+    status = 200;
+    jsonResponse(res, status, { ed25519, x25519, pre_pubkey });
+  } catch (error) {
+    err = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    jsonResponse(res, status, { status: 'error', error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    logOp('identity.pubkeys', err ? 'error' : 'info', {
+      trace,
+      phase: 'outcome',
+      status,
+      ed25519_fp: ed25519 ? fp(ed25519) : '-',
+      x25519_fp: x25519 ? fp(x25519) : '-',
+      pre_pubkey_fp: pre_pubkey ? fp(pre_pubkey) : '-',
+      dur_ms: Date.now() - t0,
+      ...(err ? { err } : {}),
+    });
+  }
+}
+
+async function handleSubmit(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!authorize(req, res)) {
+    return;
+  }
+
+  const trace = getRequestTrace(req);
+  const t0 = Date.now();
+  let status = 500;
+  let org: string | undefined;
+  let submissionHash: string | undefined;
+  let plaintextLen = 0;
+  let err: string | undefined;
+  logOp('submit', 'info', { trace, phase: 'entry' });
+
+  try {
+    let body: SubmitRequestBody;
+    try {
+      const bodyStr = await readBody(req);
+      body = JSON.parse(bodyStr) as SubmitRequestBody;
+    } catch (readErr) {
+      if (respondBodyGuardError(res, req, readErr)) {
+        status = readErr instanceof BodyReadError ? readErr.status : status;
+        return;
+      }
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'invalid JSON' });
+      return;
+    }
+
+    const orgId = typeof body.org_id === 'string' ? body.org_id.trim() : '';
+    if (orgId.length === 0) {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'org_id is required and must be a non-empty string' });
+      return;
+    }
+    org = orgId;
+
+    const plaintext = typeof body.plaintext === 'string' && body.plaintext.length > 0
+      ? body.plaintext
+      : (typeof body.text === 'string' && body.text.length > 0 ? body.text : '');
+    if (plaintext.length === 0) {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'plaintext (or text) is required and must be a non-empty string' });
+      return;
+    }
+    plaintextLen = Buffer.byteLength(plaintext, 'utf8');
+
+    if (body.memory_type !== undefined && body.memory_type !== 'memory') {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: 'memory_type must be "memory" when provided' });
+      return;
+    }
+    const memoryType: 'memory' = 'memory';
+
+    let epochId: number | undefined;
+    if (body.epoch_id !== undefined) {
+      if (typeof body.epoch_id !== 'number' || !Number.isInteger(body.epoch_id)) {
+        status = 400;
+        jsonResponse(res, status, { status: 'error', error: 'epoch_id must be an integer when provided' });
+        return;
+      }
+      epochId = body.epoch_id;
+    }
+
+    if (body.mc_version !== undefined) {
+      if (typeof body.mc_version !== 'number' || !Number.isInteger(body.mc_version)) {
+        status = 400;
+        jsonResponse(res, status, { status: 'error', error: 'mc_version must be an integer when provided' });
+        return;
+      }
+      if (body.mc_version !== MC_VERSION) {
+        status = 400;
+        jsonResponse(res, status, { status: 'error', error: `mc_version ${body.mc_version} is not supported (expected ${MC_VERSION})` });
+        return;
+      }
+    }
+
+    let stackHint: string[] | undefined;
+    if (body.stack_hint !== undefined) {
+      if (!Array.isArray(body.stack_hint) || body.stack_hint.some(v => typeof v !== 'string')) {
+        status = 400;
+        jsonResponse(res, status, { status: 'error', error: 'stack_hint must be an array of strings when provided' });
+        return;
+      }
+      stackHint = body.stack_hint;
+    }
+
+    let keywords: SubmitKeywordMetadata;
+    try {
+      keywords = parseSubmitKeywords(body.keywords);
+    } catch (keywordError) {
+      status = 400;
+      jsonResponse(res, status, { status: 'error', error: keywordError instanceof Error ? keywordError.message : String(keywordError) });
+      return;
+    }
+
+    const membership = await requireMembership(orgId);
+    if (epochId !== undefined && epochId !== membership.currentEpoch) {
+      status = 400;
+      jsonResponse(res, status, {
+        status: 'error',
+        error: `epoch_id ${epochId} does not match current membership epoch ${membership.currentEpoch}`,
+      });
+      return;
+    }
+
+    const result = await submitMemory(
+      plaintext,
+      orgId,
+      HUB_URL,
+      membership,
+      memoryType,
+      stackHint,
+      undefined,
+      keywords,
+    );
+
+    submissionHash = result.submissionHash;
+    status = 200;
+    jsonResponse(res, status, {
+      status: result.status,
+      submission_hash: result.submissionHash ?? null,
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.attestation ? { attestation: result.attestation } : {}),
+    });
+  } catch (error) {
+    status = 500;
+    err = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    jsonResponse(res, status, { status: 'error', error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    logOp('submit', err ? 'error' : 'info', {
+      trace,
+      phase: 'outcome',
+      status,
+      org,
+      org_fp: fp(org),
+      submission_hash_fp: fp(submissionHash),
+      plaintext_len: plaintextLen,
+      dur_ms: Date.now() - t0,
+      ...(err ? { err } : {}),
+    });
   }
 }
 
@@ -2860,6 +3090,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
         return;
       }
       await handleGstvSeal(req, res);
+      return;
+    }
+
+    if (BENCH_ENDPOINTS_ENABLED && method === 'GET' && url === '/v1/identity/pubkeys') {
+      await handleIdentityPubkeys(req, res);
+      return;
+    }
+
+    if (BENCH_ENDPOINTS_ENABLED && method === 'POST' && url === '/v1/submit') {
+      await handleSubmit(req, res);
       return;
     }
 
