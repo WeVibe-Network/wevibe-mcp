@@ -7,7 +7,7 @@ import { isVaultUnlocked, addOrgToVault, getVaultCache, updateVaultEntry, type V
 import { ensureCrypto } from './crypto-utils.js';
 import type { OrgMembership } from './types.js';
 import type { MemoryType } from './types.js';
-import { umbralDecryptReencrypted, umbralDeriveEpochKeypair, umbralGenerateKfrag } from './sidecar.js';
+import { umbralDecryptReencrypted, umbralDeriveEpochKeypair, umbralGenerateKfrag } from './umbral.js';
 import { HubSignatureError, hubFetchVerified, hubFetchVerifiedWithKey } from './hub-fetch.js';
 import { HUB_URL } from './config.js';
 import { logOp, fp, newTraceId } from './logger.js';

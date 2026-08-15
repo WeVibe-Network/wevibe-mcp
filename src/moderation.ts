@@ -9,7 +9,7 @@ import { approveSubmissionMessageSimple, denySubmissionMessage } from './canonic
 import { MC_VERSION } from './mc1/schema.js';
 import { parseMemoryText, type StructuredMemory } from './retrieval-card.js';
 import { embedRetrievalCard } from './embed-card.js';
-import { umbralEncrypt } from './sidecar.js';
+import { umbralEncrypt } from './umbral.js';
 import { logOp, fp } from './logger.js';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';

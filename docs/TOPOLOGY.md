@@ -5,7 +5,7 @@
 ```
 IDE / Agent -- MCP Transport (StdioServerTransport) -- wevibe-mcp --+-- wevibe-guard gRPC
                                                             |-- wevibe-sdk WASM (crypto)
-                                                            |-- Umbral sidecar subprocess (WEVIBE_UMBRAL_SIDECAR_BIN)
+                                                            |-- Umbral PRE WASM (in-process, vendor/umbral-wasm)
                                                             +-- Cosmos RPC / gRPC (wevibe-chain)
 
 Plugin (OpenCode) --+-- HTTP Transport -- wevibe-mcp HTTP API (127.0.0.1:4450, Bearer token auth)
@@ -256,7 +256,15 @@ This is separate from the Ed25519 identity flow (which uses `wevibe-network` ser
 
 ## Required Environment
 
-- `WEVIBE_UMBRAL_SIDECAR_BIN` — absolute/relative path to `wevibe-umbral-sidecar` binary. Required for approval-time capsule generation and Umbral decrypt-reencrypted operations.
+**None for Umbral.** Approval-time capsule generation, epoch-keypair derivation,
+kfrag minting and `decrypt-reencrypted` all run in-process from the WebAssembly
+module at `vendor/umbral-wasm`, resolved relative to the package. There is no
+environment variable, no binary path and no subprocess.
+
+`WEVIBE_UMBRAL_SIDECAR_BIN` was removed in 0.3.0. It is read by nothing; do not
+reintroduce it at any launch site. The variable had to be injected at every
+launch site, and omissions silently broke leader-side crypto on 2026-07-05,
+2026-07-13 and 2026-08-14.
 
 ## Scaling Considerations
 

@@ -185,8 +185,8 @@ async function runLeaderRecall(queryResults: Array<Record<string, unknown>>): Pr
   ).toString('base64');
   const modPubkeyHex = Buffer.from(modIdentity.xPubkey).toString('hex');
 
-  // REAL memory encryption: DEK + AES ciphertext. The mocked sidecar returns dekHex,
-  // and the real decryptSymmetric must recover LEADER_PLAINTEXT.
+  // REAL memory encryption: DEK + AES ciphertext. The mocked umbral layer returns
+  // dekHex, and the real decryptSymmetric must recover LEADER_PLAINTEXT.
   const dek = generateDek();
   const dekHex = Buffer.from(dek).toString('hex');
   const ciphertextHex = Buffer.from(
@@ -215,7 +215,7 @@ async function runLeaderRecall(queryResults: Array<Record<string, unknown>>): Pr
     };
   });
 
-  vi.doMock('../src/sidecar.js', () => ({
+  vi.doMock('../src/umbral.js', () => ({
     umbralDecryptReencrypted: vi.fn().mockResolvedValue(dekHex),
     umbralDeriveEpochKeypair: vi.fn(),
     umbralGenerateKfrag: vi.fn(),
