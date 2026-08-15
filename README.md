@@ -101,7 +101,11 @@ Common environment variables:
 - Extraction model — configured in Dashboard Settings UI (required, no default).
 - `WEVIBE_EMBEDDING_MODEL` — embedding model ID.
 - `WEVIBE_HTTP_HOST` — bind host for local HTTP API (default loopback).
-- `WEVIBE_UMBRAL_SIDECAR_BIN` — path to Umbral sidecar binary.
+
+Umbral PRE crypto needs no configuration. It runs in-process from a WebAssembly
+module shipped inside this package (`vendor/umbral-wasm`), so there is no binary
+to install and no path to set. `WEVIBE_UMBRAL_SIDECAR_BIN` was removed in
+0.3.0 and is read by nothing — setting it has no effect.
 
 Local files/paths to be aware of:
 

@@ -1,6 +1,6 @@
 {
   "name": "wevibe-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "MCP client for WeVibe Network — org-scoped encrypted process memory",
   "type": "module",
   "license": "Apache-2.0",
@@ -29,6 +29,7 @@
   },
   "files": [
     "dist/",
+    "vendor/",
     "README.md",
     "LICENSE"
   ],
@@ -40,6 +41,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
+    "test:umbral": "vitest run tests/umbral.test.ts tests/umbral-no-leak.test.ts tests/umbral-packaging.test.ts tests/umbral-native-parity.test.ts",
+    "prepublishOnly": "npm run build && npm run test:umbral",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "dev": "tsx src/server.ts",
     "admin": "tsx src/admin.ts"
