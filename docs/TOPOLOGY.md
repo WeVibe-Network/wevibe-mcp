@@ -34,12 +34,12 @@ This keeps MCP on the same one-path contract as hub and chain (`matched_keywords
 1. Agent sends MCP tool call `wevibe_recall`.
 2. wevibe-mcp computes keywords + vector and posts query to hub with `pre_pubkey` (from local secp256k1 PRE identity).
 3. Hub returns PRE retrieval payload per result: `capsule`, `cfrag`, `umbral_ciphertext`, `epoch_id`, `cid`.
-4. For each result, wevibe-mcp fetches ciphertext, loads epoch `umbral_pk` from manifest (`GET /v1/orgs/{orgID}/epoch/{epochID}/manifest`), and calls sidecar `decrypt-reencrypted`.
-5. Sidecar returns DEK hex; wevibe-mcp performs AES-GCM decrypt locally, runs OCR/artifact policy transforms, then enforces provider leakage policy before response formatting.
+4. For each result, wevibe-mcp fetches ciphertext, loads epoch `umbral_pk` from manifest (`GET /v1/orgs/{orgID}/epoch/{epochID}/manifest`), and runs `decrypt-reencrypted` in-process from the WASM module (`vendor/umbral-wasm`).
+5. The in-process WASM returns the DEK hex; wevibe-mcp performs AES-GCM decrypt locally, runs OCR/artifact policy transforms, then enforces provider leakage policy before response formatting.
 
 **Blacklist Filter (CO-232):** After PRE decrypt (plaintext available) and before guard scan, memories are filtered by `pack_id` against the local blacklist (`~/.wevibe/blacklist.json`). `is_blacklisted(pack_id)` from `src/blacklist.ts` removes any memory that was denied by the user. Report actions do NOT add to blacklist — only Deny triggers local blacklist. This ensures denied memories never reappear in recall, while reported memories remain visible until moderator resolution.
 
-**MemoryResult PRE Fields (CO-222):** `capsule`, `cfrag`, `umbral_ciphertext` replace the legacy `wrappedDekEnc` field. The `decrypt-reencrypted` sidecar subprocess handles Umbral re-encryption using the stored kfrags.
+**MemoryResult PRE Fields (CO-222):** `capsule`, `cfrag`, `umbral_ciphertext` replace the legacy `wrappedDekEnc` field. `decrypt-reencrypted` runs in-process from the WASM module (`vendor/umbral-wasm`) and handles Umbral re-encryption using the stored kfrags.
 
 ### Provider Leakage Policy Gate (CO-266)
 
@@ -197,7 +197,7 @@ interface RetrievedKeyword {
 
 **registerPrePubkey():** `POST /v1/orgs/{orgID}/members/{pubkey}/pre-key` — registers PRE pubkey for member retrieval.
 
-**PRE Retrieval Flow (CO-222):** `queryOrgMemories` accepts `pre_pubkey` parameter. Hub returns `capsule`, `cfrag`, `umbral_ciphertext` per result (replacing legacy `wrappedDekEnc`). Sidecar `decrypt-reencrypted` subprocess performs Umbral re-encryption to recover DEK.
+**PRE Retrieval Flow (CO-222):** `queryOrgMemories` accepts `pre_pubkey` parameter. Hub returns `capsule`, `cfrag`, `umbral_ciphertext` per result (replacing legacy `wrappedDekEnc`). `decrypt-reencrypted` runs in-process from the WASM module (`vendor/umbral-wasm`) and performs Umbral re-encryption to recover the DEK.
 
 ### Contribute
 
@@ -221,7 +221,7 @@ interface RetrievedKeyword {
 - `src/risk-appetite.ts` — local plugin policy config (`risk_appetite`, `provider_policy`) in `~/.wevibe/plugin-config.json`
 - `src/org-client.ts` — org API client + PRE pubkey registration (`registerPrePubkey`) + PRE retrieval decrypt path + `getOrgKeywords()` for fetching org keyword vocabulary
 - `src/moderation.ts` — moderation handling
-- `src/sidecar.ts` — sidecar subprocess helper for Umbral `encrypt` and `decrypt-reencrypted` (JSON stderr parsing on sidecar failures)
+- `src/umbral.ts` — in-process WASM helper for Umbral `encrypt` and `decrypt-reencrypted` (no subprocess; replaces the former `sidecar.ts`)
 - `src/guard.ts` — gRPC client wrapper for wevibe-guard (also used by http-server.ts for guard scanning in recall pipeline)
 - `src/crypto.ts` — cryptographic utilities
 - `src/canonical.ts` — canonical message generation
