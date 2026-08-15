@@ -8,12 +8,12 @@ import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
 import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
-import { initCrypto } from './crypto.js';
+import { initCrypto, verify } from './crypto.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
 import { buildOrgCryptoSetup, loadMemberships, persistOrgKeys, provisionRecall } from './org-client.js';
 import { HTTP_HOST, HTTP_PORT, HUB_URL, OLLAMA_URL } from './config.js';
-import { HubSignatureError, hubFetchVerified } from './hub-fetch.js';
+import { HubSignatureError, hexToUint8Array, hubFetchVerified } from './hub-fetch.js';
 import { DEFAULT_EXTRACTION_NUM_CTX, extractMemories, getExtractionPrompt } from './extraction.js';
 import {
   createJob,
@@ -211,6 +211,9 @@ interface OrgSetupRequestBody {
   org_name?: unknown;
   domain?: unknown;
   leader_wallet?: unknown;
+  requester_pubkey?: unknown;
+  requester_x25519_pubkey?: unknown;
+  signature?: unknown;
 }
 
 interface OrgSetupFinalizeRequestBody {
@@ -220,6 +223,9 @@ interface OrgSetupFinalizeRequestBody {
 
 interface ProvisionRecallRequestBody {
   org_id?: unknown;
+  requester_pubkey?: unknown;
+  requester_x25519_pubkey?: unknown;
+  signature?: unknown;
 }
 
 interface SubmitRequestBody {
@@ -1418,6 +1424,175 @@ async function handleSubmit(req: IncomingMessage, res: ServerResponse): Promise<
   }
 }
 
+type RequesterIdentityFailure = {
+  ok: false;
+  status: number;
+  code: string;
+  error: string;
+  detail?: string;
+  requester_pubkey?: string;
+  mcp_pubkey?: string;
+  remediation?: string;
+};
+
+type RequesterIdentityResult = { ok: true } | RequesterIdentityFailure;
+
+function respondRequesterIdentityFailure(res: ServerResponse, failure: RequesterIdentityFailure): void {
+  const body: Record<string, unknown> = { status: 'error', code: failure.code, error: failure.error };
+  if (failure.detail) body.detail = failure.detail;
+  if (failure.requester_pubkey) body.requester_pubkey = failure.requester_pubkey;
+  if (failure.mcp_pubkey) body.mcp_pubkey = failure.mcp_pubkey;
+  if (failure.remediation) body.remediation = failure.remediation;
+  jsonResponse(res, failure.status, body);
+}
+
+// Fail-closed identity assertion (single-identity canon): the requester claims to BE the serving
+// MCP. Canonical signed message = UTF-8 bytes of [tag, ...canonicalFields, requester_pubkey,
+// requester_x25519_pubkey] '\n'-joined (NO trailing newline). The ed25519 signature must verify
+// under requester_pubkey, which must then equal loadIdentity().edPubkey. On match the caller
+// proceeds EXACTLY as before — no re-stamp, no re-seal. ADDITION to the session-token authorize()
+// gate; never a replacement.
+async function verifyRequesterIdentity(
+  tag: string,
+  canonicalFields: ReadonlyArray<string>,
+  body: { requester_pubkey?: unknown; requester_x25519_pubkey?: unknown; signature?: unknown },
+  trace?: string,
+): Promise<RequesterIdentityResult> {
+  const requesterPubkeyHex = typeof body.requester_pubkey === 'string' ? body.requester_pubkey.trim() : '';
+  const requesterX25519PubkeyHex = typeof body.requester_x25519_pubkey === 'string' ? body.requester_x25519_pubkey.trim() : '';
+  const signatureHex = typeof body.signature === 'string' ? body.signature.trim() : '';
+
+  const missing: string[] = [];
+  if (requesterPubkeyHex.length === 0) missing.push('requester_pubkey');
+  if (requesterX25519PubkeyHex.length === 0) missing.push('requester_x25519_pubkey');
+  if (signatureHex.length === 0) missing.push('signature');
+
+  let requesterPubkey: Uint8Array = new Uint8Array(0);
+  let requesterX25519Pubkey: Uint8Array = new Uint8Array(0);
+  let signature: Uint8Array = new Uint8Array(0);
+  let decodeError: string | undefined;
+  if (missing.length === 0) {
+    try {
+      requesterPubkey = hexToUint8Array(requesterPubkeyHex);
+      requesterX25519Pubkey = hexToUint8Array(requesterX25519PubkeyHex);
+      signature = hexToUint8Array(signatureHex);
+    } catch (error) {
+      decodeError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  if (
+    missing.length > 0 ||
+    decodeError ||
+    requesterPubkey.length !== 32 ||
+    requesterX25519Pubkey.length !== 32 ||
+    signature.length !== 64
+  ) {
+    logOp('http.request', 'warn', {
+      trace,
+      phase: 'requester_identity',
+      tag,
+      result: 'invalid_requester_fields',
+      missing: missing.join(',') || undefined,
+      err: decodeError,
+    });
+    return {
+      ok: false,
+      status: 400,
+      code: 'invalid_requester_fields',
+      error: 'requester identity fields malformed',
+      detail: missing.length > 0
+        ? `missing fields: ${missing.join(', ')}`
+        : decodeError ?? 'requester_pubkey and requester_x25519_pubkey must be 32-byte hex; signature must be 64-byte hex',
+    };
+  }
+
+  const canonical = [tag, ...canonicalFields, requesterPubkeyHex, requesterX25519PubkeyHex].join('\n');
+  let signatureValid: boolean;
+  try {
+    signatureValid = verify(requesterPubkey, signature, new TextEncoder().encode(canonical));
+  } catch {
+    signatureValid = false; // WASM verify raising on bad input is still a failed assertion — fail closed
+  }
+  if (!signatureValid) {
+    logOp('http.request', 'warn', {
+      trace,
+      phase: 'requester_identity',
+      tag,
+      result: 'invalid_signature',
+      requester_fp: fp(requesterPubkey),
+    });
+    return {
+      ok: false,
+      status: 401,
+      code: 'invalid_signature',
+      error: 'requester signature failed verification over the canonical request body',
+    };
+  }
+
+  let identity: Awaited<ReturnType<typeof loadIdentity>>;
+  try {
+    identity = await loadIdentity();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logOp('http.request', 'error', { trace, phase: 'requester_identity', tag, result: 'identity_load_failed', err: message });
+    return {
+      ok: false,
+      status: 500,
+      code: 'identity_load_failed',
+      error: 'failed to load the serving MCP identity',
+      detail: message,
+    };
+  }
+  if (!identity) {
+    logOp('http.request', 'warn', {
+      trace,
+      phase: 'requester_identity',
+      tag,
+      result: 'no_identity',
+      requester_fp: fp(requesterPubkey),
+    });
+    return {
+      ok: false,
+      status: 409,
+      code: 'no_identity',
+      error: 'serving MCP has no identity loaded; cannot assert requester identity',
+      requester_pubkey: requesterPubkeyHex,
+      remediation: 'adopt your coding-suite identity',
+    };
+  }
+
+  const mcpPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
+  if (requesterPubkeyHex.toLowerCase() !== mcpPubkeyHex) {
+    logOp('http.request', 'warn', {
+      trace,
+      phase: 'requester_identity',
+      tag,
+      result: 'identity_mismatch',
+      requester_fp: fp(requesterPubkey),
+      mcp_fp: fp(identity.edPubkey),
+    });
+    return {
+      ok: false,
+      status: 409,
+      code: 'identity_mismatch',
+      error: 'requester identity does not match the serving MCP identity',
+      requester_pubkey: requesterPubkeyHex,
+      mcp_pubkey: mcpPubkeyHex,
+      remediation: 'adopt your coding-suite identity',
+    };
+  }
+
+  logOp('http.request', 'info', {
+    trace,
+    phase: 'requester_identity',
+    tag,
+    result: 'ok',
+    requester_fp: fp(requesterPubkey),
+  });
+  return { ok: true };
+}
+
 async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!authorize(req, res)) {
     return;
@@ -1456,6 +1631,17 @@ async function handleOrgSetup(req: IncomingMessage, res: ServerResponse): Promis
   const leaderWallet = typeof body.leader_wallet === 'string' && body.leader_wallet.trim().length > 0
     ? body.leader_wallet.trim()
     : undefined;
+
+  const identityAssertion = await verifyRequesterIdentity(
+    'wevibe.org_setup.v1',
+    [domain, leaderWallet ?? '', orgName],
+    body,
+    getRequestTrace(req),
+  );
+  if (!identityAssertion.ok) {
+    respondRequesterIdentityFailure(res, identityAssertion);
+    return;
+  }
 
   let setup: Awaited<ReturnType<typeof buildOrgCryptoSetup>>;
   try {
@@ -1564,6 +1750,17 @@ async function handleProvisionRecall(req: IncomingMessage, res: ServerResponse):
       code: 'org_id_required',
       error: 'org_id is required and must be a non-empty string',
     });
+    return;
+  }
+
+  const identityAssertion = await verifyRequesterIdentity(
+    'wevibe.provision_recall.v1',
+    [orgId],
+    body,
+    getRequestTrace(req),
+  );
+  if (!identityAssertion.ok) {
+    respondRequesterIdentityFailure(res, identityAssertion);
     return;
   }
 
