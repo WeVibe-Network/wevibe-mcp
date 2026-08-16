@@ -354,6 +354,9 @@ export function createOpenAICompatibleProvider(baseUrl: string, model: string, a
             if (responseFormat) {
               reqBody.response_format = responseFormat;
             }
+            if (options?.maxCompletionTokens !== undefined) {
+              reqBody.max_completion_tokens = options.maxCompletionTokens;
+            }
 
             const resp = await fetch(`${normalizedBaseUrl}/chat/completions`, {
               method: 'POST',

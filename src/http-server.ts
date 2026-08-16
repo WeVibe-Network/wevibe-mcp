@@ -31,6 +31,7 @@ import { EXTRACTION_PRESETS, RECOMMENDED_PRESET_ID } from './extraction-presets.
 import { createOllamaProvider } from './llm-ollama.js';
 import { classifyFreeModelLapse, createOpenAICompatibleProvider, stripFreeSuffix } from './llm-openai-compat.js';
 import { getModelMinContextWindow } from './openrouter-catalog.js';
+import { ORCAROUTER_BASE_URL, resolveOrcarouterApiKey } from './orcarouter.js';
 import { exportIdentityPairing } from './pairing-export.js';
 import { isBiometricAvailable } from './biometric.js';
 import { writeIdentitySidecar } from './identity-sidecar.js';
@@ -327,7 +328,26 @@ function resolveOpenAiCompatibleBaseUrl(baseUrlOverride: string | undefined, isL
       `local provider "${provider ?? '(unnamed)'}" requires an explicit base_url (OpenAI-compatible endpoint); refusing to fall back to a remote paid API`,
     );
   }
+  if (provider === 'orcarouter') {
+    return ORCAROUTER_BASE_URL;
+  }
   return 'https://openrouter.ai/api/v1';
+}
+
+/**
+ * Resolve the effective API key for an extraction provider. An explicit
+ * `api_key` from the request always wins; an orcarouter provider without one
+ * resolves the operator's opencode-instance key from auth.json (fail-closed);
+ * anything else yields undefined (empty Bearer, as before).
+ */
+function resolveEffectiveApiKey(provider: string | undefined, apiKeyOverride: string | undefined): string | undefined {
+  if (apiKeyOverride !== undefined && apiKeyOverride.trim().length > 0) {
+    return apiKeyOverride;
+  }
+  if (provider === 'orcarouter') {
+    return resolveOrcarouterApiKey();
+  }
+  return undefined;
 }
 
 function providerAllowedByPolicy(
@@ -823,7 +843,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
       : createOpenAICompatibleProvider(
         resolveOpenAiCompatibleBaseUrl(baseUrlOverride, isLocal, providerOverride),
         extractionModel,
-        apiKeyOverride ?? '',
+        resolveEffectiveApiKey(providerOverride, apiKeyOverride) ?? '',
       );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -841,6 +861,7 @@ async function handleExtract(req: IncomingMessage, res: ServerResponse): Promise
   const extractOptions = {
     provider,
     isLocal,
+    providerId: providerOverride,
     systemPrompt: systemPromptOverride,
     numCtx: numCtxOverride,
     sessionId: resolvedSessionId,
@@ -1068,7 +1089,7 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
       : createOpenAICompatibleProvider(
         resolveOpenAiCompatibleBaseUrl(baseUrlOverride ?? job.resume.base_url, isLocal, providerOverride),
         model,
-        apiKeyOverride ?? '',
+        resolveEffectiveApiKey(providerOverride, apiKeyOverride) ?? '',
       );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1091,6 +1112,7 @@ async function handleExtractResume(req: IncomingMessage, res: ServerResponse): P
   const extractOptions = {
     provider,
     isLocal,
+    providerId: providerOverride,
     systemPrompt: job.resume.prompt,
     numCtx: job.resume.num_ctx,
     sessionId: job.resume.session_id,

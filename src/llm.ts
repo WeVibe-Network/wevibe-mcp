@@ -46,6 +46,12 @@ export interface LlmChatOptions {
    */
   retry?: LlmRetryPolicy;
   numCtx?: number;
+  /**
+   * Cap the provider's completion output at this many tokens. Only the
+   * orcarouter path sets it (the lower of the live `max_completion_tokens`
+   * and the operator's configured `limit.output`); never set for other providers.
+   */
+  maxCompletionTokens?: number;
 }
 
 export interface LlmProvider {

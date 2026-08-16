@@ -19,6 +19,7 @@ import {
 } from './model-context.js';
 import { getModelMinContextWindow } from './openrouter-catalog.js';
 import type { OpenRouterModelWindow } from './openrouter-catalog.js';
+import { resolveOrcarouterModelLimits } from './orcarouter.js';
 import { logOp, fp } from './logger.js';
 import { readUsedMemoryTexts } from './served-memory-store.js';
 import type { MemoryType } from './types.js';
@@ -130,6 +131,12 @@ export interface ExtractMemoriesOptions {
    * Defaults to true when unset (only the HTTP server sets it explicitly).
    */
   isLocal?: boolean;
+  /**
+   * The provider id string (e.g. 'orcarouter'), used to select the context-window
+   * source for remote models. Absent for legacy callers -> the OpenRouter endpoints
+   * path is used, exactly as before.
+   */
+  providerId?: string;
   sessionId?: string;
   traceId?: string;
   /**
@@ -1022,16 +1029,27 @@ export async function extractMemories(
     ? (options.provider as { model?: string }).model
     : undefined;
   const isLocal = options.isLocal ?? true;
+  const isOrcarouter = !isLocal && options.providerId === 'orcarouter';
+
+  let contextWindow: number;
   let remoteWindow: OpenRouterModelWindow | undefined;
-  if (!isLocal) {
-    remoteWindow = await getModelMinContextWindow(modelSlug ?? '', options.traceId);
+  let maxCompletionTokens: number | undefined;
+  if (isOrcarouter) {
+    const limits = await resolveOrcarouterModelLimits(modelSlug ?? '', options.traceId);
+    contextWindow = limits.contextWindow;
+    maxCompletionTokens = limits.maxCompletionTokens;
+  } else {
+    if (!isLocal) {
+      remoteWindow = await getModelMinContextWindow(modelSlug ?? '', options.traceId);
+    }
+    contextWindow = resolveContextWindow({
+      slug: modelSlug,
+      isLocal,
+      numCtxHint: options.numCtx,
+      remoteMinWindow: remoteWindow?.minContextLength,
+    });
   }
-  const contextWindow = resolveContextWindow({
-    slug: modelSlug,
-    isLocal,
-    numCtxHint: options.numCtx,
-    remoteMinWindow: remoteWindow?.minContextLength,
-  });
+
   const budget = budgetChars(contextWindow);
   logOp('extract', 'info', {
     trace: options.traceId,
@@ -1041,8 +1059,9 @@ export async function extractMemories(
     min_window: remoteWindow?.minContextLength,
     providers_considered: remoteWindow?.providerCount,
     resolved_window: contextWindow,
-    source: isLocal ? 'local' : 'endpoints',
+    source: isOrcarouter ? 'orcarouter_catalog' : (isLocal ? 'local' : 'endpoints'),
     budget_chars: budget,
+    ...(maxCompletionTokens !== undefined ? { max_completion_tokens: maxCompletionTokens } : {}),
   });
   const usedMemoryTexts = options.sessionId ? readUsedMemoryTexts(options.sessionId) : [];
 
@@ -1176,6 +1195,7 @@ ${TRANSCRIPT_END_MARKER}`;
         traceId: options.traceId,
         logLabel: 'tier1',
         retry: isLocal ? undefined : REMOTE_EXTRACTION_RETRY,
+        ...(maxCompletionTokens !== undefined ? { maxCompletionTokens } : {}),
       });
       extractionResponses.push(tierOneContent);
       emitProgress(1, 1);
@@ -1221,6 +1241,7 @@ ${TRANSCRIPT_END_MARKER}`;
           traceId: options.traceId,
           logLabel: `chunk-${idx}`,
           retry: isLocal ? undefined : REMOTE_EXTRACTION_RETRY,
+          ...(maxCompletionTokens !== undefined ? { maxCompletionTokens } : {}),
         });
         const parsedPayload = parseMemoryExtractionPayload(chunkContent);
         logOp('extract', 'info', {

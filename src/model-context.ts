@@ -21,8 +21,8 @@ export function normalizeSlug(slug: string): string {
 export class ContextWindowResolutionError extends Error {
   readonly code = 'unknown_model_context';
 
-  constructor(slug: string) {
-    super(`unknown model context: ${slug} — could not resolve context window from the OpenRouter catalog (model absent or catalog unavailable)`);
+  constructor(slug: string, catalogName = 'OpenRouter catalog') {
+    super(`unknown model context: ${slug} — could not resolve context window from the ${catalogName} (model absent or catalog unavailable)`);
     this.name = 'ContextWindowResolutionError';
   }
 }
