@@ -6,9 +6,9 @@ import { getRecallMode, getRecallModeGovernor, retrieve } from './retrieve-cli.j
 import type { RetrieveInput } from './retrieve-types.js';
 import { runWeVibeGuard } from './guard.js';
 import { verifySessionToken, extractBearer, _getActiveStore } from './session-token.js';
-import { hasStoredIdentitySeed, loadIdentity, storeIdentitySeed } from './key-store.js';
+import { loadIdentity } from './key-store.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
-import { generateIdentityFromSeed, initCrypto, verify } from './crypto.js';
+import { initCrypto, verify } from './crypto.js';
 import { getProviderPolicy } from './risk-appetite.js';
 import { addDenial, flushDenials } from './denial-queue.js';
 import { buildOrgCryptoSetup, loadMemberships, persistOrgKeys, provisionRecall } from './org-client.js';
@@ -33,8 +33,6 @@ import { classifyFreeModelLapse, createOpenAICompatibleProvider, stripFreeSuffix
 import { getModelMinContextWindow } from './openrouter-catalog.js';
 import { ORCAROUTER_BASE_URL, resolveOrcarouterApiKey } from './orcarouter.js';
 import { exportIdentityPairing } from './pairing-export.js';
-import { isBiometricAvailable } from './biometric.js';
-import { writeIdentitySidecar } from './identity-sidecar.js';
 import { fp, logOp, resolveTraceId, TRACE_HEADER } from './logger.js';
 import { emitExtractionIntegrity, type ExtractionEpisodeCounts } from './extraction-integrity.js';
 import { buildSessionSubstrate, type SubstrateEvent } from './session-substrate.js';
@@ -1264,110 +1262,6 @@ function isLoopbackRequest(req: IncomingMessage): boolean {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 }
 
-async function handleIdentityAdopt(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (!isLoopbackRequest(req)) {
-    jsonResponse(res, 403, { status: 'error', code: 'forbidden', error: 'loopback only' });
-    return;
-  }
-
-  if (!authorize(req, res)) {
-    return;
-  }
-
-  const trace = getRequestTrace(req);
-  const t0 = Date.now();
-  let status = 500;
-  let err: string | undefined;
-  let seedFp = '-';
-  let seed: Uint8Array | null = null;
-  let seedBuffer: Buffer | null = null;
-
-  try {
-    let bodyStr: string;
-    try {
-      bodyStr = await readBody(req);
-    } catch (readError) {
-      if (respondBodyGuardError(res, req, readError)) {
-        status = readError instanceof BodyReadError ? readError.status : status;
-        return;
-      }
-      throw readError;
-    }
-
-    let seedHex: string | undefined;
-    try {
-      const parsed = JSON.parse(bodyStr) as { seed_hex?: unknown } | null;
-      if (parsed && typeof parsed.seed_hex === 'string') {
-        seedHex = parsed.seed_hex;
-      }
-    } catch {
-      // malformed JSON — treated as invalid_seed below
-    }
-    if (!seedHex || !/^[0-9a-fA-F]{64}$/.test(seedHex)) {
-      status = 400;
-      jsonResponse(res, 400, {
-        status: 'error',
-        code: 'invalid_seed',
-        error: 'seed_hex must be 64 hex chars (32 bytes)',
-      });
-      return;
-    }
-
-    seedBuffer = Buffer.from(seedHex, 'hex');
-    seedHex = undefined; // drop the reference; JS strings are immutable and cannot be wiped in place
-    seed = new Uint8Array(seedBuffer);
-    seedFp = fp(seed);
-
-    if (await hasStoredIdentitySeed()) {
-      status = 409;
-      jsonResponse(res, 409, { status: 'error', code: 'identity_exists', error: 'an identity already exists' });
-      return;
-    }
-
-    // storeIdentitySeed triggers requireBiometric on the keychain backend — intended:
-    // a human confirms provisioning the local MCP. Reused as-is.
-    await storeIdentitySeed(seed);
-    const identity = generateIdentityFromSeed(seed);
-    const pubkey = Buffer.from(identity.edPubkey).toString('hex');
-
-    try {
-      writeIdentitySidecar({
-        ed25519PublicKey: pubkey,
-        x25519PublicKey: Buffer.from(identity.xPubkey).toString('hex'),
-        platform: process.platform,
-        biometric: isBiometricAvailable(),
-        adoptedAt: new Date().toISOString(),
-      });
-    } catch (sidecarError) {
-      // best-effort (mirrors admin's recordIdentitySidecar) — never blocks adoption.
-      logOp('identity.adopt', 'warn', {
-        trace,
-        phase: 'sidecar',
-        err: sidecarError instanceof Error ? sidecarError.message : String(sidecarError),
-      });
-    }
-
-    status = 200;
-    jsonResponse(res, 200, { status: 'ok', pubkey });
-  } catch (error) {
-    err = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    const message = error instanceof Error ? error.message : String(error);
-    status = 500;
-    jsonResponse(res, 500, { status: 'error', code: 'internal_error', error: message, detail: message });
-  } finally {
-    if (seed) seed.fill(0);
-    if (seedBuffer) seedBuffer.fill(0);
-    logOp('identity.adopt', err ? 'error' : 'info', {
-      trace,
-      phase: 'outcome',
-      status,
-      seed_fp: seedFp,
-      dur_ms: Date.now() - t0,
-      ...(err ? { err } : {}),
-    });
-  }
-}
-
 async function handleIdentityPubkeys(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!authorize(req, res)) {
     return;
@@ -1710,9 +1604,18 @@ async function verifyRequesterIdentity(
       status: 409,
       code: 'identity_mismatch',
       error: 'requester identity does not match the serving MCP identity',
+      // Name the CONSEQUENCE, not just the mismatch. This MCP signs org-setup
+      // with its OWN identity, while the dashboard resolves "my orgs" by the
+      // BROWSER's pubkey — so proceeding would mint an org led by an identity
+      // the caller cannot then see. That orphaned-org outcome is the whole
+      // reason this assertion is fail-closed.
+      detail:
+        'This caller holds a different identity than the MCP that would sign for it. '
+        + 'Proceeding would create an org led by the MCP identity that this caller cannot see. '
+        + 'Converge the two identities first, then retry.',
       requester_pubkey: requesterPubkeyHex,
       mcp_pubkey: mcpPubkeyHex,
-      remediation: 'adopt your coding-suite identity',
+      remediation: 'sign in with "Use my coding-suite identity" so the browser and the MCP share one identity',
     };
   }
 
@@ -3332,11 +3235,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     if (method === 'POST' && url === '/v1/identity/export-pairing') {
       await handleIdentityExportPairing(req, res);
-      return;
-    }
-
-    if (method === 'POST' && url === '/v1/identity/adopt') {
-      await handleIdentityAdopt(req, res);
       return;
     }
 
