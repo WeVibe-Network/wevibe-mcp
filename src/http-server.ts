@@ -2725,6 +2725,7 @@ interface DenialRequestBody {
   org_id: string;
   memory_hash: string;
   reason?: string;
+  episode_ref?: string;
 }
 
 interface ModQueueRequestBody {
@@ -3168,6 +3169,17 @@ async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  let episodeRefHex: string;
+  try {
+    episodeRefHex = validateOutcomeHexRef(body.episode_ref, 'episode_ref');
+  } catch (episodeRefErr) {
+    jsonResponse(res, 400, {
+      status: 'error',
+      error: episodeRefErr instanceof Error ? episodeRefErr.message : 'episode_ref must be a 1-64 byte hex string',
+    });
+    return;
+  }
+
   let epochId: number;
   try {
     epochId = await currentServeEpochId(body.org_id, getRequestTrace(req));
@@ -3182,6 +3194,7 @@ async function handleDenials(req: IncomingMessage, res: ServerResponse): Promise
     epoch_id: epochId,
     memory_hash: memoryHashHex,
     reason: body.reason,
+    episode_ref: episodeRefHex,
   });
 
   flushDenials().catch(err => console.error('denial flush failed:', err));

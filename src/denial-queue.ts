@@ -27,6 +27,7 @@ export interface PendingDenial {
   epoch_id: number;
   memory_hash: string;
   reason?: string;
+  episode_ref: string;
   created_at: string;
 }
 
@@ -142,6 +143,7 @@ export async function flushDenials(): Promise<{ flushed: number; failed: number 
           nonce: nonceHex,
           serve_fingerprint: serveFingerprintHex,
           reason: denial.reason ?? '',
+          episode_ref: denial.episode_ref,
         }),
         signal: AbortSignal.timeout(10000),
       });
