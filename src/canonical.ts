@@ -66,23 +66,6 @@ export function inviteMemberMessage(
   return new TextEncoder().encode(msg);
 }
 
-export function rotateEpochMessage(
-  orgId: string,
-  newPkMod: string,
-  signedBy: string,
-  envelopes: Array<{ pubkey: string; enc_envelope: string; search_envelope: string; mod_envelope?: string | null }>,
-): Uint8Array {
-  const envHash = envelopesHash(envelopes);
-  const msg = [
-    'wevibe.rotate_epoch.v1',
-    `envelopes_hash:${envHash}`,
-    `new_pk_mod:${newPkMod}`,
-    `org_id:${orgId}`,
-    `signed_by:${signedBy}`,
-  ].join('\n');
-  return new TextEncoder().encode(msg);
-}
-
 export function removeMemberMessage(
   orgId: string,
   pubkey: string,
@@ -181,21 +164,4 @@ export function feeModelHash(feeModel: FeeModel | null): string {
 
   const canonical = '{' + parts.join(',') + '}';
   return createHash('sha256').update(canonical, 'utf-8').digest('hex');
-}
-
-function envelopesHash(
-  envelopes: Array<{ pubkey: string; enc_envelope: string; search_envelope: string; mod_envelope?: string | null }>,
-): string {
-  const sorted = [...envelopes].sort((a, b) => a.pubkey.localeCompare(b.pubkey));
-  const entries = sorted.map(e => {
-    const modEnv = e.mod_envelope ?? '';
-    return [
-      `enc_envelope:${e.enc_envelope}`,
-      `mod_envelope:${modEnv}`,
-      `pubkey:${e.pubkey}`,
-      `search_envelope:${e.search_envelope}`,
-    ].join('\n');
-  });
-  const joined = entries.join('\n--\n');
-  return createHash('sha256').update(joined, 'utf-8').digest('hex');
 }

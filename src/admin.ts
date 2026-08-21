@@ -17,7 +17,6 @@
  *   wevibe-admin create-org --name "My Org" --domain example.com
  *   wevibe-admin orgs
  *   wevibe-admin invite --org <org_id> --pubkey <hex> --x25519 <hex> --pre-pubkey <hex> --role member|moderator
- *   wevibe-admin rotate --org <org_id>
  *   wevibe-admin provision-recall --org <org_id>
  *   wevibe-admin moderate-queue [--org <org_id>]
  *   wevibe-admin moderate-approve --hash <submission_hash> [--org <org_id>]
@@ -38,7 +37,7 @@
 import { initCrypto, deriveEpochKeys, sealToPubkey, openEnvelope, decryptSymmetric, seedToMnemonic, mnemonicToSeed, generateIdentityFromSeed } from './crypto.js';
 import { loadIdentity, loadIdentitySeed, storeIdentitySeed, generateIdentitySeed, loadKeyEnvelope, storeKeyEnvelope, hasStoredIdentitySeed } from './key-store.js';
 import { generateRecoveryPhrase, reconstructMasterKey, splitMasterKey, reconstructFromShares } from './recovery.js';
-import { loadMemberships, createOrg, inviteMember, rotateEpoch, provisionRecall } from './org-client.js';
+import { loadMemberships, createOrg, inviteMember, provisionRecall } from './org-client.js';
 import { fetchPendingQueue, decryptPendingItem, approveSubmission, denySubmission, scanForSteganography } from './moderation.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex } from './auth.js';
 import { vaultExists, isVaultUnlocked, unlockVault, listVaultEntries, getVaultCache, retrievePassphraseFromKeychain, lockVault } from './vault.js';
@@ -536,16 +535,6 @@ async function cmdInvite(flags: Record<string, string>) {
   console.log(`Member invited to ${orgId} (contribute=${canContribute}, moderate=${canModerate}).`);
 }
 
-async function cmdRotate(flags: Record<string, string>) {
-  const orgId = requireFlag(flags, 'org');
-  const result = await rotateEpoch({ orgId, hubUrl: HUB_URL });
-  if (result.status === 'error') die(`Rotation failed: ${result.error}`);
-  console.log(`Epoch rotated. New epoch: ${result.newEpoch}, members re-keyed: ${result.membersRekeyed}`);
-  if (result.bufferedMoved && result.bufferedMoved > 0) {
-    console.log(`Buffered submissions moved: ${result.bufferedMoved}`);
-  }
-}
-
 async function cmdProvisionRecall(flags: Record<string, string>) {
   const orgId = requireFlag(flags, 'org');
   logOp('admin.provision_recall', 'info', { phase: 'entry', org: orgId });
@@ -799,7 +788,6 @@ Commands:
   create-org --name --domain      Create a new org
   orgs                            List org memberships
   invite --org --pubkey --x25519 --pre-pubkey [--role]   Invite a member
-  rotate --org                    Rotate encryption epoch
   provision-recall --org          Derive and upload leader kfrag for recall
   moderate-queue [--org]          View pending submissions
   moderate-approve --hash [--org] Approve submission
@@ -843,7 +831,6 @@ async function main() {
     case 'create-org': return cmdCreateOrg(flags);
     case 'orgs': return cmdOrgs();
     case 'invite': return cmdInvite(flags);
-    case 'rotate': return cmdRotate(flags);
     case 'provision-recall': return cmdProvisionRecall(flags);
     case 'moderate-queue': return cmdModerateQueue(flags);
     case 'moderate-approve': return cmdModerateApprove(flags);

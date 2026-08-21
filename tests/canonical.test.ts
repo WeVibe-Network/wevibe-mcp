@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createOrgMessage, inviteMemberMessage, rotateEpochMessage, removeMemberMessage, submitMemoryMessage, denySubmissionMessage, feeModelHash, type FeeModel } from '../src/canonical.js';
+import { createOrgMessage, inviteMemberMessage, removeMemberMessage, submitMemoryMessage, denySubmissionMessage, feeModelHash, type FeeModel } from '../src/canonical.js';
 
 function sha256hex(data: string): string {
   return createHash('sha256').update(data, 'utf-8').digest('hex');
@@ -107,50 +107,6 @@ describe('canonical signing messages', () => {
       expect(lines[1]).toBe('can_contribute:false');
       expect(lines[2]).toBe('can_moderate:false');
       expect(lines[4]).toBe('mod_envelope:');
-    });
-  });
-
-  describe('rotateEpochMessage', () => {
-    it('matches Go test vector with sorted envelopes', () => {
-      const msg = new TextDecoder().decode(rotateEpochMessage(
-        'org-1',
-        'new_pk_mod_hex',
-        'leader_hex',
-        [
-          { pubkey: 'charlie', enc_envelope: 'enc_c', search_envelope: 'srch_c' },
-          { pubkey: 'alice', enc_envelope: 'enc_a', search_envelope: 'srch_a', mod_envelope: 'mod_data' },
-          { pubkey: 'bob', enc_envelope: 'enc_b', search_envelope: 'srch_b' },
-        ],
-      ));
-
-      const lines = msg.split('\n');
-      expect(lines).toHaveLength(5);
-      expect(lines[0]).toBe('wevibe.rotate_epoch.v1');
-
-      const inner =
-        'enc_envelope:enc_a\nmod_envelope:mod_data\npubkey:alice\nsearch_envelope:srch_a' +
-        '\n--\n' +
-        'enc_envelope:enc_b\nmod_envelope:\npubkey:bob\nsearch_envelope:srch_b' +
-        '\n--\n' +
-        'enc_envelope:enc_c\nmod_envelope:\npubkey:charlie\nsearch_envelope:srch_c';
-      const expectedHash = sha256hex(inner);
-      expect(lines[1]).toBe('envelopes_hash:' + expectedHash);
-
-      expect(lines[2]).toBe('new_pk_mod:new_pk_mod_hex');
-      expect(lines[3]).toBe('org_id:org-1');
-      expect(lines[4]).toBe('signed_by:leader_hex');
-    });
-
-    it('is order-independent on input envelopes', () => {
-      const a = rotateEpochMessage('o', 'p', 's', [
-        { pubkey: 'bob', enc_envelope: 'eb', search_envelope: 'sb' },
-        { pubkey: 'alice', enc_envelope: 'ea', search_envelope: 'sa' },
-      ]);
-      const b = rotateEpochMessage('o', 'p', 's', [
-        { pubkey: 'alice', enc_envelope: 'ea', search_envelope: 'sa' },
-        { pubkey: 'bob', enc_envelope: 'eb', search_envelope: 'sb' },
-      ]);
-      expect(a).toEqual(b);
     });
   });
 

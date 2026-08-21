@@ -1,7 +1,7 @@
 import { decryptSymmetric, openEnvelope, sign, generateDek, deriveEpochKeys, sealToPubkey, generateIdentity } from './crypto.js';
 import { loadIdentity, storeKeyEnvelope, loadKeyEnvelope } from './key-store.js';
 import { buildWeVibeSignedAuth, getOrCreatePreIdentity, getPrePublicKeyHex, getPreSecretKeyHex } from './auth.js';
-import { feeModelHash, inviteMemberMessage, rotateEpochMessage, type FeeModel } from './canonical.js';
+import { feeModelHash, inviteMemberMessage, type FeeModel } from './canonical.js';
 import { generateRecoveryPhrase } from './recovery.js';
 import { isVaultUnlocked, addOrgToVault, getVaultCache, updateVaultEntry, type VaultEntry } from './vault.js';
 import { ensureCrypto } from './crypto-utils.js';
@@ -411,7 +411,7 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
       role: org.role as 'leader' | 'member',
       canContribute: org.can_contribute ?? false,
       canModerate: org.can_moderate ?? false,
-      currentEpoch: org.current_epoch,
+      currentEpoch: 0,
       historyAccessFromEpoch: org.history_access_from_epoch,
       egressMode: org.egress_mode as 'local_only' | 'allowlist' | 'unrestricted',
       allowedProviders: org.allowed_providers,
@@ -425,23 +425,12 @@ export async function loadMemberships(hubUrl: string): Promise<OrgMembership[]> 
       const skModHex = Buffer.from(modPrivkey).toString('hex');
       await updateVaultEntry(org.org_id, {
         sk_mod_hex: skModHex,
-        current_epoch: org.current_epoch,
+        current_epoch: 0,
       }).catch(() => {});
     }
   }
 
   return memberships;
-}
-
-async function fetchCurrentEpoch(hubUrl: string, orgId: string): Promise<number> {
-  const response = await hubFetchVerified(orgId, `${hubUrl}/v1/orgs/${orgId}`);
-
-  if (!response.res.ok) {
-    throw new Error(`failed to fetch org ${orgId} (${response.res.status})${response.bodyText ? `: ${response.bodyText}` : ''}`);
-  }
-
-  const orgInfo = response.json<{ current_epoch?: number }>();
-  return typeof orgInfo.current_epoch === 'number' ? orgInfo.current_epoch : 0;
 }
 
 async function fetchEpochManifest(
@@ -802,12 +791,10 @@ export async function provisionRecall(orgId: string): Promise<void> {
     throw new Error(errMessage);
   }
 
-  const currentEpoch = await fetchCurrentEpoch(HUB_URL, orgId);
-
   let epochSkHex: string;
   let epochPkHex: string;
   try {
-    const epochSeed = epochUmbralSeed(masterKey, currentEpoch);
+    const epochSeed = epochUmbralSeed(masterKey, 0);
     ({ secretKeyHex: epochSkHex, publicKeyHex: epochPkHex } = await umbralDeriveEpochKeypair(epochSeed.toString('hex')));
   } catch (error) {
     logOp('org.provision_recall', 'error', {
@@ -850,7 +837,7 @@ export async function provisionRecall(orgId: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({
-        epoch_id: currentEpoch,
+        epoch_id: 0,
         pre_pubkey: prePubkeyHex,
         kfrag: kfragHex,
       }),
@@ -872,7 +859,7 @@ export async function provisionRecall(orgId: string): Promise<void> {
     org: orgId,
     phase: 'outcome',
     status: 'ok',
-    epoch: currentEpoch,
+    epoch: 0,
     umbral_pk_fp: fp(epochPkHex),
     member_pk_fp: fp(edPubkeyHex),
     pre_pubkey_fp: fp(prePubkeyHex),
@@ -925,24 +912,13 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
     modEnvelopeB64 = Buffer.from(sealedMod).toString('base64');
   }
 
-  let currentEpoch = 0;
-  try {
-    const orgResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}`);
-    if (orgResp.res.ok) {
-      const orgInfo = orgResp.json<{ current_epoch?: number }>();
-      currentEpoch = orgInfo.current_epoch ?? 0;
-    }
-  } catch {
-    // Default to epoch 0 if hub unavailable
-  }
+  const epochKeys = deriveEpochKeys(masterKey, 0);
 
-  const epochKeys = deriveEpochKeys(masterKey, currentEpoch);
-
-  const encPlaintext = packEpochKeyPair(currentEpoch, epochKeys.encKey);
+  const encPlaintext = packEpochKeyPair(0, epochKeys.encKey);
   const sealedEnc = sealToPubkey(encPlaintext, inviteeX25519Pubkey);
   const encEnvelopeB64 = Buffer.from(sealedEnc).toString('base64');
 
-  const searchPlaintext = packEpochKeyPair(currentEpoch, epochKeys.searchKey);
+  const searchPlaintext = packEpochKeyPair(0, epochKeys.searchKey);
   const sealedSearch = sealToPubkey(searchPlaintext, inviteeX25519Pubkey);
   const searchEnvelopeB64 = Buffer.from(sealedSearch).toString('base64');
 
@@ -1022,177 +998,6 @@ export async function inviteMember(params: InviteMemberParams): Promise<InviteMe
   });
 
   return { status: 'invited' };
-}
-
-export interface RotateEpochParams {
-  orgId: string;
-  hubUrl: string;
-}
-
-export interface RotateEpochResult {
-  status: 'rotated' | 'error';
-  newEpoch?: number;
-  membersRekeyed?: number;
-  bufferedMoved?: number;
-  error?: string;
-}
-
-export async function rotateEpoch(params: RotateEpochParams): Promise<RotateEpochResult> {
-  await ensureCrypto();
-
-  const identity = await loadIdentity();
-  if (!identity) {
-    return { status: 'error', error: 'no identity in keychain' };
-  }
-
-  const masterKey = await loadKeyEnvelope(params.orgId, 'master');
-  if (!masterKey) {
-    return { status: 'error', error: 'no master key found for this org — only the org leader can rotate' };
-  }
-
-  let currentEpoch = 0;
-  try {
-    const orgResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}`);
-    if (orgResp.res.ok) {
-      const orgInfo = orgResp.json<{ current_epoch?: number }>();
-      currentEpoch = orgInfo.current_epoch ?? 0;
-    }
-  } catch {
-    return { status: 'error', error: 'hub unavailable' };
-  }
-
-  const newEpoch = currentEpoch + 1;
-  const newEpochKeys = deriveEpochKeys(masterKey, newEpoch);
-
-  const newModIdentity = generateIdentity();
-  const newPkModHex = Buffer.from(newModIdentity.xPubkey).toString('hex');
-
-  let activeMembers: Array<{ pubkey: string; x25519_pubkey: string; role: string; can_moderate?: boolean }> = [];
-  try {
-    const membersResp = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/members`);
-    if (membersResp.res.ok) {
-      const allMembers = membersResp.json<Array<{ pubkey: string; x25519_pubkey: string; role: string; can_moderate?: boolean; active: boolean }>>();
-      activeMembers = allMembers
-        .filter(m => m.active)
-        .map(m => ({
-          pubkey: m.pubkey,
-          x25519_pubkey: m.x25519_pubkey,
-          role: m.role,
-          can_moderate: m.can_moderate,
-        }));
-    }
-  } catch {
-    return { status: 'error', error: 'failed to fetch member list' };
-  }
-
-  if (activeMembers.length === 0) {
-    return { status: 'error', error: 'no active members found' };
-  }
-
-  const envelopes: Array<{ pubkey: string; enc_envelope: string; search_envelope: string; mod_envelope?: string | null }> = [];
-
-  for (const member of activeMembers) {
-    const memberX25519 = new Uint8Array(Buffer.from(member.x25519_pubkey, 'hex'));
-
-    const encPlaintext = packEpochKeyPair(newEpoch, newEpochKeys.encKey);
-    const sealedEnc = sealToPubkey(encPlaintext, memberX25519);
-    const encEnvelopeB64 = Buffer.from(sealedEnc).toString('base64');
-
-    const searchPlaintext = packEpochKeyPair(newEpoch, newEpochKeys.searchKey);
-    const sealedSearch = sealToPubkey(searchPlaintext, memberX25519);
-    const searchEnvelopeB64 = Buffer.from(sealedSearch).toString('base64');
-
-    let modEnvelopeB64: string | null = null;
-    if (member.role === 'leader' || member.can_moderate) {
-      const sealedMod = sealToPubkey(newModIdentity.xPrivkey, memberX25519);
-      modEnvelopeB64 = Buffer.from(sealedMod).toString('base64');
-    }
-
-    envelopes.push({
-      pubkey: member.pubkey,
-      enc_envelope: encEnvelopeB64,
-      search_envelope: searchEnvelopeB64,
-      mod_envelope: modEnvelopeB64,
-    });
-  }
-
-  const leaderPubkeyHex = Buffer.from(identity.edPubkey).toString('hex');
-  const canonical = rotateEpochMessage(params.orgId, newPkModHex, leaderPubkeyHex, envelopes);
-  const sig = sign(identity.edPrivkey, canonical);
-  const sigHex = Buffer.from(sig).toString('hex');
-
-  const payload = {
-    new_pk_mod: newPkModHex,
-    signed_by: leaderPubkeyHex,
-    signature: sigHex,
-    envelopes: envelopes.map(e => ({
-      pubkey: e.pubkey,
-      enc_envelope: e.enc_envelope,
-      search_envelope: e.search_envelope,
-      mod_envelope: e.mod_envelope,
-    })),
-  };
-
-  let response: Response;
-  try {
-    const verified = await hubFetchVerified(params.orgId, `${params.hubUrl}/v1/orgs/${params.orgId}/epoch/rotate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    response = verified.res;
-    if (!response.ok) {
-      let errMsg: string;
-      try {
-        const errBody = verified.json<{ error?: string }>();
-        errMsg = errBody.error ?? `HTTP ${response.status}`;
-      } catch {
-        errMsg = `HTTP ${response.status}`;
-      }
-      return { status: 'error', error: errMsg };
-    }
-
-    let bufferedMoved = 0;
-    let respBody: { buffered_moved?: number; epoch_sk?: string; epoch_pk?: string } = {};
-    try {
-      respBody = verified.json<{ buffered_moved?: number; epoch_sk?: string; epoch_pk?: string }>();
-      bufferedMoved = respBody.buffered_moved ?? 0;
-    } catch {
-      // Response parsing optional
-    }
-
-    if (typeof respBody.epoch_sk === 'string' && respBody.epoch_sk.length > 0) {
-      const epochSkBytes = Buffer.from(respBody.epoch_sk, 'hex');
-      if (epochSkBytes.length === 32) {
-        await storeKeyEnvelope(params.orgId, 'epoch-sk', epochSkBytes);
-      }
-    }
-
-    if (typeof respBody.epoch_pk === 'string' && respBody.epoch_pk.length > 0) {
-      const epochPkBytes = Buffer.from(respBody.epoch_pk, 'hex');
-      if (epochPkBytes.length === 33) {
-        await storeKeyEnvelope(params.orgId, 'epoch-pk', epochPkBytes);
-      }
-    }
-
-    await storeKeyEnvelope(params.orgId, 'mod-privkey', newModIdentity.xPrivkey);
-
-    if (isVaultUnlocked()) {
-      await updateVaultEntry(params.orgId, {
-        sk_mod_hex: Buffer.from(newModIdentity.xPrivkey).toString('hex'),
-        current_epoch: newEpoch,
-      }).catch(() => {});
-    }
-
-    return {
-      status: 'rotated',
-      newEpoch,
-      membersRekeyed: activeMembers.length,
-      bufferedMoved,
-    };
-  } catch (e) {
-    return { status: 'error', error: `hub unavailable: ${e}` };
-  }
 }
 
 interface HubKeywordEntry {

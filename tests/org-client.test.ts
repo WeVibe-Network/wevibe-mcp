@@ -47,7 +47,6 @@ vi.mock('../src/canonical.js', () => ({
   feeModelHash: vi.fn().mockReturnValue('fee_model_hash_for_tests'),
   createOrgMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-create'))),
   inviteMemberMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-invite'))),
-  rotateEpochMessage: vi.fn().mockReturnValue(new Uint8Array(Buffer.from('mock-canonical-rotate'))),
 }));
 
 vi.mock('../src/hub-fetch.js', async () => {
@@ -78,15 +77,6 @@ vi.mock('../src/hub-fetch.js', async () => {
     }),
   };
 });
-
-vi.mock('../src/sidecar.js', () => ({
-  umbralDeriveEpochKeypair: vi.fn().mockResolvedValue({
-    secretKeyHex: '11'.repeat(32),
-    publicKeyHex: '02' + '22'.repeat(32),
-  }),
-  umbralGenerateKfrag: vi.fn().mockResolvedValue('ab'.repeat(40)),
-  umbralDecryptReencrypted: vi.fn().mockResolvedValue(new Uint8Array(0)),
-}));
 
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
@@ -185,7 +175,7 @@ describe('loadMemberships', () => {
     expect(memberships[0].orgId).toBe('test-org-1');
     expect(memberships[0].orgName).toBe('Test Org 1');
     expect(memberships[0].role).toBe('member');
-    expect(memberships[0].currentEpoch).toBe(3);
+    expect(memberships[0].currentEpoch).toBe(0);
     expect(memberships[0].historyAccessFromEpoch).toBe(1);
     expect(memberships[0].egressMode).toBe('unrestricted');
 
@@ -551,11 +541,6 @@ describe('inviteMember', () => {
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ current_epoch: 2 }),
-    });
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
       json: async () => ({ pubkey: 'invitee_pub', role: 'member' }),
     });
 
@@ -570,9 +555,9 @@ describe('inviteMember', () => {
     });
 
     expect(result.status).toBe('invited');
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    const [url, opts] = mockFetch.mock.calls[1];
+    const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toBe('http://localhost:4440/v1/orgs/org-abc/members');
     expect(opts.method).toBe('POST');
 
@@ -595,11 +580,6 @@ describe('inviteMember', () => {
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ current_epoch: 2 }),
-    });
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
       json: async () => ({ pubkey: 'invitee_pub', role: 'member' }),
     });
 
@@ -614,9 +594,9 @@ describe('inviteMember', () => {
     });
 
     expect(result.status).toBe('invited');
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    const [, opts] = mockFetch.mock.calls[1];
+    const [, opts] = mockFetch.mock.calls[0];
     const headers = (opts?.headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toMatch(/^WeVibe-Signed pubkey=[0-9a-f]{64},timestamp=[^,]+,signature=[0-9a-f]{128}$/);
 
@@ -634,11 +614,6 @@ describe('inviteMember', () => {
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ current_epoch: 2 }),
-    });
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
       json: async () => ({ pubkey: 'invitee_pub', role: 'member' }),
     });
 
@@ -653,9 +628,9 @@ describe('inviteMember', () => {
     });
 
     expect(result.status).toBe('invited');
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    const [, opts] = mockFetch.mock.calls[1];
+    const [, opts] = mockFetch.mock.calls[0];
     const headers = (opts?.headers ?? {}) as Record<string, string>;
     const authHeader = headers.Authorization ?? '';
     const timestampMatch = authHeader.match(/timestamp=([^,]+),signature=/);
@@ -709,13 +684,11 @@ describe('inviteMember', () => {
     expect(result.error).toContain('no master key');
   });
 
-  it('defaults to epoch 0 when hub is unreachable', async () => {
+  it('derives invite envelopes at epoch 0', async () => {
     mockKeyStore.set('org-abc-master', new Uint8Array(32));
 
     const { inviteMember } = await import('../src/org-client.js');
     const { deriveEpochKeys } = await import('../src/crypto.js');
-
-    mockFetch.mockRejectedValueOnce(new Error('network'));
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -744,11 +717,6 @@ describe('inviteMember', () => {
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ current_epoch: 2 }),
-    });
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
       json: async () => ({ pubkey: 'invitee_pub', role: 'moderator' }),
     });
 
@@ -763,9 +731,9 @@ describe('inviteMember', () => {
     });
 
     expect(result.status).toBe('invited');
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    const [, opts] = mockFetch.mock.calls[1];
+    const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body.mod_envelope).toBeTruthy();
     expect(body.mod_envelope.length).toBeGreaterThan(0);
@@ -777,11 +745,6 @@ describe('inviteMember', () => {
     mockKeyStore.set('org-abc-master', new Uint8Array(32).fill(0xaa));
 
     const { inviteMember } = await import('../src/org-client.js');
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ current_epoch: 0 }),
-    });
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -799,9 +762,9 @@ describe('inviteMember', () => {
     });
 
     expect(result.status).toBe('invited');
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
-    const [, opts] = mockFetch.mock.calls[1];
+    const [, opts] = mockFetch.mock.calls[0];
     const body = JSON.parse(opts.body);
     expect(body.mod_envelope).toBeUndefined();
     expect(body.role).toBe('member');
