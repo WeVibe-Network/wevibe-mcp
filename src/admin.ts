@@ -502,6 +502,74 @@ async function cmdOrgs() {
   }
 }
 
+/**
+ * Member-side JOIN REQUEST — ask an org to admit this identity.
+ *
+ * The counterpart to `invite`. `invite` is the org reaching out; this is the
+ * member reaching in, and until now only the first existed as a command even
+ * though the hub has served POST /v1/orgs/{orgID}/join all along.
+ *
+ * It matters because recall serves from an ORG's corpus: an identity that
+ * belongs to no org has nothing to recall from, so every other capability is
+ * downstream of this one call.
+ *
+ * NO BIOMETRIC REQUIREMENT. This signs with the stored identity seed exactly
+ * as every other hub call here does. `requireBiometric` fails OPEN when no
+ * biometric hardware is present or enrolled (see biometric.ts), so a
+ * contributor who restored their identity from a 24-word phrase via
+ * `import-identity` can run this on a machine with no Touch ID at all.
+ */
+async function cmdRequestJoin(flags: Record<string, string>) {
+  const orgId = requireFlag(flags, 'org');
+
+  const identity = await loadIdentity();
+  if (!identity) {
+    die('No WeVibe identity found. Create one with `wevibe-admin setup-identity`, or restore an existing one with `wevibe-admin import-identity --phrase "..."`.');
+  }
+
+  const requesterPubkey = Buffer.from(identity.edPubkey).toString('hex');
+  const x25519Pubkey = Buffer.from(identity.xPubkey).toString('hex');
+
+  // The PRE pubkey is what lets a leader provision recall for this member once
+  // the request is approved. Sending it now saves a second round trip later.
+  await getOrCreatePreIdentity();
+  const prePubkey = getPrePublicKeyHex();
+
+  const { headers } = await buildWeVibeSignedAuth();
+  const resp = await fetch(`${HUB_URL}/v1/orgs/${orgId}/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({
+      requester_pubkey: requesterPubkey,
+      x25519_pubkey: x25519Pubkey,
+      pre_pubkey: prePubkey,
+    }),
+  });
+
+  const bodyText = await resp.text().catch(() => '');
+  if (!resp.ok) {
+    // The hub's own words. Rewriting them hides which layer refused.
+    die(`Join request failed: HTTP ${resp.status}${bodyText ? ` — ${bodyText.slice(0, 300)}` : ''}`);
+  }
+
+  let body: { request_id?: string; status?: string; requested_at?: string } = {};
+  try { body = bodyText ? JSON.parse(bodyText) : {}; } catch { /* keep defaults */ }
+
+  if (flags['json'] === 'true' || flags['json'] === '1') {
+    console.log(JSON.stringify({ status: 'submitted', org_id: orgId, ...body }, null, 2));
+    return;
+  }
+
+  console.log(`Join request SUBMITTED to ${orgId}.`);
+  if (body.request_id) console.log(`  Request: ${body.request_id}`);
+  if (body.status) console.log(`  Status:  ${body.status}`);
+  console.log(`  Pubkey:  ${requesterPubkey}`);
+  // Submitted is not approved. Saying otherwise would leave the member
+  // wondering why recall still returns nothing.
+  console.log('\nSubmitted, NOT approved — an org administrator still has to accept it.');
+  console.log('Recall has no corpus to serve from until they do. Check with `wevibe-admin orgs`.');
+}
+
 async function cmdInvite(flags: Record<string, string>) {
   const orgId = requireFlag(flags, 'org');
   const pubkey = requireFlag(flags, 'pubkey');
@@ -786,6 +854,7 @@ Commands:
   pair --code [--force]           Pair identity from dashboard one-time code
   export-pairing [--no-open] [--json]  Export pairing code for dashboard identity adoption
   create-org --name --domain      Create a new org
+  request-join --org [--json]     Ask an org to admit this identity (member side)
   orgs                            List org memberships
   invite --org --pubkey --x25519 --pre-pubkey [--role]   Invite a member
   provision-recall --org          Derive and upload leader kfrag for recall
@@ -829,6 +898,7 @@ async function main() {
     case 'pair': return cmdPair(flags);
     case 'export-pairing': return cmdExportPairing(flags);
     case 'create-org': return cmdCreateOrg(flags);
+    case 'request-join': return cmdRequestJoin(flags);
     case 'orgs': return cmdOrgs();
     case 'invite': return cmdInvite(flags);
     case 'provision-recall': return cmdProvisionRecall(flags);
